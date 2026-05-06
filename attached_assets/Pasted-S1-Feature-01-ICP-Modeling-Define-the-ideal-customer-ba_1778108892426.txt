@@ -1,0 +1,302 @@
+S1 · Feature 01
+ICP Modeling
+Define the ideal customer based on firmographic, behavioral, and signal data
+ICP Agent
+▾
+Build the ICP Profile
+Input
+Founder inputs, past CRM deals, market data
+Output
+ICP segments + scoring rules (who qualifies and why)
+Connects To
+Persona Mapping · Market Research block
+S1 · Feature 02
+Persona Mapping
+Identify the decision-makers, influencers, and end-users within target companies
+Persona Agent
+▾
+Map Roles to Org Structure
+Input
+CRM data, call transcripts, org charts, LinkedIn
+Output
+Persona matrix — role, pain points, motivations, communication style
+Connects To
+Buying Center Mapping · Messaging Module
+S1 · Feature 03
+Problem Identification
+Map the core pain points and buying triggers your product solves for each persona
+Discovery Intelligence Agent
+▾
+Extract Pain + Trigger Signals
+Input
+Discovery call transcripts, customer interviews
+Output
+Problem-solution map: pain → trigger → product angle
+Connects To
+Messaging Strategy Agent · Use Case Definition
+S1 · Feature 04
+Industry Segmentation
+Break the market into verticals and sub-verticals to prioritize where to focus
+Market Segmentation Agent
+▾
+Cluster Market by Vertical
+Input
+Market datasets, NAICS codes, industry reports
+Output
+Segmented market clusters — verticals ranked by opportunity size
+Connects To
+TAM/SAM/SOM Analysis · Account Prioritization
+S1 · Feature 05
+Buying Center Mapping
+Understand who participates in the buying decision — champion, blocker, economic buyer
+Buying Center Agent
+▾
+Build the Stakeholder Graph
+Input
+Call data, CRM records, LinkedIn org structure
+Output
+Stakeholder graph — who influences, who decides, who blocks
+Connects To
+Multi-thread Outreach · Sequence Logic Agent
+S1 · Feature 06
+Use Case Definition
+Define exactly how the product applies to each segment — use cases become the basis for messaging
+Use Case Agent
+▾
+Build Use Case Library
+Input
+Product inputs, customer use data, segment profiles
+Output
+Use case library — scenario + value prop per vertical/persona combo
+Connects To
+Content Strategy · Messaging Module · SDR Copilot
+
+🔬
+Market Research + Prospect Scoring
+Once we know who to sell to, this block finds them, enriches their data, and scores them by fit + buying intent. Output is a ranked, ready-to-action prospect list.
+
+ICP + Signals → Enriched + Scored Prospect List → Outreach Block
+TAM/SAM/SOM
+→
+Competitive Intel
+→
+Signal Detection
+→
+Pattern Recognition
+→
+Lead Scoring
+→
+Enrichment
+→
+Account Prioritization
+Input
+Output
+Connects To
+Agent/Module
+Collapse All
+S2 · Feature 01
+TAM / SAM / SOM Sizing
+Quantify the total addressable market and the realistic slice we can capture
+Market Sizing Agent
+▾
+Market Size Calculation
+Input
+Market reports, ICP criteria, segment clusters
+Output
+Market size numbers: TAM / SAM / SOM with confidence ranges
+Connects To
+Account Prioritization · Forecasting Engine
+S2 · Feature 02
+Competitive Intelligence
+Track competitors, their positioning, and where we have an edge
+Competitor Agent
+▾
+Competitor Monitoring
+Input
+Web scraping, review sites (G2, Capterra), press releases
+Output
+Competitor matrix: features, pricing, positioning, weaknesses
+Connects To
+Message Personalization · Content Strategy Agent
+S2 · Feature 03
+Signal Detection
+Capture real-time buying signals — hiring spikes, funding rounds, tech changes, job posts
+Signal Agent
+▾
+Live Signal Capture
+Input
+LinkedIn, news APIs, job boards, funding databases
+Output
+Raw signals: company event + type + timestamp + source
+Connects To
+Pattern Recognition · Lead Scoring · Messaging trigger
+S2 · Feature 04
+Pattern Recognition
+Convert raw signals into actionable patterns — which signal combos predict a conversion
+Pattern Engine
+▾
+Signal → Pattern Clustering
+Input
+Historical signals + deal outcome data
+Output
+Pattern clusters — e.g. "funding + hiring VP Sales = high-intent"
+Connects To
+Lead Scoring · Analytics Feedback Loop
+S2 · Feature 05
+Lead Scoring
+Score accounts and contacts dynamically based on ICP fit + engagement + signals
+Scoring Engine
+▾
+Dynamic Score Calculation
+Input
+ICP criteria + signal patterns + engagement history
+Output
+Lead score (0–100) per account and contact
+Connects To
+Account Prioritization · CRM · SDR Copilot
+S2 · Feature 06
+Data Enrichment
+Fill in missing contact and company data — emails, phone, firmographics, tech stack
+Enrichment Agent
+▾
+Profile Enrichment via APIs
+Input
+Company domain / LinkedIn URL / contact name
+Output
+Enriched profile: email, phone, headcount, tech stack, funding
+Connects To
+CRM · Outreach block · Messaging personalization
+S2 · Feature 07
+Account Prioritization
+Rank accounts into tiers so the team works the hottest leads first
+Prioritization Engine
+▾
+Tier Assignment
+Input
+Lead scores + ICP segments + enriched profiles
+Output
+Tiered priority list: Tier 1 (hot) / Tier 2 (warm) / Tier 3 (nurture)
+Connects To
+✅ 3-Channel Outreach block · CRM push
+
+📬
+3-Channel Outreach — Email / LinkedIn / Call
+This block executes the actual outreach — personalized, multi-channel, sequenced campaigns with built-in timing intelligence and a human copilot layer for SDRs.
+
+Prospect List → Personalized Sequences → Sent Outreach → Engagement Signals
+Channel Strategy
+→
+Personalization
+→
+Sequence Design
+→
+Timing
+→
+Deliverability
+→
+Automation
+→
+Response Tracking
+→
+SDR Copilot
+Input
+Output
+Connects To
+Agent/Module
+Collapse All
+S3 · Feature 01
+Channel Strategy
+Decide the right channel mix for each persona — email, LinkedIn, or call, and in what order
+Channel Strategy Agent
+▾
+Channel Mix Decision
+Input
+ICP data + persona behavior patterns
+Output
+Channel plan per persona: which channels, what order, what frequency
+Connects To
+Sequence Design · Messaging Module
+S3 · Feature 02
+Message Personalization
+Tailor every message to the specific account and persona — not a generic blast
+Messaging Agent
+▾
+Personalized Copy Generation
+Input
+Signal data + persona profile + company context
+Output
+Personalized message copies per channel per account
+Connects To
+Outreach Automation · Sequence Design
+S3 · Feature 03
+Sequence Design
+Build multi-touch outreach flows — the full playbook of touches across channels
+Sequencing Engine
+▾
+Multi-touch Sequence Builder
+Input
+Channel plan + persona + personalized copies
+Output
+Full sequence: steps, channels, messages, wait times, if/else branches
+Connects To
+Outreach Automation · Trigger Engine
+S3 · Feature 04
+Timing Optimization
+Determine the best time to reach out based on engagement data and timezone
+Timing Agent
+▾
+Send-time Intelligence
+Input
+Historical engagement data + prospect timezone
+Output
+Optimal send-time per contact per channel
+Connects To
+Outreach Automation · Campaign Scheduler
+S3 · Feature 05
+Deliverability Optimization
+Keep email health high — domain warm-up, spam score management, bounce handling
+Deliverability Module
+▾
+Email Infrastructure Management
+Input
+Email infrastructure data, sending volumes, bounce/spam reports
+Output
+Deliverability score + action items (warm-up plan, domain health)
+Connects To
+Outreach Engine · Analytics block
+S3 · Feature 06
+Outreach Automation
+Execute the campaigns automatically — send emails, LinkedIn messages, and call prompts at scale
+Outreach Engine
+▾
+Campaign Execution
+Input
+Sequences + lead list + send-time decisions
+Output
+Sent outreach across channels + delivery logs
+Connects To
+Response Tracking · CRM Activity Log
+S3 · Feature 07
+Response Tracking
+Track opens, replies, clicks, and bounces from every message sent
+Engagement Tracker
+▾
+Engagement Event Capture
+Input
+Campaign send data + email/LinkedIn events
+Output
+Engagement signals: open, click, reply, bounce per contact
+Connects To
+SDR Copilot · Lead Scoring update · CRM · Analytics
+S3 · Feature 08
+SDR Copilot
+A real-time AI assistant that tells the SDR what to do next based on prospect behavior
+SDR Agent
+▾
+Next-Best-Action Recommendations
+Input
+Engagement signals + CRM context + sequence status
+Output
+Real-time recommendations: "Call now", "Send this follow-up", "Escalate to AE"
+Connects To
+CRM Activity Log · Sequence trigger

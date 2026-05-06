@@ -1,0 +1,106 @@
+Capture Signals + Feedback Dashboard
+The intelligence layer of marketing. Captures what's working, detects who's ready to buy, qualifies leads for sales, and feeds insights back into the GTM strategy. This is the loop that makes the whole system self-improving.
+
+Engagement Data → Intent Scores + MQLs + Attribution → Updated GTM Strategy
+Engagement Tracking
+→
+Intent Detection
+→
+Feedback Capture
+→
+Attribution Mapping
+→
+Signal Generation
+→
+Lead Qualification
+→
+Data Loop Back
+Input
+Output
+Connects To
+Agent/Module
+Collapse All
+M3 · Feature 01
+Engagement Tracking
+Track every interaction a user has — website visits, ad clicks, video views, social engagement
+Tracking Engine
+▾
+Cross-channel Interaction Tracking
+Input
+Website events, ad platform data, social interactions
+Output
+Engagement data: who did what, when, on which channel
+Connects To
+Intent Detection · Signal Generation · Attribution
+M3 · Feature 02
+Intent Detection
+Identify which visitors or leads are showing buying intent — not just browsing, but actually considering
+Intent Agent
+▾
+Behavioral Intent Scoring
+Input
+Engagement patterns + page visits (pricing, case studies) + time-on-site
+Output
+Intent scores per visitor/account: low / medium / high intent
+Connects To
+Lead Qualification · Sales Signal Detection · SDR Copilot
+M3 · Feature 03
+Feedback Capture
+Collect qualitative signals — survey responses, form fills, NPS, content ratings
+Feedback Engine
+▾
+Qualitative Signal Collection
+Input
+Forms, surveys, NPS responses, content feedback
+Output
+Structured feedback data: sentiment, themes, pain points mentioned
+Connects To
+Content Strategy refinement · ICP update loop
+M3 · Feature 04
+Attribution Mapping
+Map which marketing source or touchpoint actually led to a lead or conversion
+Attribution Engine
+▾
+Source → Conversion Mapping
+Input
+Multi-channel engagement data + conversion events
+Output
+Attribution insights: which ad, blog, or post drove each conversion
+Connects To
+Budget allocation · Channel strategy update · ROI dashboards
+M3 · Feature 05
+Signal Generation
+Convert raw engagement activity into structured buying signals that the sales system can act on
+Signal Engine
+▾
+Activity → Signal Conversion
+Input
+Engagement data from all marketing channels
+Output
+Structured signals: company + event + strength — ready for sales use
+Connects To
+✅ Sales Signal Detection (S2) · Lead Scoring update
+M3 · Feature 06
+Lead Qualification
+Determine which marketing leads are ready for sales — MQL vs SQL vs nurture
+Qualification Engine
+▾
+MQL → SQL Scoring
+Input
+Engagement score + ICP fit + intent signals
+Output
+Lead status: MQL (marketing qualified) / SQL (sales ready) / Nurture
+Connects To
+✅ CRM Lead Management (S4) · SDR Copilot handoff
+M3 · Feature 07
+Data Loop Back
+Feed all marketing performance data back into the GTM strategy — making the whole system smarter over time
+Feedback Loop System
+▾
+GTM Strategy Update Loop
+Input
+All marketing performance data: engagement, attribution, feedback
+Output
+Updated GTM strategy inputs: revised ICP, new messaging angles, channel rebalancing
+Connects To
+🔁 Discovery/ICP block (S1) · Content Strategy (M1) — closes the full GTM loop
