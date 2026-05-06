@@ -1,0 +1,63 @@
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { apiFetch } from "@/lib/api";
+
+export interface SequenceStep {
+  id: string;
+  step_number: number;
+  channel: "email" | "linkedin" | "call";
+  subject?: string;
+  body?: string;
+  wait_days: number;
+  send_at?: string;
+  sent_at?: string;
+  status: string;
+}
+
+export interface Sequence {
+  id: string;
+  status: string;
+  channel_plan?: any;
+  deliverability_score?: number;
+  deliverability_report?: any;
+  instantly_campaign_id?: string;
+  steps: SequenceStep[];
+}
+
+export function useSequenceByContact(contactId?: string) {
+  return useQuery<Sequence | null>({
+    queryKey: ["sequence", "contact", contactId],
+    queryFn: () => apiFetch(`/api/sequences/by-contact/${contactId}`),
+    enabled: !!contactId,
+  });
+}
+
+export function useGenerateSequence() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (contactId: string) =>
+      apiFetch(`/api/sequences/generate/${contactId}`, { method: "POST" }),
+    onSuccess: (_, contactId) =>
+      qc.invalidateQueries({ queryKey: ["sequence", "contact", contactId] }),
+  });
+}
+
+export function useDeliverabilityCheck() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (sequenceId: string) =>
+      apiFetch(`/api/sequences/${sequenceId}/deliverability-check`, {
+        method: "POST",
+      }),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: ["sequence"] }),
+  });
+}
+
+export function useLaunchSequence() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (sequenceId: string) =>
+      apiFetch(`/api/sequences/${sequenceId}/launch`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["sequence"] }),
+  });
+}

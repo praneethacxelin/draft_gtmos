@@ -1,0 +1,494 @@
+#1 - Agentic GTM Factory — Full Initial Build
+What & Why
+
+A "3-Stage Agentic GTM Operating System" — a complete AI-powered sales and marketing intelligence platform. A founder or sales leader inputs their product details, and a chain of AI agents produces: a full ICP, scored and enriched lead lists, competitor intelligence, multi-channel outreach sequences, and a self-improving feedback loop that gets smarter with every campaign.
+
+All external tool integrations (SerpAPI, Apollo, Clay, Instantly.ai) are optional. The app works with AI-generated mock data for any tool that is not connected. Users configure their API keys inside the app itself via a Settings page — no environment variable editing required. Keys are saved to the DB, encrypted at rest.
+
+The platform is structured around four blocks:
+
+    S1 — Strategy & Discovery: Understand who to sell to and why. ICP, personas, pain points, industry segmentation, buying center, use cases.
+    S2 — Market Research & Prospect Scoring: Find them, enrich them, score them. TAM/SAM/SOM, competitive intelligence, signal detection, pattern recognition, lead scoring, enrichment, account prioritization.
+    S3 — 3-Channel Outreach (Email / LinkedIn / Call): Reach them at the right time with the right message. Channel strategy, personalization, sequence design, timing optimization, deliverability, automation, response tracking, SDR copilot.
+    M3 — Capture Signals + Feedback: Close the loop. Track engagement, detect intent, capture qualitative feedback, map attribution, qualify leads as MQL/SQL/Nurture, and feed all insights back into S1 to refine the ICP over time.
+
+Tech stack:
+
+    Backend: Python FastAPI + LangGraph (multi-agent orchestration). No Node.js backend.
+    Frontend: React + Vite + Tailwind + Shadcn/UI (dark mode, persistent sidebar).
+    Database: PostgreSQL + pgvector (structured data + vector similarity search for pattern recognition).
+    AI: OpenAI GPT-4o mini via Replit AI integrations (no key needed).
+    External tools (all optional, configured in-app): SerpAPI, Apollo.io, Clay, Instantly.ai.
+
+Done looks like
+
+    A user can open the app with no API keys configured and still get value — AI generates mock signals, synthetic lead profiles, and placeholder enrichment to demonstrate the full workflow.
+    A Settings page lets users enable integrations one at a time, paste their API key, test the connection, and save — without touching any config files.
+    S1 Strategy Workspace: onboarding form → real-time ICP generation stream → persona cards → pain point map → NAICS segments → React Flow stakeholder graph → use case library.
+    S2 Intelligence: TAM/SAM/SOM numbers, competitor matrix, live signal feed, pattern recognition clusters, lead table with scores, enriched profiles, tiered account list.
+    S3 Outreach: channel plan per persona, personalized message copy, multi-touch sequence builder, timing recommendations, Instantly.ai campaign push (if connected), response tracking feed, SDR copilot next-best-action panel.
+    M3 Intelligence Loop: engagement event feed, intent scores per account, feedback capture, attribution chart, structured signals from marketing, MQL/SQL/Nurture pipeline, and a "Refine ICP" loop-back action.
+    pgvector powers pattern recognition: as more strategies are created and outcomes recorded, the scoring engine compares new companies against historical "hot" profile embeddings using cosine similarity.
+    All agent runs stream progress to the UI via SSE — the user sees each stage light up as it completes.
+
+Out of scope
+
+    The existing Node.js api-server artifact — untouched, not used
+    User authentication / multi-tenancy (single-user for now)
+    Billing or subscription management
+    Pinecone (pgvector handles all vector storage)
+    Real-time webhook ingestion from Instantly.ai (polling-based response tracking instead)
+
+The Journey: Step-by-Step Build
+🏗️ Floor 1 — Foundation
+
+Step 1: FastAPI service scaffold
+
+Create artifacts/fastapi-server/ as the sole backend. This directory becomes its own Python project.
+
+Structure:
+
+artifacts/fastapi-server/
+  main.py              ← FastAPI app, CORS, router registration, lifespan startup
+  requirements.txt     ← all Python dependencies
+  db/
+    base.py            ← SQLAlchemy engine + session factory
+    models.py          ← all ORM models
+    migrations/        ← Alembic migration folder
+  schemas/             ← Pydantic v2 request/response models
+  routes/              ← FastAPI routers (one file per domain)
+  agents/              ← LangGraph state machines (one file per stage)
+  services/            ← External API clients (each tool wrapped in a service class)
+  seed.py              ← seed script for demo data
+
+Dev command: uvicorn main:app --host 0.0.0.0 --port $PORT --reload. All routes under /api. Add CORS middleware so the React frontend can call it freely.
+
+Dependencies: fastapi, uvicorn[standard], langgraph, langchain-openai, langchain-community, sqlalchemy, alembic, psycopg2-binary, pgvector, pydantic, httpx, python-dotenv, sse-starlette, openai, cryptography.
+
+Step 2: Database schema (SQLAlchemy + Alembic + pgvector)
+
+Define all ORM models in db/models.py. Enable the pgvector extension in the first Alembic migration. Auto-run pending migrations on app startup.
+
+Tables:
+
+Core GTM entities:
+
+    app_settings — stores encrypted API keys per integration (integration_name, api_key_encrypted, is_enabled, last_tested_at, test_status). This is how users configure their tools in-app.
+    strategies — one per GTM campaign (product_name, description, target_market, pain_points_raw, icp_json, personas_json, naics_codes, stakeholder_map_json, use_cases_json, tam_sam_som_json, status, created_at)
+    accounts — discovered companies (company_name, domain, industry, employee_count, revenue_range, tech_stack_json, tier, enrichment_json, strategy_id FK)
+    contacts — individuals at those accounts (account_id FK, strategy_id FK, full_name, title, email, phone, linkedin_url, seniority, department)
+    signals — buying triggers (account_id FK, strategy_id FK, signal_type [funding/hiring/tech/engagement/news], source, summary, strength_score, raw_data_json, detected_at)
+    icp_embeddings — pgvector Vector(1536) column per strategy, storing the OpenAI embedding of the ICP summary for similarity-based pattern matching
+    competitor_profiles — competitor data per strategy (strategy_id FK, name, website, positioning, features_json, pricing_info, weaknesses_json, g2_rating, last_updated)
+
+Scoring and qualification:
+
+    lead_scores — dynamic scores per contact (contact_id FK, icp_fit_score, engagement_score, signal_score, total_score, tier [1/2/3], qualified_at)
+    pattern_clusters — learned signal patterns (strategy_id FK, pattern_name, signal_combination_json, conversion_rate, cluster_embedding Vector(1536), created_at)
+
+Outreach:
+
+    sequences — multi-touch sequence definitions per contact (contact_id FK, strategy_id FK, channel_plan_json, status [draft/active/paused/complete])
+    sequence_steps — individual steps (sequence_id FK, step_number, channel [email/linkedin/call], subject, body, wait_days, send_at, sent_at, status)
+    outreach_events — delivery and engagement events (sequence_step_id FK, event_type [sent/opened/clicked/replied/bounced], occurred_at, raw_data_json)
+    instantly_campaigns — mapping to Instantly.ai campaigns (sequence_id FK, instantly_campaign_id, status, synced_at)
+
+M3 Intelligence Loop:
+
+    engagement_events — all cross-channel engagement (contact_id FK, channel, event_type [page_view/ad_click/video_view/form_fill/email_open], intent_contribution_score, metadata_json, occurred_at)
+    intent_scores — computed intent per account (account_id FK, score, classification [low/medium/high], computed_at)
+    feedback_entries — qualitative signals (contact_id FK nullable, source [survey/nps/form/rating], sentiment [positive/neutral/negative], themes_json, raw_text, captured_at)
+    attribution_events — source-to-conversion mapping (contact_id FK, source_channel, touchpoint_type, conversion_event, conversion_value, occurred_at)
+    qualification_records — MQL/SQL/Nurture decisions (contact_id FK, status [mql/sql/nurture], icp_fit_score, intent_score, engagement_score, decided_at)
+    gtm_loop_updates — loop-back ICP refinements (strategy_id FK, trigger_summary, suggested_icp_delta_json, applied, applied_at)
+
+Step 3: Pydantic schemas
+
+Define Pydantic v2 models in schemas/ mirroring every DB table. FastAPI uses these to validate all inputs, serialize all outputs, and auto-generate the OpenAPI spec.
+
+Step 4: Settings service (in-app API key management)
+
+Create services/settings_service.py. This is the layer that:
+
+    Reads/writes API keys from the app_settings table using AES encryption (via the cryptography library) with a server-side encryption key stored in the ENCRYPTION_KEY environment variable
+    Exposes a get_client(integration_name) method that returns an initialized API client if the key is present and enabled, or None if not
+    Every external call in the platform uses get_client() first — if it returns None, the agent falls back to generating realistic AI-mocked data using GPT-4o mini so the user still gets a useful result
+
+Routes: GET /api/settings/integrations (list all integrations + enabled status), PUT /api/settings/integrations/{name} (save key + toggle enable/disable), POST /api/settings/integrations/{name}/test (call the API with a minimal test request and return success/failure + latency).
+🧠 Floor 2 — S1: Strategy & Discovery Agents
+
+Each S1 feature is a node in a single LangGraph StateGraph (agents/s1_strategy.py). The graph runs sequentially but streams each node's output as an SSE event so the frontend renders results progressively.
+
+Step 5: S1 — ICP Modeling (Feature 01)
+
+Node generate_icp: Takes product_name, description, target_market, pain_points_raw. Calls GPT-4o mini to produce:
+
+    Firmographic filters: industry, company size range, geography, revenue range, tech stack signals
+    3-5 ICP segments ranked by fit likelihood
+    Scoring rules: which firmographic signals qualify a company and by how much
+
+If CRM data is attached (future: CSV upload), extract signals from past closed-won deals to ground the ICP in real data.
+
+Step 6: S1 — Persona Mapping (Feature 02)
+
+Node map_personas: Takes the ICP output. Produces a persona matrix of 3 roles:
+
+    Champion — the internal advocate. Role, goals, daily frustrations, what success looks like for them, preferred communication style.
+    Economic Buyer — the budget holder. What they care about (ROI, risk, timeline), how they evaluate vendors, what objections they typically raise.
+    Blocker — the person who can kill the deal. Their concerns, what reassurances they need, how to handle them.
+
+Also produces persona interaction edges: who influences whom, who needs to be aligned before the deal progresses.
+
+Step 7: S1 — Problem Identification (Feature 03)
+
+Node identify_problems: For each persona, produces a Problem-Solution Map:
+
+    Pain point → buying trigger → product angle
+    E.g.: "VP Sales has no visibility into pipeline health (pain) → they just missed Q3 forecast (trigger) → our product gives real-time deal intelligence (angle)"
+
+This map becomes the source of truth for all messaging generation in S3.
+
+Step 8: S1 — Industry Segmentation (Feature 04)
+
+Node segment_industries: Calls GPT-4o mini to cluster the target market into NAICS-coded verticals and sub-verticals. Ranks each vertical by estimated opportunity size. Uses SerpAPI (if connected) to fetch recent market sizing reports for the top verticals. Falls back to AI-estimated sizes if SerpAPI is not connected.
+
+Step 9: S1 — Buying Center Mapping (Feature 05)
+
+Node map_buying_center: Takes the persona matrix and interaction edges. Produces a structured stakeholder graph:
+
+    Nodes: each persona with role, tier (champion/blocker/economic buyer), and influence score
+    Edges: directional influence relationships with edge labels (e.g., "Champion proposes → Economic Buyer approves", "IT Blocker can veto")
+
+This data structure is passed to the frontend to render as a React Flow interactive graph.
+
+Step 10: S1 — Use Case Definition (Feature 06)
+
+Node define_use_cases: Produces a Use Case Library — one entry per vertical/persona combination:
+
+    Scenario: specific situation this use case addresses
+    Value proposition: what the product delivers for this persona in this vertical
+    Proof point placeholder: where a case study or data point would go
+
+Saves the full strategy to the DB. Generates an OpenAI embedding of the complete ICP summary and stores it in icp_embeddings via pgvector for future pattern matching.
+
+Expose S1 via POST /api/strategies (SSE stream) and GET /api/strategies/{id}.
+🔬 Floor 3 — S2: Market Research & Prospect Scoring Agents
+
+Step 11: S2 — TAM / SAM / SOM Sizing (Feature 01)
+
+Agent node calculate_tam_som: Uses the NAICS segments and ICP criteria from S1. If SerpAPI is connected, fetches recent market size reports. Otherwise, uses GPT-4o mini to produce estimated numbers with confidence ranges. Outputs TAM / SAM / SOM with methodology notes. Saves to strategies.tam_sam_som_json.
+
+Route: POST /api/strategies/{id}/market-sizing (SSE).
+
+Step 12: S2 — Competitive Intelligence (Feature 02)
+
+Agent node research_competitors: Uses GPT-4o mini to identify 3-5 likely competitors based on the product description and ICP. If SerpAPI is connected, fetches recent competitor news, G2/Capterra reviews, and press releases. Produces a competitor matrix per competitor: features comparison, pricing intel, positioning statement, identified weaknesses. Saves to competitor_profiles.
+
+Route: POST /api/strategies/{id}/competitors/run (SSE), GET /api/strategies/{id}/competitors.
+
+Step 13: S2 — Signal Detection (Feature 03)
+
+Agent node detect_signals: Uses SerpAPI (if connected) to query for buying triggers per target company:
+
+    "[company] raises funding"
+    "[company] is hiring [ICP job title]"
+    "[company] switches from [competitor] to [product category]"
+    "[company] expands to [geography]"
+
+If SerpAPI is not connected, generates realistic synthetic signals using GPT-4o mini for the demo accounts. Saves raw signals to signals table.
+
+Route: POST /api/strategies/{id}/signals/run (SSE), GET /api/strategies/{id}/signals.
+
+Step 14: S2 — Pattern Recognition (Feature 04)
+
+Agent node recognize_patterns: Queries all signals and icp_embeddings in the DB. Groups signals by company and uses pgvector cosine similarity to cluster companies whose profiles are close to historically successful ICP embeddings. Identifies signal combinations that co-occur with high-tier leads (e.g., "funding + VP Sales hiring = Tier 1"). Saves discovered patterns to pattern_clusters. These patterns are used as weighted inputs to lead scoring.
+
+Route: POST /api/strategies/{id}/patterns/run, GET /api/strategies/{id}/patterns.
+
+Step 15: S2 — Lead Scoring (Feature 05)
+
+Agent node score_leads: For each contact, computes a composite score (0–100):
+
+    ICP fit score (30%): firmographic match against ICP criteria
+    Signal score (40%): weighted sum of detected signals, boosted by pattern cluster membership
+    Engagement score (30%): pulled from engagement_events if M3 tracking is active; otherwise 0
+    pgvector similarity bonus: if the company's embedding is close to a known "hot" ICP cluster, add a multiplier
+
+Assigns Tier 1 / 2 / 3. Saves to lead_scores. Updates accounts.tier.
+
+Route: POST /api/strategies/{id}/score (SSE), GET /api/contacts?strategy_id={id}&sort=score.
+
+Step 16: S2 — Data Enrichment (Feature 06)
+
+Route POST /api/strategies/{id}/leads/search: The enrichment flow has three layers:
+
+    Apollo.io (if connected): People Search with ICP-derived filters (industry, seniority, job titles) → returns contacts with email, LinkedIn URL, company data
+    Clay (if connected): Pass Apollo contacts through Clay for additional enrichment (tech stack, funding data, headcount growth, verified contact data from Clay's waterfall)
+    AI fallback (if neither connected): GPT-4o mini generates 5-10 realistic synthetic contacts matching the ICP for demo purposes — clearly labeled as "Demo Data"
+
+Persists enriched contacts to contacts and accounts. Triggers lead scoring automatically after enrichment.
+
+Step 17: S2 — Account Prioritization (Feature 07)
+
+After scoring runs, accounts are automatically tiered:
+
+    Tier 1 (score 70–100): Hot — work immediately
+    Tier 2 (score 40–69): Warm — nurture and monitor
+    Tier 3 (score 0–39): Cold — deprioritize
+
+Route GET /api/strategies/{id}/accounts/prioritized returns the tiered list with sort/filter options.
+📬 Floor 4 — S3: 3-Channel Outreach Agents
+
+All S3 agents live in agents/s3_outreach.py as a single LangGraph graph, triggered per contact.
+
+Step 18: S3 — Channel Strategy (Feature 01)
+
+Node plan_channels: Takes the contact's persona type and ICP behavioral profile. Decides the channel mix:
+
+    Email-first: for Economic Buyers and senior titles (VP+, C-suite)
+    LinkedIn-first: for Champions (individual contributors, mid-level)
+    Call-prompt: added as step 3 or 4 for Tier 1 leads only
+
+Output: a channel_plan JSON listing step numbers, channels, and rationale. Saved to sequences.channel_plan_json.
+
+Step 19: S3 — Message Personalization (Feature 02)
+
+Node personalize_messages: For each step in the channel plan, generates a personalized message. Inputs used:
+
+    The contact's title, company, industry
+    The matching persona's pain points and communication style (from S1)
+    The most relevant use case for this persona + vertical (from S1 use case library)
+    Any active signals for this company (from S2)
+
+Output: one message per step, referencing specific signals and pain points. Not generic — the email to a VP of Sales at a Series B fintech hiring SDRs looks different from the one to a CTO at an enterprise healthcare firm.
+
+Step 20: S3 — Sequence Design (Feature 03)
+
+Node build_sequence: Combines the channel plan and personalized messages into a complete multi-touch sequence:
+
+    Step 1 (Day 0): Cold email or LinkedIn connect request
+    Step 2 (Day 3): Follow-up email or LinkedIn message
+    Step 3 (Day 7): Second channel (if email-first, switch to LinkedIn; if LinkedIn-first, send email)
+    Step 4 (Day 12): Call prompt or final email with a soft close
+    Optional if/else branches: if opened but not replied → send follow-up variant; if replied → pause sequence, alert SDR
+
+Saves all steps to sequence_steps.
+
+Step 21: S3 — Timing Optimization (Feature 04)
+
+Node optimize_timing: Adjusts the send_at timestamp for each step based on:
+
+    Contact's timezone (inferred from LinkedIn location or company HQ)
+    Best send-time heuristics: Tuesday–Thursday, 8–10am local time for email; Tuesday–Friday for LinkedIn
+    If engagement history exists (from M3), use the contact's historical peak engagement window instead
+
+Updates sequence_steps.send_at.
+
+Step 22: S3 — Deliverability Optimization (Feature 05)
+
+Service services/deliverability_service.py: Before pushing any campaign to Instantly.ai:
+
+    Check sending volume against warm-up phase limits (ramp: 20 → 50 → 100 → 200 emails/day per domain)
+    Estimate spam score based on message length, link count, and common spam trigger words using GPT-4o mini
+    Return a deliverability report: score (0–100), flagged phrases, recommended changes
+
+Route POST /api/sequences/{id}/deliverability-check returns this report before the user confirms sending.
+
+Step 23: S3 — Outreach Automation via Instantly.ai (Feature 06)
+
+Service services/instantly_service.py (only active if Instantly.ai key is configured in Settings):
+
+    Creates a campaign in Instantly.ai for the strategy
+    Adds the contact with all sequence steps and send-time data
+    Maps the Instantly campaign ID to instantly_campaigns table
+
+Route POST /api/sequences/{id}/launch: checks if Instantly is connected → if yes, push to Instantly; if no, mark sequence as "Simulated" and show a prompt to configure the integration. Returns launch status via SSE.
+
+Step 24: S3 — Response Tracking (Feature 07)
+
+Service services/response_tracking_service.py:
+
+    If Instantly.ai is connected: polls GET /api/v1/emails/list on Instantly every hour (via a background task on FastAPI startup) and syncs open/click/reply/bounce events to outreach_events
+    If not connected: simulates realistic engagement events for demo sequences (20% open rate, 5% reply rate, based on tier)
+
+Route GET /api/sequences/{id}/engagement returns the full engagement timeline per sequence.
+
+Step 25: S3 — SDR Copilot (Feature 08)
+
+Agent agents/sdr_copilot.py: A real-time recommendation engine. For each Tier 1 contact, it evaluates:
+
+    Has a signal fired in the last 48 hours? → "Hot — call today"
+    Sequence step 2 sent, opened 3x but no reply? → "Send this specific follow-up variant now"
+    Reply received → pause sequence, "Alert: prospect replied — respond within 2 hours"
+    LinkedIn connect accepted → "Send intro message now using this template"
+    No engagement after step 3 → "Consider reaching out to a second persona at this account"
+
+Route GET /api/copilot/feed?strategy_id={id} returns a ranked list of next-best-action cards. Route POST /api/copilot/snooze/{contact_id} snoozes a recommendation for 24h.
+🔁 Floor 5 — M3: Capture Signals + Feedback (Intelligence Loop)
+
+Step 26: M3 — Engagement Tracking (Feature 01)
+
+Route POST /api/m3/events: Accepts cross-channel engagement events (contact_id or anonymous visitor fingerprint, channel, event_type, page_url or ad_id, metadata). Designed to receive data from: website pixel, ad platform webhooks, social media APIs, and Instantly.ai engagement sync. Saves to engagement_events. Each event carries an intent_contribution_score (page_view on /pricing = 8, blog post = 2, case study = 6, etc.).
+
+Step 27: M3 — Intent Detection (Feature 02)
+
+Agent agents/m3_intent.py: On-demand via POST /api/m3/score-intent?account_id={id}. Aggregates all engagement_events for the account's contacts in the last 30 days. Computes:
+
+    Recency score: events in the last 7 days weighted 3×
+    Depth score: high-intent pages (pricing, demo request, case studies) weighted higher
+    Frequency score: returning visits, multiple contacts at same company engaging
+    Combines into intent classification: low / medium / high
+
+Saves to intent_scores. High-intent accounts are flagged in the S2 lead scoring pipeline automatically.
+
+Step 28: M3 — Feedback Capture (Feature 03)
+
+Route POST /api/m3/feedback: Accepts qualitative feedback (survey responses, NPS scores, form fills, content ratings). Uses GPT-4o mini to extract: overall sentiment (positive/neutral/negative), key themes mentioned (price objection, feature request, competitor comparison, timing), and pain points referenced. Saves to feedback_entries.
+
+Route GET /api/m3/feedback returns the feed with sentiment badges and theme tags. The themes feed back into S1 ICP refinement via the loop-back step.
+
+Step 29: M3 — Attribution Mapping (Feature 04)
+
+Route POST /api/m3/attribution: Records which marketing touchpoint (ad, blog, email, LinkedIn post, webinar) is associated with a conversion event (demo booked, trial started, deal created). Saves to attribution_events.
+
+Route GET /api/m3/attribution/summary: Aggregates by source channel — showing count of leads, conversions, and estimated revenue attributed to each. Used to power the attribution Sankey or bar chart in the M3 dashboard.
+
+Step 30: M3 — Signal Generation from Engagement (Feature 05)
+
+Background task (runs every 6 hours via FastAPI lifespan startup): Queries engagement_events for accounts showing elevated intent activity (3+ high-intent page views in 7 days, or a pricing page visit after a previous email open). Converts each pattern into a structured signal in the signals table (signal_type = "engagement", source = "m3_tracking") so it flows into the S2 scoring pipeline automatically.
+
+Step 31: M3 — Lead Qualification (Feature 06)
+
+Route POST /api/m3/qualify?contact_id={id}: Combines three scores:
+
+    ICP fit (from lead_scores.icp_fit_score)
+    Intent score (from intent_scores.score)
+    Engagement depth (sum of intent_contribution_scores from engagement_events)
+
+Applies threshold rules: SQL if fit + intent both high; MQL if fit high but intent medium; Nurture otherwise. Saves to qualification_records. Emits a recommended action (hand to SDR for SQL, enroll in nurture sequence for MQL).
+
+Route GET /api/m3/qualification-summary?strategy_id={id} returns counts per status.
+
+Step 32: M3 — GTM Loop-Back (Feature 07)
+
+Route POST /api/m3/loop-back?strategy_id={id}: The self-improvement engine. Gathers:
+
+    Top-performing attribution channels (from attribution_events)
+    Most common feedback themes (from feedback_entries)
+    SQL conversion rates by persona type and vertical
+    Signal patterns that predicted Tier 1 leads most accurately
+
+Sends this performance summary to GPT-4o mini along with the current ICP JSON and asks: "Given this data, what specific fields in the ICP should change? Which personas should be promoted or deprioritized? Which verticals are overperforming or underperforming?" Returns a structured delta JSON showing exactly what would change.
+
+Saves to gtm_loop_updates with applied = false. Shows the diff to the user for review. Route POST /api/m3/loop-back/{id}/apply applies the changes to the live strategy record.
+⚙️ Floor 6 — Settings Page (In-App Integration Configuration)
+
+Step 33: Settings page — integration management
+
+The Settings page is the control center for all external tools. It has one card per integration. Each card shows:
+
+    Integration name and logo
+    Status badge: "Connected" (green) / "Not Connected" (gray) / "Error" (red)
+    Enable/disable toggle
+    API key input field (masked, show/hide toggle)
+    "Test Connection" button that calls POST /api/settings/integrations/{name}/test and shows latency + success/failure inline
+    "Save" button
+
+Integrations configured here:
+
+    SerpAPI — enables live signal detection, market research, competitor news
+    Apollo.io — enables real lead discovery and contact lookup
+    Clay — enables enrichment waterfall layered on top of Apollo
+    Instantly.ai — enables live campaign push, deliverability monitoring, and real response tracking
+
+When an integration is not connected, every feature that uses it shows a subtle "Demo Mode" badge and uses AI-generated data. The app never blocks or errors — it gracefully degrades to AI mock data.
+🎨 Floor 7 — Frontend
+
+Step 34: React+Vite app scaffold
+
+New react-vite artifact at preview path /. A persistent dark sidebar with six navigation items:
+
+    Dashboard (/) — overview metrics: active strategies, total leads scored, sequences launched, top signal today
+    Strategy — S1 (/strategy) — discovery workspace
+    Prospects — S2 (/prospects) — market research and scored lead list
+    Outreach — S3 (/outreach) — sequence builder and SDR copilot
+    Intelligence — M3 (/intelligence) — engagement, intent, attribution, feedback, qualification
+    Settings (/settings) — integration configuration
+
+Delegate all frontend UI to a DESIGN subagent with a high-end dark SaaS dashboard brief. The visual feel should be precise and information-dense — like a Bloomberg terminal crossed with a modern SaaS tool. Every pixel should feel intentional.
+
+Step 35: Dashboard page (/)
+
+Overview cards: active strategies count, total contacts scored, sequences live (via Instantly), highest-intent account right now. A recent activity feed (last 10 signal detections, sequence launches, loop-back updates). A "Start New Strategy" CTA.
+
+Step 36: S1 — Strategy Workspace (/strategy)
+
+Two views:
+
+    New strategy form: product name, description, target market, top pain points, optional file uploads (call transcripts, CRM export CSV). Submit → SSE progress stream showing each node completing: ICP Modeling → Persona Mapping → Problem Identification → Industry Segmentation → Buying Center → Use Cases.
+    Strategy detail view: ICP Firmographics card; three Persona cards (Champion / Blocker / Economic Buyer) with expandable details; Pain Point Map table (pain → trigger → angle per persona); NAICS segment tags; Use Case Library (filterable by persona + vertical); React Flow interactive Stakeholder Graph (nodes = personas, edges = influence relationships).
+
+Step 37: S2 — Prospects page (/prospects)
+
+Three panels:
+
+    Top: TAM/SAM/SOM summary with source methodology note. Competitor matrix table (name, positioning, weaknesses, G2 rating). "Run Research" button triggers S2 agents.
+    Middle: Enriched contact table (Company, Name, Title, Email, LinkedIn, Score badge, Tier badge, Signals count). Inline "Search Leads" and "Detect Signals" buttons. Filter by tier, industry, signal type.
+    Bottom: Signal feed — cards per signal showing: type icon (💰 funding / 👥 hiring / 🔧 tech / 📈 engagement), company, one-line summary, source, detected date, strength score. "Demo Mode" badge if SerpAPI not connected.
+
+Step 38: S3 — Outreach page (/outreach)
+
+Three columns:
+
+    Contact selector: filterable list of Tier 1 contacts with score and tier badge. Clicking a contact loads their detail.
+    Sequence builder: shows channel plan → step-by-step timeline (channel icon, subject, body, send day). "Generate Sequence" button triggers S3 agent (SSE). "Deliverability Check" button shows the pre-send report. "Launch in Instantly" button (grayed with "Connect Instantly" tooltip if not configured).
+    SDR Copilot panel: ranked next-best-action cards for the selected contact. Each card: action type, reason (e.g., "Opened email 3× in 48h"), recommended copy snippet, "Done" / "Snooze" buttons.
+
+Step 39: M3 — Intelligence page (/intelligence)
+
+Multi-section dashboard:
+
+    Intent Leaderboard: table of accounts ranked by current intent score, with classification badges (high/medium/low).
+    Engagement Timeline: line chart of engagement events per channel over last 30 days.
+    Attribution Chart: horizontal bar or Sankey chart — which source drove most MQLs and conversions.
+    Signal Feed (marketing-sourced): same card format as S2 but from engagement_events source.
+    Qualification Pipeline: funnel visualization showing counts at each stage (MQL / SQL / Nurture).
+    Feedback Feed: cards of recent NPS/survey responses with sentiment badge and extracted themes.
+    GTM Loop-Back panel: "Refine ICP" button → triggers loop-back agent (SSE progress) → shows suggested delta as a before/after diff → "Apply Changes" and "Dismiss" buttons.
+
+Step 40: Settings page (/settings)
+
+One card per integration (SerpAPI, Apollo, Clay, Instantly). Status badges, key input, test connection, save. Clear copy explaining what each integration unlocks and what happens without it ("Without this, we generate AI demo data so you can still explore the full workflow").
+🌱 Floor 8 — Config & Seed Data
+
+Step 41: Environment variables
+
+Only two environment variables are required at the infrastructure level:
+
+    DATABASE_URL — PostgreSQL connection string (with pgvector)
+    ENCRYPTION_KEY — used to encrypt API keys stored in the DB (generate with python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+
+All external API keys (SerpAPI, Apollo, Clay, Instantly) are stored in the app_settings DB table and managed through the in-app Settings page. Update replit.md to document this clearly.
+
+Step 42: Seed data
+
+artifacts/fastapi-server/seed.py:
+
+    One complete strategy: "Acme Sales Intelligence Platform" targeting VP of Sales at Series B SaaS companies
+    Two competitors: Gong and Chorus, with realistic mock competitor matrices
+    Five accounts: two Tier 1, two Tier 2, one Tier 3, with enrichment data and tech stacks
+    Eight contacts spread across those accounts, with scores and tier assignments
+    Seven signals: two funding rounds, three hiring posts, one tech change, one engagement signal
+    One complete 4-step outreach sequence for the top Tier 1 contact, marked as "Simulated"
+    Twelve engagement events across three contacts
+    Three feedback entries with sentiment and themes
+    Two attribution events
+    One pattern cluster ("funding + VP Sales hire = Tier 1") derived from the seed signals
+    Pre-computed ICP embedding for the seed strategy (using zeros vector as placeholder to avoid needing an OpenAI call at seed time)
+
+Run with python seed.py.
+Relevant files
+
+    lib/api-spec/openapi.yaml
+    pnpm-workspace.yaml
+    replit.md
