@@ -1,0 +1,128 @@
+ime
+Deployment
+Source
+Log
+2026-05-07 12:19:40.27
+399d0b81
+System
+artifact mode enabled runnable=1 static=1
+2026-05-07 15:12:52.51
+46b9535b
+System
+forwarding local port 0 to external port 80 (mapped as 1104)
+2026-05-07 15:12:52.52
+46b9535b
+System
+baseline ports snapshot before artifact start ports=[1104 1105]
+2026-05-07 15:12:52.52
+46b9535b
+System
+starting artifact processes count=1
+2026-05-07 15:12:52.54
+46b9535b
+System
+starting artifact process port=8080 artifact=artifacts/fastapi-server args=[python3 -m uvicorn main:app --app-dir artifacts/fastapi-server --host 0.0.0.0 --port 8080]
+2026-05-07 15:12:52.57
+46b9535b
+System
+artifact process started pid=20 artifact=artifacts/fastapi-server
+2026-05-07 15:13:01.32
+46b9535b
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/uvicorn/__main__.py", line 4, in <module>
+2026-05-07 15:13:01.32
+46b9535b
+User
+Traceback (most recent call last):
+2026-05-07 15:13:01.32
+46b9535b
+User
+File "<frozen runpy>", line 198, in _run_module_as_main
+2026-05-07 15:13:01.32
+46b9535b
+User
+File "<frozen runpy>", line 88, in _run_code
+2026-05-07 15:13:01.32
+46b9535b
+User
+uvicorn.main()
+2026-05-07 15:13:01.32
+46b9535b
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/click/core.py", line 1514, in __call__
+2026-05-07 15:13:01.32
+46b9535b
+User
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-05-07 15:13:01.32
+46b9535b
+User
+return self.main(*args, **kwargs)
+2026-05-07 15:13:01.32
+46b9535b
+User
+rv = self.invoke(ctx)
+2026-05-07 15:13:01.32
+46b9535b
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/click/core.py", line 853, in invoke
+2026-05-07 15:13:01.32
+46b9535b
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/click/core.py", line 1298, in invoke
+2026-05-07 15:13:01.32
+46b9535b
+User
+return callback(*args, **kwargs)
+2026-05-07 15:13:01.32
+46b9535b
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/uvicorn/main.py", line 412, in main
+2026-05-07 15:13:01.32
+46b9535b
+User
+^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-05-07 15:13:01.33
+46b9535b
+User
+server.run()
+2026-05-07 15:13:01.33
+46b9535b
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/uvicorn/main.py", line 579, in run
+2026-05-07 15:13:01.33
+46b9535b
+User
+run(
+2026-05-07 15:13:01.33
+46b9535b
+User
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-05-07 15:13:01.33
+46b9535b
+User
+File "/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/uvicorn/server.py", line 65, in run
+2026-05-07 15:13:01.33
+46b9535b
+User
+return runner.run(main)
+2026-05-07 15:13:52.52
+46b9535b
+System
+seccomp port detection incomplete, trying /proc/net/tcp fallback expected=[8080] seccompDetected=0
+2026-05-07 15:13:52.52
+46b9535b
+System
+not all artifact ports opened within timeout expected=[8080] detected=0
+2026-05-07 15:13:52.52
+46b9535b
+System
+a port configuration was specified but the required port was never opened
+2026-05-07 15:13:52.52
+46b9535b
+System
+sending SIGTERM to artifact process artifact=artifacts/fastapi-server
+2026-05-07 15:13:52.52
+46b9535b
+System
+all artifact processes stopped
