@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Switch, Route, Router as WouterRouter, useLocation } from "wouter";
 import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import {
@@ -8,6 +8,7 @@ import {
   Show,
   RedirectToSignIn,
   useAuth,
+  useClerk,
 } from "@clerk/react";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -35,11 +36,11 @@ const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as
 // For pk_live_ keys Clerk uses a satellite custom domain
 // (e.g. clerk.gtmos.replit.app) which is not provisioned by Replit. We
 // must route all Clerk traffic through our FastAPI proxy at /api/__clerk
-// instead. Relative URL resolves to the current origin in the browser.
+// instead. Use an absolute URL (Clerk prefers this).
 // pk_test_ keys hit the public *.clerk.accounts.dev FAPI directly and
 // don't need (or want) a proxy in dev.
 const clerkProxyUrl = clerkPubKey?.startsWith("pk_live_")
-  ? "/api/__clerk"
+  ? `${typeof window !== "undefined" ? window.location.origin : ""}/api/__clerk`
   : undefined;
 
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -102,6 +103,36 @@ function SignUpPage() {
   );
 }
 
+function DebugBanner() {
+  const { loaded } = useClerk();
+  const { isLoaded, isSignedIn, userId } = useAuth();
+  const [time, setTime] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTime((x) => x + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+  if (!new URLSearchParams(window.location.search).has("debug")) return null;
+  return (
+    <div
+      style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        background: "#000",
+        color: "#0f0",
+        padding: "8px 12px",
+        font: "12px/1.4 monospace",
+        zIndex: 99999,
+        whiteSpace: "pre",
+        borderBottom: "2px solid #0f0",
+      }}
+    >
+      {`React: OK | t=${time}s | clerkLoaded=${loaded} | authLoaded=${isLoaded} | signedIn=${isSignedIn} | userId=${userId ?? "-"} | pubKey=${clerkPubKey?.slice(0, 16)}... | proxyUrl=${clerkProxyUrl ?? "(none)"} | path=${window.location.pathname}`}
+    </div>
+  );
+}
+
 function AuthBridge() {
   const { getToken, isLoaded, isSignedIn } = useAuth();
   const qc = useQueryClient();
@@ -160,6 +191,7 @@ function ClerkRoutes() {
       }}
     >
       <QueryClientProvider client={queryClient}>
+        <DebugBanner />
         <AuthBridge />
         <TooltipProvider>
           <Switch>
