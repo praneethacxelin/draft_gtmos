@@ -12,6 +12,7 @@ from app.auth import current_user
 from app.db import User
 from app.routes import (
     health,
+    clerk_proxy,
     settings,
     strategies,
     accounts,
@@ -83,6 +84,10 @@ api_prefix = "/api"
 # Public — no auth required. Mounted at the root (outside /api) so every
 # route under /api is guaranteed to require a Clerk session.
 app.include_router(health.router)
+
+# Clerk Frontend API proxy — must be public (no auth) and mounted under
+# /api so the application router forwards /api/__clerk/* to FastAPI.
+app.include_router(clerk_proxy.router, prefix="/api")
 
 
 @app.get(api_prefix + "/me")
