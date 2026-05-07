@@ -87,6 +87,25 @@ def instantly_create_campaign(api_key: str, name: str, sequence_steps: list[dict
         return None
 
 
+def instantly_get_events(api_key: str, campaign_id: str) -> Optional[list[dict]]:
+    """Fetch recent engagement events for a campaign. Returns ``None`` on
+    failure so callers can skip silently."""
+    if not api_key or not campaign_id:
+        return None
+    try:
+        with httpx.Client(timeout=TIMEOUT) as c:
+            r = c.get(
+                "https://api.instantly.ai/api/v1/analytics/campaign/events",
+                params={"api_key": api_key, "campaign_id": campaign_id, "limit": 200},
+            )
+            r.raise_for_status()
+            data = r.json()
+            return data.get("events", []) if isinstance(data, dict) else []
+    except Exception as e:
+        log.warning("instantly_get_events failed: %s", e)
+        return None
+
+
 def test_connection(name: str, api_key: str) -> tuple[bool, str]:
     """Quick connectivity test for a given integration."""
     try:

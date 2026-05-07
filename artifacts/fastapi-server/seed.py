@@ -1,4 +1,6 @@
 """Seed minimal demo data so the UI isn't empty on first load."""
+from datetime import datetime, timedelta
+
 from app.db import (
     init_db,
     SessionLocal,
@@ -11,8 +13,11 @@ from app.db import (
     FeedbackEntry,
     AttributionEvent,
     PatternCluster,
+    Sequence,
+    SequenceStep,
 )
 from app.llm import deterministic_embedding
+from app.services.instantly_poller import simulate_engagement_timeline
 
 
 def main():
@@ -123,6 +128,7 @@ def main():
             ("Bridgewell Cloud", "Jordan Liu", "Head of Growth", "jordan@bridgewell.cloud", "head", "champion", 2),
             ("Pacific Ledger", "Sam Okonkwo", "CRO", "sam@pacificledger.com", "c_suite", "economic_buyer", 2),
             ("Cobaltbase", "Riley Murphy", "Sales Manager", "riley@cobaltbase.io", "manager", "champion", 3),
+            ("Bridgewell Cloud", "Avery Nguyen", "VP Engineering", "avery@bridgewell.cloud", "vp", "blocker", 2),
         ]
         accounts: dict[str, Account] = {}
         for name, dom, ind, emp, rev, tier in seed_accts:
@@ -131,15 +137,19 @@ def main():
             db.flush()
             accounts[name] = a
 
+        seeded_contacts: dict[str, Contact] = {}
         for company, name, title, email, sen, persona, tier in contacts_seed:
             acct = accounts[company]
             score = 85 if tier == 1 else (55 if tier == 2 else 30)
-            db.add(Contact(
+            ct = Contact(
                 account_id=acct.id, strategy_id=s.id, full_name=name, title=title,
                 email=email, seniority=sen, persona_type=persona,
                 icp_fit_score=score, signal_score=score - 10, total_score=score, tier=tier,
                 is_demo=True,
-            ))
+            )
+            db.add(ct)
+            db.flush()
+            seeded_contacts[name] = ct
 
         # Signals
         signals_seed = [
@@ -178,6 +188,55 @@ def main():
         # Attribution
         for ch, conv, val in [("email", "demo_booked", 0), ("linkedin", "trial_started", 0), ("paid_search", "deal_created", 25000)]:
             db.add(AttributionEvent(strategy_id=s.id, source_channel=ch, conversion_event=conv, conversion_value=val))
+
+        # Demo sequence + simulated outreach timeline so the M3 / Outreach
+        # views aren't empty on first load.
+        demo_contact = seeded_contacts.get("Maya Chen")
+        if demo_contact is not None:
+            channel_plan = [
+                {"step": 1, "channel": "email", "wait_days": 0},
+                {"step": 2, "channel": "email", "wait_days": 3},
+                {"step": 3, "channel": "linkedin", "wait_days": 4},
+                {"step": 4, "channel": "call", "wait_days": 5},
+            ]
+            seq = Sequence(
+                contact_id=demo_contact.id,
+                strategy_id=s.id,
+                channel_plan_json=channel_plan,
+                status="simulated",
+                deliverability_score=92.0,
+                deliverability_report_json={
+                    "score": 92, "flagged_phrases": [], "link_count": 1, "avg_length": 480,
+                },
+            )
+            db.add(seq)
+            db.flush()
+            base = datetime.utcnow().replace(hour=9, minute=0, second=0, microsecond=0)
+            cumulative = 0
+            messages = [
+                ("Quick idea on Linear Stack's pipeline visibility",
+                 "Hi Maya — congrats on the Series B. Most teams hitting your ARR run into forecast variance issues around now; we typically cut that by ~30% in the first quarter. Worth a 15-min look?"),
+                ("Following up — forecast accuracy benchmark",
+                 "Maya, sharing a benchmark from a similar Series B SaaS team: forecast accuracy moved from 62% to 88% in 90 days. Happy to send the case study if useful."),
+                (None,
+                 "Hi Maya — saw the SDR hiring spree at Linear Stack. Would love to share how peer Series B teams ramp new SDRs with embedded intent scoring. Open to a quick chat?"),
+                (None,
+                 "Talking points: 1) Forecast variance benchmark vs peers. 2) Intent scoring for new SDR ramp. 3) Salesforce + Gong integration depth."),
+            ]
+            for plan, (subject, body) in zip(channel_plan, messages):
+                cumulative += plan["wait_days"]
+                send_at = base + timedelta(days=cumulative)
+                db.add(SequenceStep(
+                    sequence_id=seq.id,
+                    step_number=plan["step"],
+                    channel=plan["channel"],
+                    subject=subject,
+                    body=body,
+                    wait_days=plan["wait_days"],
+                    send_at=send_at,
+                ))
+            db.commit()
+            simulate_engagement_timeline(db, seq.id)
 
         # Pattern cluster
         db.add(PatternCluster(

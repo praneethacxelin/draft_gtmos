@@ -3,9 +3,10 @@ import json
 import random
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
-from app.db import Strategy, Contact, Sequence, SequenceStep, Account, InstantlyCampaign
+from app.db import Strategy, Contact, Sequence, SequenceStep, Account, InstantlyCampaign, OutreachEvent
 from app.llm import chat_json, chat_text
 from app.services import settings_service, clients
+from app.services.instantly_poller import simulate_engagement_timeline
 
 
 SPAM_TRIGGERS = ["free", "guarantee", "$$$", "act now", "click here", "buy now", "no risk"]
@@ -167,13 +168,21 @@ def launch_sequence(db: Session, sequence_id: str) -> dict:
                 instantly_campaign_id=str(campaign_id),
                 status="active",
             ))
+            # Record initial "sent" outreach events; the hourly poller will
+            # backfill opens/clicks/replies as Instantly reports them.
+            for s in steps:
+                s.sent_at = datetime.utcnow()
+                s.status = "sent"
+                db.add(OutreachEvent(
+                    sequence_id=seq.id,
+                    sequence_step_id=s.id,
+                    event_type="sent",
+                    raw_data_json={"instantly_campaign_id": campaign_id},
+                ))
         db.commit()
         return {"status": "active", "instantly_pushed": True, "campaign_id": campaign_id}
     else:
         seq.status = "simulated"
-        # Mark as sent and synthesize some engagement events
-        for s in steps:
-            s.sent_at = datetime.utcnow()
-            s.status = "sent"
         db.commit()
-        return {"status": "simulated", "instantly_pushed": False}
+        ingested = simulate_engagement_timeline(db, seq.id)
+        return {"status": "simulated", "instantly_pushed": False, "events": ingested}

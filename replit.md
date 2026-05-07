@@ -4,9 +4,10 @@
 
 ## Run & Operate
 
-- API:  `python3 -m uvicorn main:app --host 0.0.0.0 --port $PORT` (in `artifacts/api-server/`)
+- API:  `python3 -m uvicorn main:app --host 0.0.0.0 --port $PORT` (in `artifacts/fastapi-server/`)
 - Web:  `vite --host 0.0.0.0` (in `artifacts/app/`)
-- Seed: `python3 artifacts/api-server/seed.py`
+- Seed: `python3 artifacts/fastapi-server/seed.py`
+- Migrations are applied automatically on API startup via Alembic (`alembic upgrade head` in `lifespan`).
 - Required env: `DATABASE_URL`, `ENCRYPTION_KEY`, `AI_INTEGRATIONS_OPENAI_BASE_URL`, `AI_INTEGRATIONS_OPENAI_API_KEY`
 - All third-party tool keys (SerpAPI, Apollo, Clay, Instantly) are managed in-app via Settings — encrypted with Fernet in the `app_settings` table.
 
@@ -19,7 +20,7 @@
 
 ## Where things live
 
-- `artifacts/api-server/` — FastAPI service (no Node code anywhere).
+- `artifacts/fastapi-server/` — FastAPI service (no Node code anywhere).
   - `main.py` — app factory + router mounting under `/api`.
   - `app/db.py` — all SQLAlchemy models. Source of truth for schema.
   - `app/agents/` — S1 strategy SSE pipeline, S2 lead/signal/scoring/pattern, S3 outreach generator, SDR copilot, M3 intent/qualify/loop-back.

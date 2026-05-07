@@ -1,20 +1,28 @@
 """SDR Copilot — next-best-action recommendations."""
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
-from app.db import Contact, Sequence, SequenceStep, OutreachEvent, Signal
+from app.db import Contact, Sequence, SequenceStep, OutreachEvent, Signal, ContactSnooze
 
 
 def feed(db: Session, strategy_id: str, limit: int = 25) -> list[dict]:
     out = []
+    now = datetime.utcnow()
+    snoozed_ids = {
+        row.contact_id for row in db.query(ContactSnooze)
+        .filter(ContactSnooze.strategy_id == strategy_id)
+        .filter(ContactSnooze.snoozed_until > now)
+        .all()
+    }
     contacts = (
         db.query(Contact)
         .filter(Contact.strategy_id == strategy_id, Contact.tier == 1)
         .order_by(Contact.total_score.desc())
-        .limit(limit)
+        .limit(limit + len(snoozed_ids))
         .all()
     )
+    contacts = [c for c in contacts if c.id not in snoozed_ids][:limit]
 
-    cutoff = datetime.utcnow() - timedelta(hours=48)
+    cutoff = now - timedelta(hours=48)
 
     for c in contacts:
         # Recent signal?

@@ -300,6 +300,17 @@ class QualificationRecord(Base):
     decided_at = Column(DateTime, default=now)
 
 
+class ContactSnooze(Base):
+    __tablename__ = "contact_snoozes"
+    id = Column(String, primary_key=True, default=gen_id)
+    contact_id = Column(String, ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False)
+    strategy_id = Column(String, ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False)
+    snoozed_until = Column(DateTime, nullable=False)
+    reason = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=now)
+    updated_at = Column(DateTime, default=now, onupdate=now)
+
+
 class GtmLoopUpdate(Base):
     __tablename__ = "gtm_loop_updates"
     id = Column(String, primary_key=True, default=gen_id)
