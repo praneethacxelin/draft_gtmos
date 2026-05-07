@@ -21,6 +21,7 @@ from app.routes import (
     dashboard,
 )
 from app.services.instantly_poller import poll_loop
+from app.services.m3_tracking import m3_loop
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("gtm")
@@ -45,15 +46,17 @@ async def lifespan(app: FastAPI):
     _run_migrations()
     log.info("Alembic migrations applied")
     poller = asyncio.create_task(poll_loop())
-    log.info("Instantly engagement poller started")
+    m3 = asyncio.create_task(m3_loop())
+    log.info("Background tasks started: Instantly poller (1h), M3 tracker (6h)")
     try:
         yield
     finally:
-        poller.cancel()
-        try:
-            await poller
-        except (asyncio.CancelledError, Exception):
-            pass
+        for t in (poller, m3):
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
 
 
 app = FastAPI(title="Agentic GTM Factory API", version="0.1.0", lifespan=lifespan)

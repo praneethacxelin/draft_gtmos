@@ -92,7 +92,7 @@ class IcpEmbedding(Base):
     __tablename__ = "icp_embeddings"
     id = Column(String, primary_key=True, default=gen_id)
     strategy_id = Column(String, ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False)
-    embedding = Column(Vector(384), nullable=False)
+    embedding = Column(Vector(1536), nullable=False)
     summary = Column(Text, nullable=True)
     created_at = Column(DateTime, default=now)
 
@@ -168,7 +168,7 @@ class PatternCluster(Base):
     pattern_name = Column(String, nullable=False)
     signal_combination_json = Column(JSONB, nullable=True)
     conversion_rate = Column(Float, default=0.0)
-    cluster_embedding = Column(Vector(384), nullable=True)
+    cluster_embedding = Column(Vector(1536), nullable=True)
     created_at = Column(DateTime, default=now)
 
 

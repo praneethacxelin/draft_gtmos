@@ -59,7 +59,7 @@ def chat_text(prompt: str, system: str = "You are a helpful sales strategist.", 
         return f"[LLM error: {e}]"
 
 
-def deterministic_embedding(text_in: str, dim: int = 384) -> list[float]:
+def deterministic_embedding(text_in: str, dim: int = 1536) -> list[float]:
     """Generate a deterministic 384-dim 'embedding' from text using SHA256.
 
     The Replit AI Integrations OpenAI proxy does not expose the embeddings

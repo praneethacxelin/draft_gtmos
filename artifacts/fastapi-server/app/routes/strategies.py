@@ -64,18 +64,27 @@ def delete_strategy(strategy_id: str, db: Session = Depends(get_session)) -> dic
     return {"ok": True}
 
 
-@router.get("/{strategy_id}/run")
-async def run_s1_stream(strategy_id: str):
-    """Stream S1 generation progress via SSE."""
+def _s1_event_gen(strategy_id: str):
     async def event_gen():
-        # Use a fresh session per stream to avoid leaking the request session
         db2 = SessionLocal()
         try:
             async for ev in stream_s1(db2, strategy_id):
                 yield {"event": ev["event"], "data": json.dumps(ev["data"])}
         finally:
             db2.close()
-    return EventSourceResponse(event_gen())
+    return event_gen
+
+
+@router.post("/{strategy_id}/run")
+async def run_s1_stream_post(strategy_id: str):
+    """Trigger and stream the S1 LangGraph pipeline via SSE (POST)."""
+    return EventSourceResponse(_s1_event_gen(strategy_id)())
+
+
+@router.get("/{strategy_id}/run")
+async def run_s1_stream_get(strategy_id: str):
+    """Backwards-compatible GET variant for browsers using EventSource()."""
+    return EventSourceResponse(_s1_event_gen(strategy_id)())
 
 
 def _sse(coro_or_value, label: str):
