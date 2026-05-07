@@ -2,63 +2,101 @@
 
 Replit's production build automatically sets VITE_CLERK_PROXY_URL to
 /api/__clerk so that Clerk JS loads through the app domain.  This
-route forwards those requests to https://frontend-api.clerk.dev with
-the required Clerk-Proxy-Url and Clerk-Secret-Key headers.
-
-Only active in production (NODE_ENV=production). In development Clerk
-loads directly from the CDN — this bypass is intentional per Clerk docs.
+route forwards those requests to the instance-specific Clerk FAPI domain
+derived from CLERK_PUBLISHABLE_KEY, with the required Clerk-Proxy-Url
+and Clerk-Secret-Key headers.
 """
-import os
+import base64
 import logging
+import os
+
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
 log = logging.getLogger("gtm.clerk_proxy")
-
 router = APIRouter()
 
-CLERK_FAPI = "https://frontend-api.clerk.dev"
 CLERK_PROXY_PATH = "/api/__clerk"
 
 # Hop-by-hop headers that must not be forwarded
 _HOP_HEADERS = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailers", "transfer-encoding", "upgrade",
-    "content-encoding",  # httpx decodes for us
+    "content-encoding",
 }
 
 
-@router.api_route("/__clerk/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
+def _fapi_domain() -> str:
+    """Derive the Clerk Frontend API domain from the publishable key.
+
+    Format: pk_test_{base64(fapi_domain)} or pk_live_{base64(fapi_domain)}
+    """
+    key = os.environ.get("CLERK_PUBLISHABLE_KEY", "")
+    parts = key.split("_", 2)
+    if len(parts) != 3:
+        return "clerk.accounts.dev"
+    raw = parts[2].rstrip("$")
+    # Restore base64 padding
+    raw += "=" * (4 - len(raw) % 4)
+    try:
+        return base64.b64decode(raw).decode("utf-8").rstrip("$").strip()
+    except Exception:
+        return "clerk.accounts.dev"
+
+
+@router.api_route(
+    "/__clerk/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+)
 async def clerk_proxy(path: str, request: Request) -> Response:
     secret_key = os.environ.get("CLERK_SECRET_KEY", "")
     if not secret_key:
         log.warning("CLERK_SECRET_KEY not set — Clerk proxy returning 503")
         return Response(status_code=503, content="Clerk proxy not configured")
 
+    fapi = _fapi_domain()
+    target_url = f"https://{fapi}/{path}"
+    if request.url.query:
+        target_url += f"?{request.url.query}"
+
     # Build Clerk-Proxy-Url from the incoming request
     proto = request.headers.get("x-forwarded-proto", "https")
     forwarded_host = request.headers.get("x-forwarded-host", "")
-    host = forwarded_host.split(",")[0].strip() if forwarded_host else request.headers.get("host", "")
+    host = (
+        forwarded_host.split(",")[0].strip()
+        if forwarded_host
+        else request.headers.get("host", "")
+    )
     proxy_url = f"{proto}://{host}{CLERK_PROXY_PATH}"
+
+    # Determine whether this is a static npm bundle request.
+    # npm/* paths need special handling: if we send Clerk-Proxy-Url,
+    # FAPI will redirect BACK to our proxy (loop). Without it, FAPI
+    # redirects to the versioned CDN URL which resolves correctly.
+    is_npm_path = path.startswith("npm/")
 
     # Forward headers, stripping hop-by-hop and injecting Clerk headers
     forward_headers = {
-        k: v for k, v in request.headers.items()
+        k: v
+        for k, v in request.headers.items()
         if k.lower() not in _HOP_HEADERS
     }
-    forward_headers["Clerk-Proxy-Url"] = proxy_url
-    forward_headers["Clerk-Secret-Key"] = secret_key
+    if not is_npm_path:
+        forward_headers["Clerk-Proxy-Url"] = proxy_url
+        forward_headers["Clerk-Secret-Key"] = secret_key
+    # Must target the correct FAPI host
+    forward_headers["host"] = fapi
 
     # Preserve client IP
     xff = request.headers.get("x-forwarded-for", "")
-    client_ip = xff.split(",")[0].strip() if xff else (request.client.host if request.client else "")
+    client_ip = (
+        xff.split(",")[0].strip()
+        if xff
+        else (request.client.host if request.client else "")
+    )
     if client_ip:
         forward_headers["X-Forwarded-For"] = client_ip
-
-    target_url = f"{CLERK_FAPI}/{path}"
-    if request.url.query:
-        target_url += f"?{request.url.query}"
 
     body = await request.body()
 
@@ -71,7 +109,8 @@ async def clerk_proxy(path: str, request: Request) -> Response:
         )
 
     response_headers = {
-        k: v for k, v in upstream.headers.items()
+        k: v
+        for k, v in upstream.headers.items()
         if k.lower() not in _HOP_HEADERS
     }
 
