@@ -4,7 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
-from app.db import get_session, SessionLocal, Strategy, Competitor, PatternCluster
+from app.db import get_session, SessionLocal, Strategy, Competitor, PatternCluster, User
+from app.auth import current_user
+from app.scoping import own_strategy
 from app.agents.s1_strategy import run_s1
 from app.agents.s1_graph import stream_s1
 from app.agents.s2_signals import (
@@ -27,14 +29,27 @@ class StrategyCreate(BaseModel):
 
 
 @router.get("")
-def list_strategies(db: Session = Depends(get_session)) -> list[dict]:
-    rows = db.query(Strategy).order_by(Strategy.created_at.desc()).all()
+def list_strategies(
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> list[dict]:
+    rows = (
+        db.query(Strategy)
+        .filter(Strategy.user_id == user.id)
+        .order_by(Strategy.created_at.desc())
+        .all()
+    )
     return [_serialize(r) for r in rows]
 
 
 @router.post("")
-def create_strategy(body: StrategyCreate, db: Session = Depends(get_session)) -> dict:
+def create_strategy(
+    body: StrategyCreate,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
     s = Strategy(
+        user_id=user.id,
         product_name=body.product_name,
         description=body.description,
         target_market=body.target_market,
@@ -47,18 +62,21 @@ def create_strategy(body: StrategyCreate, db: Session = Depends(get_session)) ->
 
 
 @router.get("/{strategy_id}")
-def get_strategy(strategy_id: str, db: Session = Depends(get_session)) -> dict:
-    s = db.query(Strategy).filter(Strategy.id == strategy_id).first()
-    if not s:
-        raise HTTPException(404, "Not found")
-    return _serialize(s)
+def get_strategy(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    return _serialize(own_strategy(db, strategy_id, user))
 
 
 @router.delete("/{strategy_id}")
-def delete_strategy(strategy_id: str, db: Session = Depends(get_session)) -> dict:
-    s = db.query(Strategy).filter(Strategy.id == strategy_id).first()
-    if not s:
-        raise HTTPException(404, "Not found")
+def delete_strategy(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    s = own_strategy(db, strategy_id, user)
     db.delete(s)
     db.commit()
     return {"ok": True}
@@ -76,14 +94,24 @@ def _s1_event_gen(strategy_id: str):
 
 
 @router.post("/{strategy_id}/run")
-async def run_s1_stream_post(strategy_id: str):
+async def run_s1_stream_post(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+):
     """Trigger and stream the S1 LangGraph pipeline via SSE (POST)."""
+    own_strategy(db, strategy_id, user)
     return EventSourceResponse(_s1_event_gen(strategy_id)())
 
 
 @router.get("/{strategy_id}/run")
-async def run_s1_stream_get(strategy_id: str):
+async def run_s1_stream_get(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+):
     """Backwards-compatible GET variant for browsers using EventSource()."""
+    own_strategy(db, strategy_id, user)
     return EventSourceResponse(_s1_event_gen(strategy_id)())
 
 
@@ -105,17 +133,32 @@ def _sse(coro_or_value, label: str):
 
 
 @router.post("/{strategy_id}/market-sizing")
-async def market_sizing(strategy_id: str):
+async def market_sizing(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+):
+    own_strategy(db, strategy_id, user)
     return _sse(lambda d: run_market_sizing(d, strategy_id), "market_sizing")
 
 
 @router.post("/{strategy_id}/competitors/run")
-async def run_competitor_research(strategy_id: str):
+async def run_competitor_research(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+):
+    own_strategy(db, strategy_id, user)
     return _sse(lambda d: run_competitors(d, strategy_id), "competitors")
 
 
 @router.get("/{strategy_id}/competitors")
-def list_competitors(strategy_id: str, db: Session = Depends(get_session)) -> list[dict]:
+def list_competitors(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> list[dict]:
+    own_strategy(db, strategy_id, user)
     rows = db.query(Competitor).filter(Competitor.strategy_id == strategy_id).all()
     return [{
         "id": r.id,
@@ -130,31 +173,56 @@ def list_competitors(strategy_id: str, db: Session = Depends(get_session)) -> li
 
 
 @router.post("/{strategy_id}/leads/search")
-async def lead_search(strategy_id: str):
+async def lead_search(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+):
+    own_strategy(db, strategy_id, user)
     return _sse(lambda d: run_lead_search(d, strategy_id), "leads")
 
 
 @router.post("/{strategy_id}/signals/run")
-async def signals_run(strategy_id: str):
+async def signals_run(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+):
+    own_strategy(db, strategy_id, user)
     return _sse(lambda d: run_signals(d, strategy_id), "signals")
 
 
 @router.post("/{strategy_id}/score")
-def score_run(strategy_id: str):
+def score_run(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+):
+    own_strategy(db, strategy_id, user)
     async def _run(d):
         return score_leads(d, strategy_id)
     return _sse(_run, "score")
 
 
 @router.post("/{strategy_id}/patterns/run")
-def patterns_run(strategy_id: str):
+def patterns_run(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+):
+    own_strategy(db, strategy_id, user)
     async def _run(d):
         return recognize_patterns(d, strategy_id)
     return _sse(_run, "patterns")
 
 
 @router.get("/{strategy_id}/patterns")
-def patterns_list(strategy_id: str, db: Session = Depends(get_session)) -> list[dict]:
+def patterns_list(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> list[dict]:
+    own_strategy(db, strategy_id, user)
     rows = db.query(PatternCluster).filter(PatternCluster.strategy_id == strategy_id).all()
     return [{
         "id": r.id,

@@ -1,12 +1,19 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from app.db import get_session, Signal, Account
+from app.db import get_session, Signal, Account, User
+from app.auth import current_user
+from app.scoping import own_strategy
 
 router = APIRouter(prefix="/signals", tags=["signals"])
 
 
 @router.get("")
-def list_signals(strategy_id: str, db: Session = Depends(get_session)) -> list[dict]:
+def list_signals(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> list[dict]:
+    own_strategy(db, strategy_id, user)
     rows = (
         db.query(Signal)
         .filter(Signal.strategy_id == strategy_id)
@@ -14,7 +21,12 @@ def list_signals(strategy_id: str, db: Session = Depends(get_session)) -> list[d
         .limit(100)
         .all()
     )
-    accounts = {a.id: a for a in db.query(Account).filter(Account.strategy_id == strategy_id).all()}
+    accounts = {
+        a.id: a
+        for a in db.query(Account)
+        .filter(Account.strategy_id == strategy_id, Account.user_id == user.id)
+        .all()
+    }
     return [{
         "id": s.id,
         "signal_type": s.signal_type,

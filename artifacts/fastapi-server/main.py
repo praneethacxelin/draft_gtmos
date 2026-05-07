@@ -3,11 +3,13 @@ import logging
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from alembic import command
 from alembic.config import Config
 
+from app.auth import current_user
+from app.db import User
 from app.routes import (
     health,
     settings,
@@ -70,7 +72,22 @@ app.add_middleware(
 )
 
 api_prefix = "/api"
-app.include_router(health.router, prefix=api_prefix)
+
+# Public — no auth required. Mounted at the root (outside /api) so every
+# route under /api is guaranteed to require a Clerk session.
+app.include_router(health.router)
+
+
+@app.get(api_prefix + "/me")
+def me(user: User = Depends(current_user)) -> dict:
+    return {"id": user.id, "email": user.email}
+
+
+# Authenticated — every route below already declares
+# ``user: User = Depends(current_user)`` on each endpoint, which both
+# enforces auth and provides the user object. We deliberately avoid
+# adding a duplicate router-level ``dependencies=[Depends(current_user)]``
+# here so JWKS verification + DB upsert run only once per request.
 app.include_router(settings.router, prefix=api_prefix)
 app.include_router(strategies.router, prefix=api_prefix)
 app.include_router(accounts.router, prefix=api_prefix)

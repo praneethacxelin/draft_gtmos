@@ -2,19 +2,31 @@ import json
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
-from app.db import get_session, SessionLocal, Sequence, SequenceStep, OutreachEvent
+from app.db import get_session, SessionLocal, Sequence, SequenceStep, OutreachEvent, User
+from app.auth import current_user
+from app.scoping import own_contact, own_sequence
 from app.agents.s3_outreach import generate_sequence, deliverability_check, launch_sequence
 
 router = APIRouter(prefix="/sequences", tags=["sequences"])
 
 
 @router.post("/generate/{contact_id}")
-def generate(contact_id: str, db: Session = Depends(get_session)) -> dict:
+def generate(
+    contact_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    own_contact(db, contact_id, user)
     return generate_sequence(db, contact_id)
 
 
 @router.get("/by-contact/{contact_id}")
-def by_contact(contact_id: str, db: Session = Depends(get_session)) -> dict | None:
+def by_contact(
+    contact_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict | None:
+    own_contact(db, contact_id, user)
     seq = db.query(Sequence).filter(Sequence.contact_id == contact_id).first()
     if not seq:
         return None
@@ -41,13 +53,23 @@ def by_contact(contact_id: str, db: Session = Depends(get_session)) -> dict | No
 
 
 @router.post("/{sequence_id}/deliverability-check")
-def check(sequence_id: str, db: Session = Depends(get_session)) -> dict:
+def check(
+    sequence_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    own_sequence(db, sequence_id, user)
     return deliverability_check(db, sequence_id)
 
 
 @router.post("/{sequence_id}/launch")
-def launch(sequence_id: str):
+def launch(
+    sequence_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+):
     """Stream launch progress (Instantly push or simulated send)."""
+    own_sequence(db, sequence_id, user)
     async def gen():
         yield {"event": "stage_start", "data": json.dumps({"stage": "launch"})}
         db2 = SessionLocal()
@@ -63,7 +85,12 @@ def launch(sequence_id: str):
 
 
 @router.get("/{sequence_id}/engagement")
-def engagement(sequence_id: str, db: Session = Depends(get_session)) -> list[dict]:
+def engagement(
+    sequence_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> list[dict]:
+    own_sequence(db, sequence_id, user)
     rows = db.query(OutreachEvent).filter(OutreachEvent.sequence_id == sequence_id).order_by(OutreachEvent.occurred_at.desc()).all()
     return [{
         "event_type": r.event_type,

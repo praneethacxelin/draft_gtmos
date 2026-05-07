@@ -19,6 +19,7 @@ from sqlalchemy import (
     Text,
     ForeignKey,
     JSON,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, Session, relationship
@@ -51,13 +52,28 @@ def now() -> datetime:
     return datetime.utcnow()
 
 
+# ---------- Users (Clerk-authenticated) ----------
+
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(String, primary_key=True)  # Clerk user id (e.g. user_xxx)
+    email = Column(String, nullable=True)
+    created_at = Column(DateTime, default=now)
+    updated_at = Column(DateTime, default=now, onupdate=now)
+
+
 # ---------- Settings (in-app integration config) ----------
 
 
 class AppSetting(Base):
     __tablename__ = "app_settings"
+    __table_args__ = (
+        UniqueConstraint("user_id", "integration_name", name="uq_app_settings_user_integration"),
+    )
     id = Column(String, primary_key=True, default=gen_id)
-    integration_name = Column(String, unique=True, nullable=False)  # serpapi/apollo/clay/instantly
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    integration_name = Column(String, nullable=False)  # serpapi/apollo/clay/instantly
     api_key_encrypted = Column(Text, nullable=True)
     is_enabled = Column(Boolean, default=False, nullable=False)
     last_tested_at = Column(DateTime, nullable=True)
@@ -72,6 +88,7 @@ class AppSetting(Base):
 class Strategy(Base):
     __tablename__ = "strategies"
     id = Column(String, primary_key=True, default=gen_id)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     product_name = Column(String, nullable=False)
     description = Column(Text, nullable=False)
     target_market = Column(Text, nullable=True)
@@ -114,6 +131,7 @@ class Competitor(Base):
 class Account(Base):
     __tablename__ = "accounts"
     id = Column(String, primary_key=True, default=gen_id)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     strategy_id = Column(String, ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False)
     company_name = Column(String, nullable=False)
     domain = Column(String, nullable=True)
@@ -129,6 +147,7 @@ class Account(Base):
 class Contact(Base):
     __tablename__ = "contacts"
     id = Column(String, primary_key=True, default=gen_id)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     account_id = Column(String, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False)
     strategy_id = Column(String, ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False)
     full_name = Column(String, nullable=False)

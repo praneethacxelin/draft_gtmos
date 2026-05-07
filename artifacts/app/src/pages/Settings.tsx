@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useUser, useClerk } from "@clerk/react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,7 +12,7 @@ import {
   useTestIntegration,
   Integration,
 } from "@/hooks/useSettings";
-import { Plug, Check, AlertCircle, KeyRound } from "lucide-react";
+import { Plug, Check, AlertCircle, KeyRound, LogOut, UserRound } from "lucide-react";
 
 export function Settings() {
   const { data: integrations } = useIntegrations();
@@ -23,6 +24,8 @@ export function Settings() {
         title="Integrations"
         subtitle="Plug in optional tools to upgrade GTM Factory from AI demo data to real signals and outreach. Keys are encrypted in the database."
       />
+
+      <AccountCard />
 
       <Card className="mb-6 border-card-border bg-card p-4">
         <div className="flex items-start gap-3">
@@ -43,6 +46,49 @@ export function Settings() {
         ))}
       </div>
     </>
+  );
+}
+
+function AccountCard() {
+  const { user, isLoaded } = useUser();
+  const { signOut } = useClerk();
+
+  const email =
+    user?.primaryEmailAddress?.emailAddress ||
+    user?.emailAddresses?.[0]?.emailAddress;
+  const name = user?.fullName || user?.firstName || email || "Signed in";
+
+  return (
+    <Card className="mb-6 border-card-border bg-card p-5" data-testid="card-account">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/15 text-primary">
+            <UserRound className="h-5 w-5" />
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
+              Signed in as
+            </div>
+            <div className="text-sm font-semibold" data-testid="text-account-name">
+              {isLoaded ? name : "Loading…"}
+            </div>
+            {email && email !== name && (
+              <div className="text-xs text-muted-foreground" data-testid="text-account-email">
+                {email}
+              </div>
+            )}
+          </div>
+        </div>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => signOut()}
+          data-testid="button-sign-out"
+        >
+          <LogOut className="mr-2 h-4 w-4" /> Sign out
+        </Button>
+      </div>
+    </Card>
   );
 }
 

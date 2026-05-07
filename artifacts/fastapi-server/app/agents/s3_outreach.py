@@ -149,7 +149,9 @@ def launch_sequence(db: Session, sequence_id: str) -> dict:
     if not seq:
         return {"error": "Sequence not found"}
 
-    instantly_key = settings_service.get_key(db, "instantly")
+    strategy = db.query(Strategy).filter(Strategy.id == seq.strategy_id).first() if seq.strategy_id else None
+    owner_id = strategy.user_id if strategy else None
+    instantly_key = settings_service.get_key(db, owner_id, "instantly")
     steps = db.query(SequenceStep).filter(SequenceStep.sequence_id == sequence_id).order_by(SequenceStep.step_number).all()
 
     if instantly_key:

@@ -13,7 +13,7 @@ async def run_market_sizing(db: Session, strategy_id: str) -> dict:
     if not strategy:
         return {"error": "Strategy not found"}
 
-    serp_key = settings_service.get_key(db, "serpapi")
+    serp_key = settings_service.get_key(db, strategy.user_id, "serpapi")
     serp_context = ""
     if serp_key and strategy.naics_json:
         # Pull a quick sizing snippet from SerpAPI
@@ -42,7 +42,7 @@ async def run_competitors(db: Session, strategy_id: str) -> list[dict]:
     if not strategy:
         return []
 
-    serp_key = settings_service.get_key(db, "serpapi")
+    serp_key = settings_service.get_key(db, strategy.user_id, "serpapi")
     competitors = chat_json(
         f"For product '{strategy.product_name}': {strategy.description}. "
         "Identify 4 likely competitors. Return JSON with key 'competitors' = array of "
@@ -82,8 +82,8 @@ async def run_lead_search(db: Session, strategy_id: str) -> dict:
     if not strategy:
         return {"error": "Strategy not found"}
 
-    apollo_key = settings_service.get_key(db, "apollo")
-    clay_key = settings_service.get_key(db, "clay")
+    apollo_key = settings_service.get_key(db, strategy.user_id, "apollo")
+    clay_key = settings_service.get_key(db, strategy.user_id, "clay")
 
     icp = strategy.icp_json or {}
     titles = []
@@ -144,6 +144,7 @@ async def run_lead_search(db: Session, strategy_id: str) -> dict:
             account = new_accounts.get(company)
             if not account:
                 account = Account(
+                    user_id=strategy.user_id,
                     strategy_id=strategy_id,
                     company_name=company,
                     domain=org.get("primary_domain") or org.get("website_url"),
@@ -158,6 +159,7 @@ async def run_lead_search(db: Session, strategy_id: str) -> dict:
                 new_accounts[company] = account
                 newly_added_accounts.append(company)
             contact = Contact(
+                user_id=strategy.user_id,
                 account_id=account.id,
                 strategy_id=strategy_id,
                 full_name=p.get("name") or "Unknown",
@@ -183,6 +185,7 @@ async def run_lead_search(db: Session, strategy_id: str) -> dict:
             account = new_accounts.get(company)
             if not account:
                 account = Account(
+                    user_id=strategy.user_id,
                     strategy_id=strategy_id,
                     company_name=company,
                     domain=p.get("domain"),
@@ -197,6 +200,7 @@ async def run_lead_search(db: Session, strategy_id: str) -> dict:
                 new_accounts[company] = account
                 newly_added_accounts.append(company)
             contact = Contact(
+                user_id=strategy.user_id,
                 account_id=account.id,
                 strategy_id=strategy_id,
                 full_name=p.get("full_name", "Unknown"),
@@ -227,7 +231,10 @@ async def run_lead_search(db: Session, strategy_id: str) -> dict:
 
 async def run_signals(db: Session, strategy_id: str) -> dict:
     """Detect buying signals per account."""
-    serp_key = settings_service.get_key(db, "serpapi")
+    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    if not strategy:
+        return {"signals_added": 0}
+    serp_key = settings_service.get_key(db, strategy.user_id, "serpapi")
     accounts = db.query(Account).filter(Account.strategy_id == strategy_id).limit(10).all()
     if not accounts:
         return {"signals_added": 0}

@@ -14,7 +14,10 @@ from app.db import (
     IntentScore,
     Account,
     Contact,
+    User,
 )
+from app.auth import current_user
+from app.scoping import own_strategy, own_contact
 from app.agents.m3_intent import (
     score_intent,
     capture_feedback_with_ai,
@@ -53,7 +56,12 @@ class AttributionBody(BaseModel):
 
 
 @router.post("/events")
-def post_event(body: EngagementBody, db: Session = Depends(get_session)) -> dict:
+def post_event(
+    body: EngagementBody,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    own_strategy(db, body.strategy_id, user)
     weights = {
         "page_view": 2,
         "pricing_view": 8,
@@ -80,7 +88,12 @@ def post_event(body: EngagementBody, db: Session = Depends(get_session)) -> dict
 
 
 @router.get("/events")
-def list_events(strategy_id: str, db: Session = Depends(get_session)) -> list[dict]:
+def list_events(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> list[dict]:
+    own_strategy(db, strategy_id, user)
     rows = (
         db.query(EngagementEvent)
         .filter(EngagementEvent.strategy_id == strategy_id)
@@ -100,12 +113,22 @@ def list_events(strategy_id: str, db: Session = Depends(get_session)) -> list[di
 
 
 @router.post("/score-intent")
-def post_score_intent(strategy_id: str, db: Session = Depends(get_session)) -> list[dict]:
+def post_score_intent(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> list[dict]:
+    own_strategy(db, strategy_id, user)
     return score_intent(db, strategy_id)
 
 
 @router.get("/intent")
-def get_intent(strategy_id: str, db: Session = Depends(get_session)) -> list[dict]:
+def get_intent(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> list[dict]:
+    own_strategy(db, strategy_id, user)
     accounts = {a.id: a for a in db.query(Account).filter(Account.strategy_id == strategy_id).all()}
     rows = (
         db.query(IntentScore)
@@ -123,13 +146,23 @@ def get_intent(strategy_id: str, db: Session = Depends(get_session)) -> list[dic
 
 
 @router.post("/feedback")
-def post_feedback(body: FeedbackBody, db: Session = Depends(get_session)) -> dict:
+def post_feedback(
+    body: FeedbackBody,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    own_strategy(db, body.strategy_id, user)
     f = capture_feedback_with_ai(db, body.strategy_id, body.source, body.raw_text, body.contact_id)
     return {"id": f.id, "sentiment": f.sentiment, "themes": f.themes_json}
 
 
 @router.get("/feedback")
-def list_feedback(strategy_id: str, db: Session = Depends(get_session)) -> list[dict]:
+def list_feedback(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> list[dict]:
+    own_strategy(db, strategy_id, user)
     rows = (
         db.query(FeedbackEntry)
         .filter(FeedbackEntry.strategy_id == strategy_id)
@@ -147,7 +180,12 @@ def list_feedback(strategy_id: str, db: Session = Depends(get_session)) -> list[
 
 
 @router.post("/attribution")
-def post_attribution(body: AttributionBody, db: Session = Depends(get_session)) -> dict:
+def post_attribution(
+    body: AttributionBody,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    own_strategy(db, body.strategy_id, user)
     a = AttributionEvent(
         strategy_id=body.strategy_id,
         contact_id=body.contact_id,
@@ -162,7 +200,12 @@ def post_attribution(body: AttributionBody, db: Session = Depends(get_session)) 
 
 
 @router.get("/attribution/summary")
-def attribution_summary(strategy_id: str, db: Session = Depends(get_session)) -> list[dict]:
+def attribution_summary(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> list[dict]:
+    own_strategy(db, strategy_id, user)
     rows = (
         db.query(
             AttributionEvent.source_channel,
@@ -177,12 +220,22 @@ def attribution_summary(strategy_id: str, db: Session = Depends(get_session)) ->
 
 
 @router.post("/qualify/{contact_id}")
-def post_qualify(contact_id: str, db: Session = Depends(get_session)) -> dict:
+def post_qualify(
+    contact_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    own_contact(db, contact_id, user)
     return qualify_contact(db, contact_id)
 
 
 @router.get("/qualification-summary")
-def qualification_summary(strategy_id: str, db: Session = Depends(get_session)) -> dict:
+def qualification_summary(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    own_strategy(db, strategy_id, user)
     counts = {"sql": 0, "mql": 0, "nurture": 0}
     for r in db.query(QualificationRecord.status, func.count()).filter(
         QualificationRecord.strategy_id == strategy_id
@@ -192,12 +245,22 @@ def qualification_summary(strategy_id: str, db: Session = Depends(get_session)) 
 
 
 @router.post("/loop-back")
-def post_loop_back(strategy_id: str, db: Session = Depends(get_session)) -> dict:
+def post_loop_back(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    own_strategy(db, strategy_id, user)
     return loop_back(db, strategy_id)
 
 
 @router.get("/loop-back")
-def list_loop_back(strategy_id: str, db: Session = Depends(get_session)) -> list[dict]:
+def list_loop_back(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> list[dict]:
+    own_strategy(db, strategy_id, user)
     rows = (
         db.query(GtmLoopUpdate)
         .filter(GtmLoopUpdate.strategy_id == strategy_id)
@@ -215,5 +278,13 @@ def list_loop_back(strategy_id: str, db: Session = Depends(get_session)) -> list
 
 
 @router.post("/loop-back/{update_id}/apply")
-def post_apply(update_id: str, db: Session = Depends(get_session)) -> dict:
+def post_apply(
+    update_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    upd = db.query(GtmLoopUpdate).filter(GtmLoopUpdate.id == update_id).first()
+    if not upd:
+        raise HTTPException(404, "Update not found")
+    own_strategy(db, upd.strategy_id, user)
     return apply_loop_back(db, update_id)

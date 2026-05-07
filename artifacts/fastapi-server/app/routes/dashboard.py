@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc
+from sqlalchemy import func
 from app.db import (
     get_session,
     Strategy,
@@ -9,24 +9,54 @@ from app.db import (
     Signal,
     Account,
     IntentScore,
+    User,
 )
+from app.auth import current_user
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 
 @router.get("/summary")
-def summary(db: Session = Depends(get_session)) -> dict:
-    strategies = db.query(Strategy).count()
-    ready_strategies = db.query(Strategy).filter(Strategy.status == "ready").count()
-    total_contacts = db.query(Contact).count()
-    tier_1 = db.query(Contact).filter(Contact.tier == 1).count()
-    sequences = db.query(Sequence).filter(Sequence.status.in_(["active", "simulated"])).count()
-    top_intent = (
-        db.query(IntentScore, Account)
-        .join(Account, Account.id == IntentScore.account_id)
-        .order_by(IntentScore.score.desc())
-        .first()
+def summary(
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    user_strategy_ids = [
+        r[0] for r in db.query(Strategy.id).filter(Strategy.user_id == user.id).all()
+    ]
+    strategies = len(user_strategy_ids)
+    ready_strategies = (
+        db.query(Strategy)
+        .filter(Strategy.user_id == user.id, Strategy.status == "ready")
+        .count()
     )
+    if user_strategy_ids:
+        total_contacts = (
+            db.query(Contact).filter(Contact.user_id == user.id).count()
+        )
+        tier_1 = (
+            db.query(Contact)
+            .filter(Contact.user_id == user.id, Contact.tier == 1)
+            .count()
+        )
+        sequences = (
+            db.query(Sequence)
+            .filter(
+                Sequence.strategy_id.in_(user_strategy_ids),
+                Sequence.status.in_(["active", "simulated"]),
+            )
+            .count()
+        )
+        top_intent = (
+            db.query(IntentScore, Account)
+            .join(Account, Account.id == IntentScore.account_id)
+            .filter(IntentScore.strategy_id.in_(user_strategy_ids))
+            .order_by(IntentScore.score.desc())
+            .first()
+        )
+    else:
+        total_contacts = tier_1 = sequences = 0
+        top_intent = None
     top = None
     if top_intent:
         score, acct = top_intent
@@ -42,16 +72,35 @@ def summary(db: Session = Depends(get_session)) -> dict:
 
 
 @router.get("/activity")
-def activity(db: Session = Depends(get_session)) -> list[dict]:
+def activity(
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> list[dict]:
+    user_strategy_ids = [
+        r[0] for r in db.query(Strategy.id).filter(Strategy.user_id == user.id).all()
+    ]
     out = []
-    for s in db.query(Signal).order_by(Signal.detected_at.desc()).limit(8).all():
-        out.append({
-            "type": "signal",
-            "title": f"{s.signal_type.title()} signal",
-            "detail": s.summary[:120],
-            "at": s.detected_at.isoformat() if s.detected_at else None,
-        })
-    for st in db.query(Strategy).order_by(Strategy.created_at.desc()).limit(5).all():
+    if user_strategy_ids:
+        for s in (
+            db.query(Signal)
+            .filter(Signal.strategy_id.in_(user_strategy_ids))
+            .order_by(Signal.detected_at.desc())
+            .limit(8)
+            .all()
+        ):
+            out.append({
+                "type": "signal",
+                "title": f"{s.signal_type.title()} signal",
+                "detail": s.summary[:120],
+                "at": s.detected_at.isoformat() if s.detected_at else None,
+            })
+    for st in (
+        db.query(Strategy)
+        .filter(Strategy.user_id == user.id)
+        .order_by(Strategy.created_at.desc())
+        .limit(5)
+        .all()
+    ):
         out.append({
             "type": "strategy",
             "title": f"Strategy: {st.product_name}",

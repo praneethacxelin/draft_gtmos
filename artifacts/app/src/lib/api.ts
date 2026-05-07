@@ -1,15 +1,38 @@
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
+let tokenGetter: (() => Promise<string | null>) | null = null;
+
+/**
+ * Register the auth-token getter so apiFetch / streamSse attach a
+ * Bearer token to every request. Called from the App once Clerk is
+ * loaded.
+ */
+export function setAuthTokenGetter(fn: (() => Promise<string | null>) | null) {
+  tokenGetter = fn;
+}
+
+async function authHeaders(): Promise<Record<string, string>> {
+  if (!tokenGetter) return {};
+  try {
+    const token = await tokenGetter();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  } catch {
+    return {};
+  }
+}
+
 export function apiUrl(path: string): string {
   return `${BASE}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const url = apiUrl(path);
+  const auth = await authHeaders();
   const res = await fetch(url, {
     ...init,
     headers: {
       "Content-Type": "application/json",
+      ...auth,
       ...(init?.headers || {}),
     },
   });
@@ -38,7 +61,8 @@ export function streamSse<T = unknown>(
 ): Promise<T | null> {
   return new Promise((resolve, reject) => {
     const url = apiUrl(path);
-    fetch(url, { method: "POST" })
+    authHeaders()
+      .then((auth) => fetch(url, { method: "POST", headers: { ...auth } }))
       .then(async (res) => {
         if (!res.ok || !res.body) {
           const text = await res.text().catch(() => "");

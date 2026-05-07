@@ -19,6 +19,7 @@ from app.db import (
     OutreachEvent,
     Sequence,
     SequenceStep,
+    Strategy,
 )
 from app.services import settings_service, clients
 
@@ -27,23 +28,35 @@ POLL_INTERVAL_SEC = 3600  # 1 hour
 
 
 def _ingest_once() -> int:
-    """Pull engagement for every active Instantly campaign. Returns events ingested."""
+    """Pull engagement for every active Instantly campaign, using each
+    campaign owner's own Instantly key. Returns total events ingested."""
     db = SessionLocal()
     ingested = 0
+    # Cache per-user key lookups to avoid hammering the DB.
+    key_cache: dict[str, str | None] = {}
     try:
-        instantly_key = settings_service.get_key(db, "instantly")
-        if not instantly_key:
-            return 0
-
         rows = db.query(InstantlyCampaign).filter(InstantlyCampaign.status == "active").all()
         for row in rows:
+            seq = db.query(Sequence).filter(Sequence.id == row.sequence_id).first()
+            if not seq:
+                continue
+            strategy = (
+                db.query(Strategy).filter(Strategy.id == seq.strategy_id).first()
+                if seq.strategy_id
+                else None
+            )
+            owner_id = strategy.user_id if strategy else None
+            if not owner_id:
+                continue
+            if owner_id not in key_cache:
+                key_cache[owner_id] = settings_service.get_key(db, owner_id, "instantly")
+            instantly_key = key_cache[owner_id]
+            if not instantly_key:
+                continue
             try:
                 events = clients.instantly_get_events(instantly_key, row.instantly_campaign_id) or []
             except Exception as exc:  # pragma: no cover - external API
                 log.warning("instantly fetch failed for %s: %s", row.instantly_campaign_id, exc)
-                continue
-            seq = db.query(Sequence).filter(Sequence.id == row.sequence_id).first()
-            if not seq:
                 continue
             steps = {s.step_number: s for s in db.query(SequenceStep).filter(SequenceStep.sequence_id == seq.id).all()}
             for ev in events:

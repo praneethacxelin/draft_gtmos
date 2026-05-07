@@ -1,8 +1,8 @@
-"""In-app integration settings.
+"""In-app integration settings (per-user).
 
-API keys are stored encrypted in the DB. `get_key(name)` returns the
-plaintext key (or None) so other services can decide to call the real API
-or fall back to AI-mocked data.
+API keys are stored encrypted in the DB, scoped to the owning user. Each
+caller passes an explicit ``user_id`` so one user's keys never leak into
+another user's pipeline.
 """
 from datetime import datetime
 from typing import Optional
@@ -36,8 +36,11 @@ INTEGRATION_META = {
 }
 
 
-def list_integrations(db: Session) -> list[dict]:
-    rows = {r.integration_name: r for r in db.query(AppSetting).all()}
+def list_integrations(db: Session, user_id: str) -> list[dict]:
+    rows = {
+        r.integration_name: r
+        for r in db.query(AppSetting).filter(AppSetting.user_id == user_id).all()
+    }
     out = []
     for name in INTEGRATIONS:
         meta = INTEGRATION_META[name]
@@ -58,20 +61,24 @@ def list_integrations(db: Session) -> list[dict]:
 
 def upsert_integration(
     db: Session,
+    user_id: str,
     name: str,
     api_key: Optional[str],
     is_enabled: bool,
 ) -> dict:
     if name not in INTEGRATIONS:
         raise ValueError(f"Unknown integration: {name}")
-    row = db.query(AppSetting).filter(AppSetting.integration_name == name).first()
+    row = (
+        db.query(AppSetting)
+        .filter(AppSetting.user_id == user_id, AppSetting.integration_name == name)
+        .first()
+    )
     if not row:
-        row = AppSetting(integration_name=name)
+        row = AppSetting(user_id=user_id, integration_name=name)
         db.add(row)
     if api_key is not None and api_key.strip():
         row.api_key_encrypted = encrypt(api_key.strip())
     elif api_key == "":
-        # Empty string means "clear the key"
         row.api_key_encrypted = None
         row.is_enabled = False
     row.is_enabled = is_enabled and bool(row.api_key_encrypted)
@@ -84,12 +91,28 @@ def upsert_integration(
     }
 
 
-def get_raw(db: Session, name: str) -> Optional[AppSetting]:
-    return db.query(AppSetting).filter(AppSetting.integration_name == name).first()
+def get_raw(db: Session, user_id: str, name: str) -> Optional[AppSetting]:
+    return (
+        db.query(AppSetting)
+        .filter(AppSetting.user_id == user_id, AppSetting.integration_name == name)
+        .first()
+    )
 
 
-def get_key(db: Session, name: str) -> Optional[str]:
-    row = db.query(AppSetting).filter(AppSetting.integration_name == name).first()
+def get_key(db: Session, user_id: Optional[str], name: str) -> Optional[str]:
+    """Return the plaintext API key for ``user_id``'s ``name`` integration.
+
+    ``user_id`` may be ``None`` for legacy strategies created before auth
+    was rolled out — in that case we never return a key (no shared
+    fallback) so cross-tenant leakage is impossible.
+    """
+    if not user_id:
+        return None
+    row = (
+        db.query(AppSetting)
+        .filter(AppSetting.user_id == user_id, AppSetting.integration_name == name)
+        .first()
+    )
     if not row or not row.is_enabled or not row.api_key_encrypted:
         return None
     try:
@@ -98,8 +121,12 @@ def get_key(db: Session, name: str) -> Optional[str]:
         return None
 
 
-def record_test_result(db: Session, name: str, ok: bool, message: str) -> None:
-    row = db.query(AppSetting).filter(AppSetting.integration_name == name).first()
+def record_test_result(db: Session, user_id: str, name: str, ok: bool, message: str) -> None:
+    row = (
+        db.query(AppSetting)
+        .filter(AppSetting.user_id == user_id, AppSetting.integration_name == name)
+        .first()
+    )
     if not row:
         return
     row.last_tested_at = datetime.utcnow()
