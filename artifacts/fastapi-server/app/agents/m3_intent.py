@@ -79,8 +79,8 @@ def score_intent(db: Session, strategy_id: str) -> list[dict]:
     return out
 
 
-def capture_feedback_with_ai(db: Session, strategy_id: str, source: str, raw_text: str, contact_id=None) -> FeedbackEntry:
-    extracted = chat_json(
+async def capture_feedback_with_ai(db: Session, strategy_id: str, source: str, raw_text: str, contact_id=None) -> FeedbackEntry:
+    extracted = await chat_json(
         f"Analyse this customer feedback and return JSON with keys: "
         f"sentiment ('positive'|'neutral'|'negative'), themes (array of 1-3 short strings). "
         f"Feedback: {raw_text[:1500]}",
@@ -135,7 +135,7 @@ def qualify_contact(db: Session, contact_id: str) -> dict:
     return {"contact_id": contact_id, "status": status, "icp_fit": fit, "intent": intent_score}
 
 
-def loop_back(db: Session, strategy_id: str) -> dict:
+async def loop_back(db: Session, strategy_id: str) -> dict:
     strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
     if not strategy:
         return {"error": "Strategy not found"}
@@ -164,7 +164,7 @@ def loop_back(db: Session, strategy_id: str) -> dict:
         "mql_count": mql_count,
     }
 
-    delta = chat_json(
+    delta = await chat_json(
         "Given this GTM performance summary, suggest concrete refinements to the ICP. "
         "Return JSON with keys: rationale (string), changes (array of {field, current_value, "
         "suggested_value, reason}), promote_personas (array of strings), deprioritize_personas "

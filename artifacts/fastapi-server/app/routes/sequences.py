@@ -11,13 +11,13 @@ router = APIRouter(prefix="/sequences", tags=["sequences"])
 
 
 @router.post("/generate/{contact_id}")
-def generate(
+async def generate(
     contact_id: str,
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ) -> dict:
     own_contact(db, contact_id, user)
-    return generate_sequence(db, contact_id)
+    return await generate_sequence(db, contact_id)
 
 
 @router.get("/by-contact/{contact_id}")

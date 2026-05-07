@@ -48,7 +48,7 @@ async def run_s1(db: Session, strategy_id: str) -> AsyncIterator[dict]:
 
     # 1. ICP Modeling
     yield {"event": "stage_start", "data": {"stage": "icp"}}
-    icp = chat_json(
+    icp = await chat_json(
         f"Build an Ideal Customer Profile for the following product. {brief}\n\n"
         "Return JSON with keys: industries (array of strings), employee_size_range "
         "(e.g. '50-500'), revenue_range (e.g. '$10M-$50M'), geographies (array), "
@@ -60,7 +60,7 @@ async def run_s1(db: Session, strategy_id: str) -> AsyncIterator[dict]:
 
     # 2. Persona Mapping
     yield {"event": "stage_start", "data": {"stage": "personas"}}
-    personas = chat_json(
+    personas = await chat_json(
         f"Given this ICP: {json.dumps(icp)[:1500]}, build a persona matrix for "
         f"product '{strategy.product_name}'. Return JSON with keys: champion, "
         "economic_buyer, blocker. Each persona has: title, goals (array), "
@@ -73,7 +73,7 @@ async def run_s1(db: Session, strategy_id: str) -> AsyncIterator[dict]:
 
     # 3. Problem Identification
     yield {"event": "stage_start", "data": {"stage": "problems"}}
-    problems = chat_json(
+    problems = await chat_json(
         f"Product: {strategy.product_name}. Personas: {json.dumps(personas)[:1500]}. "
         "Build a Problem-Solution Map. Return JSON with key 'problems' = array of "
         "{persona, pain, trigger, product_angle, urgency 'low'|'medium'|'high'}."
@@ -83,7 +83,7 @@ async def run_s1(db: Session, strategy_id: str) -> AsyncIterator[dict]:
 
     # 4. Industry Segmentation (NAICS)
     yield {"event": "stage_start", "data": {"stage": "naics"}}
-    naics = chat_json(
+    naics = await chat_json(
         f"For product '{strategy.product_name}' targeting {strategy.target_market or 'businesses'}, "
         "produce NAICS industry segmentation. Return JSON with key 'segments' = array of "
         "{naics_code, name, sub_vertical, opportunity_score 0-100, est_company_count, rationale}. "
@@ -94,7 +94,7 @@ async def run_s1(db: Session, strategy_id: str) -> AsyncIterator[dict]:
 
     # 5. Buying Center Mapping
     yield {"event": "stage_start", "data": {"stage": "stakeholders"}}
-    stakeholders = chat_json(
+    stakeholders = await chat_json(
         f"Personas: {json.dumps(personas)[:1500]}. Build a stakeholder graph for the "
         "buying center. Return JSON with keys 'nodes' = array of {id, label, role, "
         "tier 'champion'|'blocker'|'economic_buyer'|'influencer', influence 0-100} "
@@ -106,7 +106,7 @@ async def run_s1(db: Session, strategy_id: str) -> AsyncIterator[dict]:
 
     # 6. Use Case Library
     yield {"event": "stage_start", "data": {"stage": "use_cases"}}
-    use_cases = chat_json(
+    use_cases = await chat_json(
         f"Product: {strategy.product_name}. Segments: {json.dumps(naics)[:800]}. "
         "Personas: {json.dumps(personas)[:800]}. Build a Use Case Library. "
         "Return JSON with key 'use_cases' = array of {title, vertical, persona, "

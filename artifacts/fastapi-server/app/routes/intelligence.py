@@ -146,13 +146,13 @@ def get_intent(
 
 
 @router.post("/feedback")
-def post_feedback(
+async def post_feedback(
     body: FeedbackBody,
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ) -> dict:
     own_strategy(db, body.strategy_id, user)
-    f = capture_feedback_with_ai(db, body.strategy_id, body.source, body.raw_text, body.contact_id)
+    f = await capture_feedback_with_ai(db, body.strategy_id, body.source, body.raw_text, body.contact_id)
     return {"id": f.id, "sentiment": f.sentiment, "themes": f.themes_json}
 
 
@@ -245,13 +245,13 @@ def qualification_summary(
 
 
 @router.post("/loop-back")
-def post_loop_back(
+async def post_loop_back(
     strategy_id: str,
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ) -> dict:
     own_strategy(db, strategy_id, user)
-    return loop_back(db, strategy_id)
+    return await loop_back(db, strategy_id)
 
 
 @router.get("/loop-back")

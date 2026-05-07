@@ -57,7 +57,7 @@ def _make_stage(
 ) -> Callable[[S1State], Awaitable[S1State]]:
     async def node(state: S1State) -> S1State:
         await _emit(state, "stage_start", {"stage": stage})
-        result = await asyncio.to_thread(chat_json, prompt_fn(state), max_tokens=1500)
+        result = await chat_json(prompt_fn(state), max_tokens=1500)
         _persist(state["db"], state["strategy_id"], field, result)
         await _emit(state, "stage_complete", {"stage": stage, "result": result})
         return {**state, stage: result, "last_stage": stage}

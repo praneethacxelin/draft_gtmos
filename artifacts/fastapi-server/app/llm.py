@@ -2,6 +2,7 @@
 
 No API key required from the user — auto-provisioned env vars handle auth.
 """
+import asyncio
 import json
 import os
 import hashlib
@@ -25,8 +26,7 @@ def _async_client() -> AsyncOpenAI:
     )
 
 
-def chat_json(prompt: str, system: str = "You are a helpful sales strategist.", max_tokens: int = 1500) -> dict:
-    """Call the model and parse a JSON object from the response."""
+def _chat_json_sync(prompt: str, system: str, max_tokens: int) -> dict:
     try:
         resp = _client().chat.completions.create(
             model=_MODEL,
@@ -44,7 +44,18 @@ def chat_json(prompt: str, system: str = "You are a helpful sales strategist.", 
         return {"_error": str(e)}
 
 
-def chat_text(prompt: str, system: str = "You are a helpful sales strategist.", max_tokens: int = 1000) -> str:
+async def chat_json(prompt: str, system: str = "You are a helpful sales strategist.", max_tokens: int = 1500) -> dict:
+    """Call the model and parse a JSON object from the response.
+
+    The underlying OpenAI client is synchronous, so we run it on a worker
+    thread via ``asyncio.to_thread`` to avoid blocking the FastAPI event
+    loop while the request is in flight. This keeps the rest of the API
+    responsive while a strategy is being generated.
+    """
+    return await asyncio.to_thread(_chat_json_sync, prompt, system, max_tokens)
+
+
+def _chat_text_sync(prompt: str, system: str, max_tokens: int) -> str:
     try:
         resp = _client().chat.completions.create(
             model=_MODEL,
@@ -57,6 +68,10 @@ def chat_text(prompt: str, system: str = "You are a helpful sales strategist.", 
         return resp.choices[0].message.content or ""
     except Exception as e:
         return f"[LLM error: {e}]"
+
+
+async def chat_text(prompt: str, system: str = "You are a helpful sales strategist.", max_tokens: int = 1000) -> str:
+    return await asyncio.to_thread(_chat_text_sync, prompt, system, max_tokens)
 
 
 def deterministic_embedding(text_in: str, dim: int = 1536) -> list[float]:

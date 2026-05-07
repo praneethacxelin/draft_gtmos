@@ -25,7 +25,7 @@ async def run_market_sizing(db: Session, strategy_id: str) -> dict:
                 f"{r['title']}: {r.get('snippet', '')}" for r in results
             )
 
-    sizing = chat_json(
+    sizing = await chat_json(
         f"Estimate TAM/SAM/SOM for product '{strategy.product_name}' targeting "
         f"{strategy.target_market or 'businesses'}.{serp_context} Return JSON with "
         "keys: tam {value_usd, label}, sam {value_usd, label}, som {value_usd, label}, "
@@ -43,7 +43,7 @@ async def run_competitors(db: Session, strategy_id: str) -> list[dict]:
         return []
 
     serp_key = settings_service.get_key(db, strategy.user_id, "serpapi")
-    competitors = chat_json(
+    competitors = await chat_json(
         f"For product '{strategy.product_name}': {strategy.description}. "
         "Identify 4 likely competitors. Return JSON with key 'competitors' = array of "
         "{name, website, positioning, features (array), pricing_info, "
@@ -172,7 +172,7 @@ async def run_lead_search(db: Session, strategy_id: str) -> dict:
             _maybe_add_contact(contact)
     else:
         # AI demo data
-        demo = chat_json(
+        demo = await chat_json(
             f"Generate 8 realistic but synthetic prospects for product '{strategy.product_name}' "
             f"targeting {strategy.target_market or 'businesses'}. ICP: {json.dumps(icp)[:1000]}. "
             "Return JSON with key 'prospects' = array of {company_name, domain, industry, "
@@ -265,7 +265,7 @@ async def run_signals(db: Session, strategy_id: str) -> dict:
     else:
         # AI demo signals
         company_names = [a.company_name for a in accounts]
-        demo = chat_json(
+        demo = await chat_json(
             f"Generate realistic-but-synthetic buying signals for these companies: "
             f"{', '.join(company_names[:8])}. Return JSON with key 'signals' = array of "
             "{company_name, signal_type 'funding'|'hiring'|'tech'|'news', summary, strength 0-1}. "

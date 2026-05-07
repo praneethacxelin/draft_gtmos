@@ -12,7 +12,7 @@ from app.services.instantly_poller import simulate_engagement_timeline
 SPAM_TRIGGERS = ["free", "guarantee", "$$$", "act now", "click here", "buy now", "no risk"]
 
 
-def generate_sequence(db: Session, contact_id: str) -> dict:
+async def generate_sequence(db: Session, contact_id: str) -> dict:
     contact = db.query(Contact).filter(Contact.id == contact_id).first()
     if not contact:
         return {"error": "Contact not found"}
@@ -51,7 +51,7 @@ def generate_sequence(db: Session, contact_id: str) -> dict:
 
     # Personalize messages
     plan_str = ", ".join(f"step {s['step']} via {s['channel']}" for s in channel_plan)
-    msgs = chat_json(
+    msgs = await chat_json(
         f"Write personalized outreach messages for {contact.full_name}, {contact.title} at "
         f"{account.company_name if account else 'the company'}. "
         f"Product: {strategy.product_name if strategy else ''}. "
