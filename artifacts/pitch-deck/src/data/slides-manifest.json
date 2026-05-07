@@ -1,0 +1,82 @@
+[
+  {
+    "id": "9b1a4f30-1c4b-4d2a-9f01-aaaaaaaaaaaa",
+    "position": 1,
+    "filepath": "src/pages/slides/Title.tsx",
+    "title": "Title",
+    "description": "Cover slide — Agentic GTM Factory positioning.",
+    "speakerNotes": ""
+  },
+  {
+    "id": "9b1a4f30-1c4b-4d2a-9f01-bbbbbbbbbbbb",
+    "position": 2,
+    "filepath": "src/pages/slides/Problem.tsx",
+    "title": "Problem",
+    "description": "Modern GTM is a stack of disconnected tools.",
+    "speakerNotes": ""
+  },
+  {
+    "id": "9b1a4f30-1c4b-4d2a-9f01-cccccccccccc",
+    "position": 3,
+    "filepath": "src/pages/slides/Solution.tsx",
+    "title": "Solution",
+    "description": "Three stages and an M3 intelligence loop.",
+    "speakerNotes": ""
+  },
+  {
+    "id": "9b1a4f30-1c4b-4d2a-9f01-dddddddddddd",
+    "position": 4,
+    "filepath": "src/pages/slides/StageS1.tsx",
+    "title": "S1 · Strategy",
+    "description": "ICP, personas, problem map, stakeholder graph.",
+    "speakerNotes": ""
+  },
+  {
+    "id": "9b1a4f30-1c4b-4d2a-9f01-eeeeeeeeeeee",
+    "position": 5,
+    "filepath": "src/pages/slides/StageS2.tsx",
+    "title": "S2 · Intelligence",
+    "description": "Market sizing, signals, scored accounts.",
+    "speakerNotes": ""
+  },
+  {
+    "id": "9b1a4f30-1c4b-4d2a-9f01-ffffffffffff",
+    "position": 6,
+    "filepath": "src/pages/slides/StageS3.tsx",
+    "title": "S3 · Outreach",
+    "description": "Persona-aware sequences across email, LinkedIn, call.",
+    "speakerNotes": ""
+  },
+  {
+    "id": "9b1a4f30-1c4b-4d2a-9f02-111111111111",
+    "position": 7,
+    "filepath": "src/pages/slides/M3Loop.tsx",
+    "title": "M3 · Intelligence Loop",
+    "description": "Engagement, intent, feedback, attribution, loop-back.",
+    "speakerNotes": ""
+  },
+  {
+    "id": "9b1a4f30-1c4b-4d2a-9f02-222222222222",
+    "position": 8,
+    "filepath": "src/pages/slides/Architecture.tsx",
+    "title": "AI-First Architecture",
+    "description": "Agents, embeddings, integrations, storage, request flow.",
+    "speakerNotes": ""
+  },
+  {
+    "id": "9b1a4f30-1c4b-4d2a-9f02-333333333333",
+    "position": 9,
+    "filepath": "src/pages/slides/WhyItWins.tsx",
+    "title": "Why It Wins",
+    "description": "Three differentiators against GPT wrappers.",
+    "speakerNotes": ""
+  },
+  {
+    "id": "9b1a4f30-1c4b-4d2a-9f02-444444444444",
+    "position": 10,
+    "filepath": "src/pages/slides/CallToAction.tsx",
+    "title": "Call to Action",
+    "description": "Try the product, book a walkthrough, contact the team.",
+    "speakerNotes": ""
+  }
+]

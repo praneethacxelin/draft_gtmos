@@ -1,0 +1,84 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-primary: var(--slide-primary);
+  --color-accent: var(--slide-accent);
+  --color-bg: var(--slide-bg);
+  --color-panel: var(--slide-panel);
+  --color-text: var(--slide-text);
+  --color-muted: var(--slide-muted);
+  --color-border: var(--slide-border);
+  --color-amber: var(--slide-amber);
+  --color-violet: var(--slide-violet);
+  --color-rose: var(--slide-rose);
+  --color-sky: var(--slide-sky);
+  --font-display: var(--font-display-family);
+  --font-body: var(--font-body-family);
+  --font-mono: var(--font-mono-family);
+}
+
+:root {
+  --slide-primary: #22c55e;
+  --slide-accent: #f59e0b;
+  --slide-bg: #07080a;
+  --slide-panel: #0e1013;
+  --slide-text: #e6e8eb;
+  --slide-muted: #6b7280;
+  --slide-border: #1c2128;
+  --slide-amber: #f59e0b;
+  --slide-violet: #a78bfa;
+  --slide-rose: #f472b6;
+  --slide-sky: #38bdf8;
+  --font-display-family: "Inter", system-ui, sans-serif;
+  --font-body-family: "Inter", system-ui, sans-serif;
+  --font-mono-family: "JetBrains Mono", ui-monospace, monospace;
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--slide-bg);
+  color: var(--slide-text);
+  font-family: var(--font-body-family);
+  -webkit-font-smoothing: antialiased;
+}
+
+.slide {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.slide-viewer {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.grid-bg {
+  background-image:
+    linear-gradient(rgba(34, 197, 94, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(34, 197, 94, 0.06) 1px, transparent 1px);
+  background-size: 4vw 4vw;
+}
+
+.dot-bg {
+  background-image: radial-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+  background-size: 2.2vw 2.2vw;
+}
+
+.scanline {
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(34, 197, 94, 0.04) 50%,
+    transparent 100%
+  );
+}
