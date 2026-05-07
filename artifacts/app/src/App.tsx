@@ -31,10 +31,16 @@ const queryClient = new QueryClient({
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as
   | string
   | undefined;
-// Do NOT use VITE_CLERK_PROXY_URL — Replit's production infrastructure
-// intercepts /api/__clerk/* at the proxy layer and returns 500 before it
-// reaches FastAPI. Clerk loads its JS bundle fine directly from the FAPI CDN.
-const clerkProxyUrl = undefined;
+
+// For pk_live_ keys Clerk uses a satellite custom domain
+// (e.g. clerk.gtmos.replit.app) which is not provisioned by Replit. We
+// must route all Clerk traffic through our FastAPI proxy at /api/__clerk
+// instead. Relative URL resolves to the current origin in the browser.
+// pk_test_ keys hit the public *.clerk.accounts.dev FAPI directly and
+// don't need (or want) a proxy in dev.
+const clerkProxyUrl = clerkPubKey?.startsWith("pk_live_")
+  ? "/api/__clerk"
+  : undefined;
 
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
 
