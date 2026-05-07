@@ -13,15 +13,11 @@ paths = ["/api"]
 run = "python3 -u -m uvicorn main:app --host 0.0.0.0 --port 8080"
 
 [services.production]
-[services.production.build]
-args = ["pip", "install", "-r", "artifacts/fastapi-server/requirements.txt"]
-
-
-[services.production.run]
-args = ["python3", "-u", "-m", "uvicorn", "main:app", "--app-dir", "artifacts/fastapi-server", "--host", "0.0.0.0", "--port", "8080"]
-
-[services.production.run.env]
-PORT = "8080"
+build = ["pip", "install", "-r", "artifacts/fastapi-server/requirements.txt"]
+run = ["python3", "-u", "-m", "uvicorn", "main:app", "--app-dir", "artifacts/fastapi-server", "--host", "0.0.0.0", "--port", "8080"]
 
 [services.production.health.startup]
 path = "/healthz"
+
+[services.env]
+PORT = "8080"
