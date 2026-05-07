@@ -27,9 +27,17 @@ def update_integration(name: str, body: IntegrationUpdate, db: Session = Depends
 
 @router.post("/integrations/{name}/test")
 def test_integration(name: str, db: Session = Depends(get_session)) -> dict:
-    key = settings_service.get_key(db, name)
-    if not key:
+    import time
+    row = settings_service.get_raw(db, name)
+    if not row or not row.api_key_encrypted:
         raise HTTPException(400, "No saved key for this integration")
+    from app.crypto import decrypt
+    try:
+        key = decrypt(row.api_key_encrypted)
+    except Exception:
+        raise HTTPException(400, "Stored key could not be decrypted")
+    started = time.perf_counter()
     ok, msg = clients.test_connection(name, key)
+    latency_ms = int((time.perf_counter() - started) * 1000)
     settings_service.record_test_result(db, name, ok, msg)
-    return {"ok": ok, "message": msg}
+    return {"ok": ok, "message": msg, "latency_ms": latency_ms}

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 from app.db import get_session, SessionLocal, Strategy, Competitor, PatternCluster
 from app.agents.s1_strategy import run_s1
+from app.agents.s1_graph import stream_s1
 from app.agents.s2_signals import (
     run_market_sizing,
     run_competitors,
@@ -70,21 +71,38 @@ async def run_s1_stream(strategy_id: str):
         # Use a fresh session per stream to avoid leaking the request session
         db2 = SessionLocal()
         try:
-            async for ev in run_s1(db2, strategy_id):
+            async for ev in stream_s1(db2, strategy_id):
                 yield {"event": ev["event"], "data": json.dumps(ev["data"])}
         finally:
             db2.close()
     return EventSourceResponse(event_gen())
 
 
+def _sse(coro_or_value, label: str):
+    """Wrap a coroutine or sync value in a 3-event SSE stream
+    (stage_start → stage_complete → complete) using a fresh DB session."""
+    async def gen():
+        yield {"event": "stage_start", "data": json.dumps({"stage": label})}
+        db2 = SessionLocal()
+        try:
+            result = await coro_or_value(db2)
+            yield {"event": "stage_complete", "data": json.dumps({"stage": label, "result": result})}
+            yield {"event": "complete", "data": json.dumps({"stage": label})}
+        except Exception as e:
+            yield {"event": "error", "data": json.dumps({"message": str(e)})}
+        finally:
+            db2.close()
+    return EventSourceResponse(gen())
+
+
 @router.post("/{strategy_id}/market-sizing")
-async def market_sizing(strategy_id: str, db: Session = Depends(get_session)) -> dict:
-    return await run_market_sizing(db, strategy_id)
+async def market_sizing(strategy_id: str):
+    return _sse(lambda d: run_market_sizing(d, strategy_id), "market_sizing")
 
 
 @router.post("/{strategy_id}/competitors/run")
-async def run_competitor_research(strategy_id: str, db: Session = Depends(get_session)) -> list[dict]:
-    return await run_competitors(db, strategy_id)
+async def run_competitor_research(strategy_id: str):
+    return _sse(lambda d: run_competitors(d, strategy_id), "competitors")
 
 
 @router.get("/{strategy_id}/competitors")
@@ -103,23 +121,27 @@ def list_competitors(strategy_id: str, db: Session = Depends(get_session)) -> li
 
 
 @router.post("/{strategy_id}/leads/search")
-async def lead_search(strategy_id: str, db: Session = Depends(get_session)) -> dict:
-    return await run_lead_search(db, strategy_id)
+async def lead_search(strategy_id: str):
+    return _sse(lambda d: run_lead_search(d, strategy_id), "leads")
 
 
 @router.post("/{strategy_id}/signals/run")
-async def signals_run(strategy_id: str, db: Session = Depends(get_session)) -> dict:
-    return await run_signals(db, strategy_id)
+async def signals_run(strategy_id: str):
+    return _sse(lambda d: run_signals(d, strategy_id), "signals")
 
 
 @router.post("/{strategy_id}/score")
-def score_run(strategy_id: str, db: Session = Depends(get_session)) -> dict:
-    return score_leads(db, strategy_id)
+def score_run(strategy_id: str):
+    async def _run(d):
+        return score_leads(d, strategy_id)
+    return _sse(_run, "score")
 
 
 @router.post("/{strategy_id}/patterns/run")
-def patterns_run(strategy_id: str, db: Session = Depends(get_session)) -> dict:
-    return recognize_patterns(db, strategy_id)
+def patterns_run(strategy_id: str):
+    async def _run(d):
+        return recognize_patterns(d, strategy_id)
+    return _sse(_run, "patterns")
 
 
 @router.get("/{strategy_id}/patterns")

@@ -98,7 +98,7 @@ class IcpEmbedding(Base):
 
 
 class Competitor(Base):
-    __tablename__ = "competitors"
+    __tablename__ = "competitor_profiles"
     id = Column(String, primary_key=True, default=gen_id)
     strategy_id = Column(String, ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False)
     name = Column(String, nullable=False)
@@ -172,6 +172,23 @@ class PatternCluster(Base):
     created_at = Column(DateTime, default=now)
 
 
+# ---------- Scoring ----------
+
+
+class LeadScore(Base):
+    __tablename__ = "lead_scores"
+    id = Column(String, primary_key=True, default=gen_id)
+    contact_id = Column(String, ForeignKey("contacts.id", ondelete="CASCADE"), nullable=False)
+    strategy_id = Column(String, ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False)
+    icp_fit_score = Column(Float, default=0.0)
+    engagement_score = Column(Float, default=0.0)
+    signal_score = Column(Float, default=0.0)
+    pattern_bonus = Column(Float, default=0.0)
+    total_score = Column(Float, default=0.0)
+    tier = Column(Integer, nullable=True)  # 1/2/3
+    qualified_at = Column(DateTime, default=now)
+
+
 # ---------- Outreach ----------
 
 
@@ -200,6 +217,15 @@ class SequenceStep(Base):
     send_at = Column(DateTime, nullable=True)
     sent_at = Column(DateTime, nullable=True)
     status = Column(String, default="pending")  # pending/sent/skipped
+
+
+class InstantlyCampaign(Base):
+    __tablename__ = "instantly_campaigns"
+    id = Column(String, primary_key=True, default=gen_id)
+    sequence_id = Column(String, ForeignKey("sequences.id", ondelete="CASCADE"), nullable=False)
+    instantly_campaign_id = Column(String, nullable=False)
+    status = Column(String, default="active")
+    synced_at = Column(DateTime, default=now)
 
 
 class OutreachEvent(Base):
@@ -289,9 +315,17 @@ class GtmLoopUpdate(Base):
 
 
 def init_db() -> None:
-    """Enable pgvector and create tables."""
+    """Enable pgvector, run light migrations, create new tables.
+
+    Heavy schema migrations live under ``alembic/`` (see ``alembic upgrade
+    head``). The startup hook here only does the additive work needed for
+    the seeded demo to come up cleanly: enable pgvector, drop the legacy
+    ``competitors`` table that has been renamed to ``competitor_profiles``,
+    and ensure all model tables exist.
+    """
     with engine.begin() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        conn.execute(text("DROP TABLE IF EXISTS competitors CASCADE"))
     Base.metadata.create_all(bind=engine)
 
 

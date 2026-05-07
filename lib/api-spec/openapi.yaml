@@ -3,34 +3,773 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: |
+    Agentic GTM Factory API. Three stages (S1 Strategy, S2 Market Research,
+    S3 3-channel Outreach) plus the M3 intelligence loop. Long-running
+    pipelines stream Server-Sent Events with `stage_start`,
+    `stage_complete`, `complete`, and `error` event types.
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
-    description: Health operations
+  - name: strategies
+  - name: accounts
+  - name: contacts
+  - name: signals
+  - name: sequences
+  - name: m3
+  - name: copilot
+  - name: dashboard
+  - name: settings
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/HealthStatus" }
+
+  /strategies:
+    get:
+      operationId: listStrategies
+      tags: [strategies]
+      responses:
+        "200":
+          description: List
+          content:
+            application/json:
               schema:
-                $ref: "#/components/schemas/HealthStatus"
+                type: array
+                items: { $ref: "#/components/schemas/Strategy" }
+    post:
+      operationId: createStrategy
+      tags: [strategies]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StrategyCreate" }
+      responses:
+        "200":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Strategy" }
+
+  /strategies/{id}:
+    get:
+      operationId: getStrategy
+      tags: [strategies]
+      parameters: [{ $ref: "#/components/parameters/StrategyId" }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Strategy" } } } }
+    delete:
+      operationId: deleteStrategy
+      tags: [strategies]
+      parameters: [{ $ref: "#/components/parameters/StrategyId" }]
+      responses: { "200": { description: Deleted } }
+
+  /strategies/{id}/run:
+    get:
+      operationId: runStrategy
+      tags: [strategies]
+      summary: Stream the S1 Strategy & Discovery pipeline (SSE).
+      parameters: [{ $ref: "#/components/parameters/StrategyId" }]
+      responses:
+        "200":
+          description: SSE stream of stage_start / stage_complete / complete / error events.
+          content: { text/event-stream: { schema: { type: string } } }
+
+  /strategies/{id}/market-sizing:
+    post:
+      operationId: marketSizing
+      tags: [strategies]
+      summary: Stream TAM/SAM/SOM computation (SSE).
+      parameters: [{ $ref: "#/components/parameters/StrategyId" }]
+      responses:
+        "200": { description: SSE stream, content: { text/event-stream: { schema: { type: string } } } }
+
+  /strategies/{id}/competitors/run:
+    post:
+      operationId: runCompetitors
+      tags: [strategies]
+      parameters: [{ $ref: "#/components/parameters/StrategyId" }]
+      responses:
+        "200": { description: SSE stream, content: { text/event-stream: { schema: { type: string } } } }
+
+  /strategies/{id}/competitors:
+    get:
+      operationId: listCompetitors
+      tags: [strategies]
+      parameters: [{ $ref: "#/components/parameters/StrategyId" }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Competitor" }
+
+  /strategies/{id}/leads/search:
+    post:
+      operationId: leadSearch
+      tags: [strategies]
+      parameters: [{ $ref: "#/components/parameters/StrategyId" }]
+      responses:
+        "200": { description: SSE stream, content: { text/event-stream: { schema: { type: string } } } }
+
+  /strategies/{id}/signals/run:
+    post:
+      operationId: runSignals
+      tags: [strategies]
+      parameters: [{ $ref: "#/components/parameters/StrategyId" }]
+      responses:
+        "200": { description: SSE stream, content: { text/event-stream: { schema: { type: string } } } }
+
+  /strategies/{id}/score:
+    post:
+      operationId: scoreLeads
+      tags: [strategies]
+      parameters: [{ $ref: "#/components/parameters/StrategyId" }]
+      responses:
+        "200": { description: SSE stream, content: { text/event-stream: { schema: { type: string } } } }
+
+  /strategies/{id}/patterns/run:
+    post:
+      operationId: runPatterns
+      tags: [strategies]
+      parameters: [{ $ref: "#/components/parameters/StrategyId" }]
+      responses:
+        "200": { description: SSE stream, content: { text/event-stream: { schema: { type: string } } } }
+
+  /strategies/{id}/patterns:
+    get:
+      operationId: listPatterns
+      tags: [strategies]
+      parameters: [{ $ref: "#/components/parameters/StrategyId" }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/PatternCluster" }
+
+  /accounts:
+    get:
+      operationId: listAccounts
+      tags: [accounts]
+      parameters:
+        - { name: strategy_id, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Account" }
+
+  /accounts/prioritized:
+    get:
+      operationId: listPrioritizedAccounts
+      tags: [accounts]
+      parameters:
+        - { name: strategy_id, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Account" }
+
+  /contacts:
+    get:
+      operationId: listContacts
+      tags: [contacts]
+      parameters:
+        - { name: strategy_id, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Contact" }
+
+  /contacts/{contact_id}:
+    get:
+      operationId: getContact
+      tags: [contacts]
+      parameters:
+        - { name: contact_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/Contact" } } }
+
+  /signals:
+    get:
+      operationId: listSignals
+      tags: [signals]
+      parameters:
+        - { name: strategy_id, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Signal" }
+
+  /sequences/generate/{contact_id}:
+    post:
+      operationId: generateSequence
+      tags: [sequences]
+      parameters:
+        - { name: contact_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/SequenceResult" } } }
+
+  /sequences/by-contact/{contact_id}:
+    get:
+      operationId: getSequenceByContact
+      tags: [sequences]
+      parameters:
+        - { name: contact_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/Sequence" } } }
+
+  /sequences/{sequence_id}/deliverability-check:
+    post:
+      operationId: deliverabilityCheck
+      tags: [sequences]
+      parameters:
+        - { name: sequence_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/DeliverabilityReport" } } }
+
+  /sequences/{sequence_id}/launch:
+    post:
+      operationId: launchSequence
+      tags: [sequences]
+      summary: Stream sequence launch (Instantly push or simulated send) via SSE.
+      parameters:
+        - { name: sequence_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: SSE stream, content: { text/event-stream: { schema: { type: string } } } }
+
+  /sequences/{sequence_id}/engagement:
+    get:
+      operationId: getSequenceEngagement
+      tags: [sequences]
+      parameters:
+        - { name: sequence_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/EngagementEvent" }
+
+  /m3/events:
+    get:
+      operationId: listEngagementEvents
+      tags: [m3]
+      parameters:
+        - { name: strategy_id, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/EngagementEvent" }
+    post:
+      operationId: createEngagementEvent
+      tags: [m3]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EngagementEventCreate" }
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/EngagementEvent" } } }
+
+  /m3/intent:
+    get:
+      operationId: listIntentScores
+      tags: [m3]
+      parameters:
+        - { name: strategy_id, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/IntentRow" }
+
+  /m3/score-intent:
+    post:
+      operationId: scoreIntent
+      tags: [m3]
+      parameters:
+        - { name: strategy_id, in: query, required: true, schema: { type: string } }
+      responses: { "200": { description: OK } }
+
+  /m3/feedback:
+    get:
+      operationId: listFeedback
+      tags: [m3]
+      parameters:
+        - { name: strategy_id, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/FeedbackEntry" }
+    post:
+      operationId: createFeedback
+      tags: [m3]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FeedbackCreate" }
+      responses: { "200": { description: OK } }
+
+  /m3/attribution:
+    post:
+      operationId: createAttribution
+      tags: [m3]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AttributionCreate" }
+      responses: { "200": { description: OK } }
+
+  /m3/attribution/summary:
+    get:
+      operationId: attributionSummary
+      tags: [m3]
+      parameters:
+        - { name: strategy_id, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AttributionRow" }
+
+  /m3/qualify/{contact_id}:
+    post:
+      operationId: qualifyContact
+      tags: [m3]
+      parameters:
+        - { name: contact_id, in: path, required: true, schema: { type: string } }
+      responses: { "200": { description: OK } }
+
+  /m3/qualification-summary:
+    get:
+      operationId: qualificationSummary
+      tags: [m3]
+      parameters:
+        - { name: strategy_id, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/QualSummary" } } }
+
+  /m3/loop-back:
+    get:
+      operationId: listLoopBack
+      tags: [m3]
+      parameters:
+        - { name: strategy_id, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/LoopBack" }
+    post:
+      operationId: runLoopBack
+      tags: [m3]
+      parameters:
+        - { name: strategy_id, in: query, required: true, schema: { type: string } }
+      responses: { "200": { description: OK } }
+
+  /m3/loop-back/{update_id}/apply:
+    post:
+      operationId: applyLoopBack
+      tags: [m3]
+      parameters:
+        - { name: update_id, in: path, required: true, schema: { type: string } }
+      responses: { "200": { description: OK } }
+
+  /copilot/feed:
+    get:
+      operationId: copilotFeed
+      tags: [copilot]
+      parameters:
+        - { name: strategy_id, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: object, additionalProperties: true }
+
+  /dashboard/summary:
+    get:
+      operationId: dashboardSummary
+      tags: [dashboard]
+      parameters:
+        - { name: strategy_id, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/DashboardSummary" } } }
+
+  /dashboard/activity:
+    get:
+      operationId: dashboardActivity
+      tags: [dashboard]
+      parameters:
+        - { name: strategy_id, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: object, additionalProperties: true }
+
+  /settings/integrations:
+    get:
+      operationId: listIntegrations
+      tags: [settings]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/IntegrationStatus" }
+
+  /settings/integrations/{name}:
+    put:
+      operationId: setIntegration
+      tags: [settings]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: { api_key: { type: string } }
+              required: [api_key]
+      responses: { "200": { description: OK } }
+
+  /settings/integrations/{name}/test:
+    post:
+      operationId: testIntegration
+      tags: [settings]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IntegrationTestResult" }
+
 components:
+  parameters:
+    StrategyId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
   schemas:
     HealthStatus:
       type: object
-      properties:
-        status:
-          type: string
-      required:
-        - status
+      properties: { status: { type: string } }
+      required: [status]
 
+    StrategyCreate:
+      type: object
+      required: [product_name, description]
+      properties:
+        product_name: { type: string }
+        description: { type: string }
+        target_market: { type: string, nullable: true }
+        pain_points_raw: { type: string, nullable: true }
+
+    Strategy:
+      type: object
+      properties:
+        id: { type: string }
+        product_name: { type: string }
+        description: { type: string }
+        target_market: { type: string, nullable: true }
+        pain_points_raw: { type: string, nullable: true }
+        status: { type: string, enum: [draft, generating, ready] }
+        icp: { type: object, nullable: true, additionalProperties: true }
+        personas: { type: object, nullable: true, additionalProperties: true }
+        problems: { type: object, nullable: true, additionalProperties: true }
+        naics: { type: object, nullable: true, additionalProperties: true }
+        stakeholder_map: { type: object, nullable: true, additionalProperties: true }
+        use_cases: { type: object, nullable: true, additionalProperties: true }
+        tam_sam_som: { type: object, nullable: true, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+
+    Competitor:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        website: { type: string, nullable: true }
+        positioning: { type: string, nullable: true }
+        features: { type: array, items: { type: string } }
+        pricing_info: { type: string, nullable: true }
+        weaknesses: { type: array, items: { type: string } }
+        g2_rating: { type: number, nullable: true }
+
+    PatternCluster:
+      type: object
+      properties:
+        id: { type: string }
+        pattern_name: { type: string }
+        signal_combination: { type: array, items: { type: string } }
+        conversion_rate: { type: number }
+
+    Account:
+      type: object
+      additionalProperties: true
+      properties:
+        id: { type: string }
+        company_name: { type: string }
+        domain: { type: string, nullable: true }
+        industry: { type: string, nullable: true }
+        employee_count: { type: integer, nullable: true }
+        revenue_range: { type: string, nullable: true }
+        tier: { type: integer, nullable: true }
+        intent_score: { type: number, nullable: true }
+
+    Contact:
+      type: object
+      additionalProperties: true
+      properties:
+        id: { type: string }
+        account_id: { type: string }
+        full_name: { type: string }
+        title: { type: string, nullable: true }
+        email: { type: string, nullable: true }
+        linkedin_url: { type: string, nullable: true }
+        seniority: { type: string, nullable: true }
+        department: { type: string, nullable: true }
+        persona_type: { type: string, nullable: true }
+        icp_fit_score: { type: number, nullable: true }
+        signal_score: { type: number, nullable: true }
+        engagement_score: { type: number, nullable: true }
+        total_score: { type: number, nullable: true }
+        tier: { type: integer, nullable: true }
+        is_demo: { type: boolean, nullable: true }
+
+    Signal:
+      type: object
+      additionalProperties: true
+      properties:
+        id: { type: string }
+        account_id: { type: string, nullable: true }
+        signal_type: { type: string }
+        source: { type: string }
+        summary: { type: string, nullable: true }
+        strength_score: { type: number, nullable: true }
+        detected_at: { type: string, format: date-time, nullable: true }
+
+    SequenceStep:
+      type: object
+      properties:
+        id: { type: string }
+        step_number: { type: integer }
+        channel: { type: string, enum: [email, linkedin, call] }
+        subject: { type: string, nullable: true }
+        body: { type: string, nullable: true }
+        wait_days: { type: integer }
+        send_at: { type: string, format: date-time, nullable: true }
+        sent_at: { type: string, format: date-time, nullable: true }
+        status: { type: string }
+
+    Sequence:
+      type: object
+      properties:
+        id: { type: string }
+        status: { type: string }
+        channel_plan:
+          type: array
+          items: { type: object, additionalProperties: true }
+        deliverability_score: { type: number, nullable: true }
+        deliverability_report: { type: object, nullable: true, additionalProperties: true }
+        instantly_campaign_id: { type: string, nullable: true }
+        steps:
+          type: array
+          items: { $ref: "#/components/schemas/SequenceStep" }
+
+    SequenceResult:
+      type: object
+      properties:
+        sequence_id: { type: string }
+        step_count: { type: integer }
+
+    DeliverabilityReport:
+      type: object
+      properties:
+        score: { type: number }
+        flagged_phrases: { type: array, items: { type: string } }
+        link_count: { type: integer }
+        avg_length: { type: integer }
+        notes: { type: string }
+
+    EngagementEventCreate:
+      type: object
+      required: [strategy_id, channel, event_type]
+      properties:
+        strategy_id: { type: string }
+        account_id: { type: string, nullable: true }
+        contact_id: { type: string, nullable: true }
+        channel: { type: string }
+        event_type: { type: string }
+
+    EngagementEvent:
+      type: object
+      properties:
+        id: { type: string }
+        channel: { type: string }
+        event_type: { type: string }
+        intent_contribution_score: { type: number, nullable: true }
+        occurred_at: { type: string, format: date-time, nullable: true }
+        account_id: { type: string, nullable: true }
+        contact_id: { type: string, nullable: true }
+
+    IntentRow:
+      type: object
+      properties:
+        account_id: { type: string }
+        company_name: { type: string, nullable: true }
+        score: { type: number }
+        classification: { type: string }
+        computed_at: { type: string, format: date-time, nullable: true }
+
+    FeedbackCreate:
+      type: object
+      required: [strategy_id, source, raw_text]
+      properties:
+        strategy_id: { type: string }
+        source: { type: string }
+        raw_text: { type: string }
+        contact_id: { type: string, nullable: true }
+
+    FeedbackEntry:
+      type: object
+      properties:
+        id: { type: string }
+        source: { type: string }
+        sentiment: { type: string, nullable: true }
+        themes: { type: array, items: { type: string } }
+        raw_text: { type: string, nullable: true }
+        captured_at: { type: string, format: date-time, nullable: true }
+
+    AttributionCreate:
+      type: object
+      required: [strategy_id, source_channel, conversion_event]
+      properties:
+        strategy_id: { type: string }
+        contact_id: { type: string, nullable: true }
+        source_channel: { type: string }
+        touchpoint_type: { type: string, nullable: true }
+        conversion_event: { type: string }
+        conversion_value: { type: number, nullable: true }
+
+    AttributionRow:
+      type: object
+      properties:
+        channel: { type: string }
+        count: { type: integer }
+        value: { type: number }
+
+    QualSummary:
+      type: object
+      properties:
+        sql: { type: integer }
+        mql: { type: integer }
+        nurture: { type: integer }
+
+    LoopBack:
+      type: object
+      properties:
+        id: { type: string }
+        delta: { type: object, nullable: true, additionalProperties: true }
+        trigger_summary: { type: string, nullable: true }
+        applied: { type: boolean }
+        applied_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time, nullable: true }
+
+    DashboardSummary:
+      type: object
+      additionalProperties: true
+
+    IntegrationStatus:
+      type: object
+      properties:
+        name: { type: string }
+        configured: { type: boolean }
+        last_test_status: { type: string, nullable: true }
+        last_tested_at: { type: string, format: date-time, nullable: true }
+
+    IntegrationTestResult:
+      type: object
+      properties:
+        ok: { type: boolean }
+        latency_ms: { type: integer }
+        message: { type: string }

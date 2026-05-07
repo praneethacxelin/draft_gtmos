@@ -84,6 +84,10 @@ def upsert_integration(
     }
 
 
+def get_raw(db: Session, name: str) -> Optional[AppSetting]:
+    return db.query(AppSetting).filter(AppSetting.integration_name == name).first()
+
+
 def get_key(db: Session, name: str) -> Optional[str]:
     row = db.query(AppSetting).filter(AppSetting.integration_name == name).first()
     if not row or not row.is_enabled or not row.api_key_encrypted:

@@ -15,7 +15,15 @@ import {
   usePatterns,
   useRunPatterns,
   strategyKeys,
+  type Icp,
+  type Persona,
+  type PersonaMatrix,
+  type ProblemRow,
+  type NaicsSegment,
+  type StakeholderMap,
+  type UseCase,
 } from "@/hooks/useStrategies";
+import { StakeholderFlow } from "@/components/StakeholderFlow";
 import { apiUrl } from "@/lib/api";
 import { fmtUsd } from "@/lib/format";
 import {
@@ -338,7 +346,7 @@ function Empty({ label }: { label: string }) {
   );
 }
 
-function IcpView({ icp }: { icp: any }) {
+function IcpView({ icp }: { icp?: Icp | null }) {
   if (!icp) return <Empty label="ICP not generated yet." />;
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -358,7 +366,7 @@ function IcpView({ icp }: { icp: any }) {
       <Card className="border-card-border bg-card p-5">
         <div className="text-sm font-semibold">Segments</div>
         <div className="mt-3 space-y-2">
-          {(icp.segments ?? []).map((s: any, i: number) => (
+          {(icp.segments ?? []).map((s, i) => (
             <div
               key={i}
               className="rounded border border-border bg-background/40 p-3"
@@ -391,7 +399,7 @@ function Field({ k, v }: { k: string; v?: string }) {
   );
 }
 
-function PersonasView({ personas }: { personas: any }) {
+function PersonasView({ personas }: { personas?: PersonaMatrix | null }) {
   if (!personas) return <Empty label="Personas not generated yet." />;
   const types: { key: string; label: string }[] = [
     { key: "champion", label: "Champion" },
@@ -401,7 +409,7 @@ function PersonasView({ personas }: { personas: any }) {
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
       {types.map(({ key, label }) => {
-        const p = personas[key];
+        const p = (personas as Record<string, Persona | undefined>)[key];
         if (!p) return null;
         return (
           <Card key={key} className="border-card-border bg-card p-5">
@@ -443,13 +451,13 @@ function Section({ label, items }: { label: string; items?: string[] }) {
   );
 }
 
-function ProblemsView({ problems }: { problems: any }) {
+function ProblemsView({ problems }: { problems?: { problems?: ProblemRow[] } | null }) {
   const list = problems?.problems ?? [];
   if (list.length === 0) return <Empty label="Problem map not generated yet." />;
   return (
     <Card className="border-card-border bg-card p-0">
       <div className="divide-y divide-border">
-        {list.map((p: any, i: number) => (
+        {list.map((p, i) => (
           <div key={i} className="grid grid-cols-12 gap-4 p-4">
             <div className="col-span-2 text-xs uppercase tracking-widest text-muted-foreground">
               {p.persona}
@@ -483,7 +491,7 @@ function ProblemsView({ problems }: { problems: any }) {
   );
 }
 
-function NaicsView({ naics }: { naics: any }) {
+function NaicsView({ naics }: { naics?: { segments?: NaicsSegment[] } | null }) {
   const segs = naics?.segments ?? [];
   if (segs.length === 0) return <Empty label="NAICS segmentation not generated yet." />;
   return (
@@ -499,7 +507,7 @@ function NaicsView({ naics }: { naics: any }) {
           </tr>
         </thead>
         <tbody className="divide-y divide-border">
-          {segs.map((s: any, i: number) => (
+          {segs.map((s, i) => (
             <tr key={i} className="hover-elevate">
               <td className="px-4 py-2 font-mono text-xs">{s.naics_code}</td>
               <td className="px-4 py-2 font-medium">{s.name}</td>
@@ -518,16 +526,22 @@ function NaicsView({ naics }: { naics: any }) {
   );
 }
 
-function StakeholderGraph({ map }: { map: any }) {
+function StakeholderGraph({ map }: { map?: StakeholderMap | null }) {
   const nodes = map?.nodes ?? [];
   const edges = map?.edges ?? [];
   if (nodes.length === 0)
     return <Empty label="Stakeholder graph not generated yet." />;
   return (
     <Card className="border-card-border bg-card p-5">
-      <div className="mb-4 text-sm font-semibold">Buying committee</div>
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        {nodes.map((n: any) => (
+      <div className="mb-4 flex items-center justify-between">
+        <div className="text-sm font-semibold">Buying committee</div>
+        <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
+          {nodes.length} stakeholders · {edges.length} relationships
+        </div>
+      </div>
+      <StakeholderFlow nodes={nodes} edges={edges} />
+      <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-3">
+        {nodes.map((n) => (
           <div
             key={n.id}
             className={`rounded border p-3 ${
@@ -558,7 +572,7 @@ function StakeholderGraph({ map }: { map: any }) {
             Influence
           </div>
           <ul className="space-y-1 font-mono text-xs">
-            {edges.map((e: any, i: number) => (
+            {edges.map((e, i) => (
               <li key={i} className="text-muted-foreground">
                 <span className="text-foreground">{e.from}</span> →{" "}
                 <span className="text-foreground">{e.to}</span>
@@ -572,13 +586,13 @@ function StakeholderGraph({ map }: { map: any }) {
   );
 }
 
-function UseCasesView({ use_cases }: { use_cases: any }) {
+function UseCasesView({ use_cases }: { use_cases?: { use_cases?: UseCase[] } | null }) {
   const list = use_cases?.use_cases ?? [];
   if (list.length === 0)
     return <Empty label="Use case library not generated yet." />;
   return (
     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-      {list.map((u: any, i: number) => (
+      {list.map((u, i) => (
         <Card key={i} className="border-card-border bg-card p-4">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <TrendingUp className="h-4 w-4 text-primary" />

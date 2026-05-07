@@ -3,7 +3,7 @@ import json
 import random
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
-from app.db import Strategy, Contact, Sequence, SequenceStep, Account
+from app.db import Strategy, Contact, Sequence, SequenceStep, Account, InstantlyCampaign
 from app.llm import chat_json, chat_text
 from app.services import settings_service, clients
 
@@ -159,9 +159,16 @@ def launch_sequence(db: Session, sequence_id: str) -> dict:
             [{"channel": s.channel, "subject": s.subject, "body": s.body} for s in steps],
         )
         seq.status = "active"
-        seq.instantly_campaign_id = (result or {}).get("id") if isinstance(result, dict) else None
+        campaign_id = (result or {}).get("id") if isinstance(result, dict) else None
+        seq.instantly_campaign_id = campaign_id
+        if campaign_id:
+            db.add(InstantlyCampaign(
+                sequence_id=seq.id,
+                instantly_campaign_id=str(campaign_id),
+                status="active",
+            ))
         db.commit()
-        return {"status": "active", "instantly_pushed": True}
+        return {"status": "active", "instantly_pushed": True, "campaign_id": campaign_id}
     else:
         seq.status = "simulated"
         # Mark as sent and synthesize some engagement events

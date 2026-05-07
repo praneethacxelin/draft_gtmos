@@ -40,9 +40,24 @@ export interface QualSummary {
   nurture: number;
 }
 
+export interface LoopBackChange {
+  field: string;
+  current_value?: unknown;
+  suggested_value?: unknown;
+  reason?: string;
+}
+
+export interface LoopBackDelta {
+  rationale?: string;
+  changes?: LoopBackChange[];
+  promote_personas?: string[];
+  deprioritize_personas?: string[];
+  summary?: string;
+}
+
 export interface LoopBack {
   id: string;
-  delta?: any;
+  delta?: LoopBackDelta | null;
   trigger_summary?: string;
   applied: boolean;
   applied_at?: string;

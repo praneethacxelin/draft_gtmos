@@ -3,7 +3,7 @@ import json
 import random
 from typing import AsyncIterator
 from sqlalchemy.orm import Session
-from app.db import Strategy, Account, Contact, Signal, Competitor, PatternCluster, IcpEmbedding
+from app.db import Strategy, Account, Contact, Signal, Competitor, PatternCluster, IcpEmbedding, LeadScore
 from app.llm import chat_json, deterministic_embedding
 from app.services import settings_service, clients
 
@@ -322,6 +322,18 @@ def score_leads(db: Session, strategy_id: str) -> dict:
             c.tier = 2
         else:
             c.tier = 3
+
+        # Persist a snapshot row (history of scoring runs).
+        db.add(LeadScore(
+            contact_id=c.id,
+            strategy_id=strategy_id,
+            icp_fit_score=c.icp_fit_score,
+            signal_score=sig_score,
+            engagement_score=c.engagement_score,
+            pattern_bonus=pattern_boost,
+            total_score=c.total_score,
+            tier=c.tier,
+        ))
 
     # Mirror to account.tier (highest contact tier wins)
     for acct in db.query(Account).filter(Account.strategy_id == strategy_id).all():

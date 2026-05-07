@@ -1,6 +1,8 @@
+import json
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from app.db import get_session, Sequence, SequenceStep, OutreachEvent
+from sse_starlette.sse import EventSourceResponse
+from app.db import get_session, SessionLocal, Sequence, SequenceStep, OutreachEvent
 from app.agents.s3_outreach import generate_sequence, deliverability_check, launch_sequence
 
 router = APIRouter(prefix="/sequences", tags=["sequences"])
@@ -44,8 +46,20 @@ def check(sequence_id: str, db: Session = Depends(get_session)) -> dict:
 
 
 @router.post("/{sequence_id}/launch")
-def launch(sequence_id: str, db: Session = Depends(get_session)) -> dict:
-    return launch_sequence(db, sequence_id)
+def launch(sequence_id: str):
+    """Stream launch progress (Instantly push or simulated send)."""
+    async def gen():
+        yield {"event": "stage_start", "data": json.dumps({"stage": "launch"})}
+        db2 = SessionLocal()
+        try:
+            result = launch_sequence(db2, sequence_id)
+            yield {"event": "stage_complete", "data": json.dumps({"stage": "launch", "result": result})}
+            yield {"event": "complete", "data": json.dumps({"stage": "launch"})}
+        except Exception as e:
+            yield {"event": "error", "data": json.dumps({"message": str(e)})}
+        finally:
+            db2.close()
+    return EventSourceResponse(gen())
 
 
 @router.get("/{sequence_id}/engagement")

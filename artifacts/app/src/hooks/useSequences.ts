@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, streamSse } from "@/lib/api";
 
 export interface SequenceStep {
   id: string;
@@ -13,12 +13,26 @@ export interface SequenceStep {
   status: string;
 }
 
+export interface ChannelPlanStep {
+  step: number;
+  channel: "email" | "linkedin" | "call";
+  wait_days: number;
+}
+
+export interface DeliverabilityReport {
+  score: number;
+  flagged_phrases?: string[];
+  link_count?: number;
+  avg_length?: number;
+  notes?: string;
+}
+
 export interface Sequence {
   id: string;
   status: string;
-  channel_plan?: any;
+  channel_plan?: ChannelPlanStep[];
   deliverability_score?: number;
-  deliverability_report?: any;
+  deliverability_report?: DeliverabilityReport | null;
   instantly_campaign_id?: string;
   steps: SequenceStep[];
 }
@@ -57,7 +71,7 @@ export function useLaunchSequence() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (sequenceId: string) =>
-      apiFetch(`/api/sequences/${sequenceId}/launch`, { method: "POST" }),
+      streamSse(`/api/sequences/${sequenceId}/launch`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["sequence"] }),
   });
 }
