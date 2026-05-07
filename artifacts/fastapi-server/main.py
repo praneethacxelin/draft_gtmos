@@ -45,8 +45,15 @@ def _run_migrations() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    _run_migrations()
-    log.info("Alembic migrations applied")
+    import sys, traceback
+    try:
+        _run_migrations()
+        log.info("Alembic migrations applied")
+    except BaseException as e:
+        sys.stderr.write(f"\n!!! MIGRATION FAILED: {type(e).__name__}: {e}\n")
+        traceback.print_exc(file=sys.stderr)
+        sys.stderr.flush()
+        raise
     poller = asyncio.create_task(poll_loop())
     m3 = asyncio.create_task(m3_loop())
     log.info("Background tasks started: Instantly poller (1h), M3 tracker (6h)")

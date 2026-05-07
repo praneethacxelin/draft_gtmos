@@ -13,7 +13,7 @@ paths = ["/api"]
 run = "python3 -u -m uvicorn main:app --host 0.0.0.0 --port 8080"
 
 [services.production]
-build = ["pip", "install", "-r", "artifacts/fastapi-server/requirements.txt"]
+build = ["sh", "-c", "pip install -r artifacts/fastapi-server/requirements.txt && cd artifacts/fastapi-server && python3 -u -m alembic upgrade head"]
 run = ["python3", "-u", "-m", "uvicorn", "main:app", "--app-dir", "artifacts/fastapi-server", "--host", "0.0.0.0", "--port", "8080"]
 
 [services.production.health.startup]
