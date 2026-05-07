@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "mnHUp9X813Mo1s08RBokC"
+uri = "file://.local/outputs/Attached-Assets.pptx"
+type = "slides"
+title = "Attached Assets.pptx"
