@@ -186,12 +186,22 @@ paths:
         - { name: strategy_id, in: query, required: true, schema: { type: string } }
       responses:
         "200":
-          description: OK
+          description: Accounts grouped into tier buckets (1 = highest priority).
           content:
             application/json:
               schema:
-                type: array
-                items: { $ref: "#/components/schemas/Account" }
+                type: object
+                required: [tier_1, tier_2, tier_3]
+                properties:
+                  tier_1:
+                    type: array
+                    items: { $ref: "#/components/schemas/Account" }
+                  tier_2:
+                    type: array
+                    items: { $ref: "#/components/schemas/Account" }
+                  tier_3:
+                    type: array
+                    items: { $ref: "#/components/schemas/Account" }
 
   /contacts:
     get:

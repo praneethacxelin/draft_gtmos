@@ -8,13 +8,13 @@
 - Web:  `vite --host 0.0.0.0` (in `artifacts/app/`)
 - Seed: `python3 artifacts/fastapi-server/seed.py`
 - Migrations are applied automatically on API startup via Alembic (`alembic upgrade head` in `lifespan`).
-- Required env: `DATABASE_URL`, `ENCRYPTION_KEY`, `AI_INTEGRATIONS_OPENAI_BASE_URL`, `AI_INTEGRATIONS_OPENAI_API_KEY`
+- Required env: `DATABASE_URL`, `ENCRYPTION_KEY`. The Replit OpenAI integration injects `AI_INTEGRATIONS_OPENAI_*` automatically and is consumed by `app/llm.py`.
 - All third-party tool keys (SerpAPI, Apollo, Clay, Instantly) are managed in-app via Settings — encrypted with Fernet in the `app_settings` table.
 
 ## Stack
 
 - Backend: Python 3.11 + FastAPI + SQLAlchemy 2 + psycopg3 + pgvector (sse-starlette for streaming).
-- AI: Replit OpenAI Integrations proxy (gpt-4o-mini). No real embeddings API — pgvector uses deterministic SHA-based pseudo-embeddings (see `app/llm.py`).
+- AI: Replit OpenAI Integrations proxy (gpt-4o-mini). No real embeddings API — pgvector uses deterministic SHA-based 1536-dim pseudo-embeddings (see `app/llm.py`).
 - Frontend: React 18 + Vite + Tailwind v4 + shadcn/ui + TanStack Query + Wouter (no codegen — direct fetch).
 - DB: Replit PostgreSQL with `pgvector` extension.
 
@@ -33,7 +33,7 @@
 
 ## Architecture decisions
 
-- Replit OpenAI proxy does not expose embeddings; `llm.deterministic_embedding()` produces a normalised 384-dim hash-based vector so pgvector clustering still works for the demo.
+- Replit OpenAI proxy does not expose embeddings; `llm.deterministic_embedding()` produces a normalised 1536-dim hash-based vector (matching `text-embedding-3-small`) so pgvector clustering still works for the demo and remains forward-compatible if real embeddings become available.
 - All external integrations are optional: each `*_search` returns `None` if no key is configured, and the agent falls back to AI-generated demo data flagged with `is_demo`/`source: "ai_demo"` so the UI can label it.
 - S1 generation is exposed as Server-Sent Events so the frontend can render a live pipeline.
 - Lead scoring is a weighted composite (ICP fit 30% + signals 40% + engagement 30%) with a small boost when learned `pattern_clusters` exist for the strategy.

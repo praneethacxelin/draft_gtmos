@@ -108,7 +108,11 @@ async def run_lead_search(db: Session, strategy_id: str) -> dict:
     existing_accounts = (
         db.query(Account).filter(Account.strategy_id == strategy_id).all()
     )
+    # Map of all known accounts (existing + newly created in this run) keyed
+    # by company name; used to dedupe inserts. ``newly_added_accounts`` tracks
+    # only the rows actually inserted in this run for the response payload.
     new_accounts: dict[str, Account] = {a.company_name: a for a in existing_accounts}
+    newly_added_accounts: list[str] = []
     existing_emails = {
         (c.email or "").lower()
         for c in db.query(Contact).filter(Contact.strategy_id == strategy_id).all()
@@ -152,6 +156,7 @@ async def run_lead_search(db: Session, strategy_id: str) -> dict:
                 db.add(account)
                 db.flush()
                 new_accounts[company] = account
+                newly_added_accounts.append(company)
             contact = Contact(
                 account_id=account.id,
                 strategy_id=strategy_id,
@@ -190,6 +195,7 @@ async def run_lead_search(db: Session, strategy_id: str) -> dict:
                 db.add(account)
                 db.flush()
                 new_accounts[company] = account
+                newly_added_accounts.append(company)
             contact = Contact(
                 account_id=account.id,
                 strategy_id=strategy_id,
@@ -212,7 +218,7 @@ async def run_lead_search(db: Session, strategy_id: str) -> dict:
     score_leads(db, strategy_id)
 
     return {
-        "accounts_added": len(new_accounts),
+        "accounts_added": len(newly_added_accounts),
         "contacts_added": len(new_contacts),
         "is_demo": is_demo,
         "uses_clay": bool(clay_key),
