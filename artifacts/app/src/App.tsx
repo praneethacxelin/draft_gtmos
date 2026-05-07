@@ -31,9 +31,10 @@ const queryClient = new QueryClient({
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as
   | string
   | undefined;
-const clerkProxyUrl = import.meta.env.VITE_CLERK_PROXY_URL as
-  | string
-  | undefined;
+// Do NOT use VITE_CLERK_PROXY_URL — Replit's production infrastructure
+// intercepts /api/__clerk/* at the proxy layer and returns 500 before it
+// reaches FastAPI. Clerk loads its JS bundle fine directly from the FAPI CDN.
+const clerkProxyUrl = undefined;
 
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
 

@@ -9,6 +9,7 @@ and Clerk-Secret-Key headers.
 import base64
 import logging
 import os
+import traceback
 
 import httpx
 from fastapi import APIRouter, Request
@@ -50,6 +51,19 @@ def _fapi_domain() -> str:
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
 )
 async def clerk_proxy(path: str, request: Request) -> Response:
+    try:
+        return await _do_proxy(path, request)
+    except Exception as exc:
+        tb = traceback.format_exc()
+        log.error("Clerk proxy error for path=%s: %s\n%s", path, exc, tb)
+        return Response(
+            status_code=502,
+            content=f"Clerk proxy error: {exc}\n\n{tb}",
+            media_type="text/plain",
+        )
+
+
+async def _do_proxy(path: str, request: Request) -> Response:
     secret_key = os.environ.get("CLERK_SECRET_KEY", "")
     if not secret_key:
         log.warning("CLERK_SECRET_KEY not set — Clerk proxy returning 503")
@@ -59,6 +73,8 @@ async def clerk_proxy(path: str, request: Request) -> Response:
     target_url = f"https://{fapi}/{path}"
     if request.url.query:
         target_url += f"?{request.url.query}"
+
+    log.info("Clerk proxy: %s %s → %s", request.method, path, target_url)
 
     # Build Clerk-Proxy-Url from the incoming request
     proto = request.headers.get("x-forwarded-proto", "https")
@@ -76,17 +92,16 @@ async def clerk_proxy(path: str, request: Request) -> Response:
     # redirects to the versioned CDN URL which resolves correctly.
     is_npm_path = path.startswith("npm/")
 
-    # Forward headers, stripping hop-by-hop and injecting Clerk headers
+    # Forward headers, stripping hop-by-hop. Don't carry over host —
+    # httpx sets it correctly from the target URL.
     forward_headers = {
         k: v
         for k, v in request.headers.items()
-        if k.lower() not in _HOP_HEADERS
+        if k.lower() not in _HOP_HEADERS and k.lower() != "host"
     }
     if not is_npm_path:
         forward_headers["Clerk-Proxy-Url"] = proxy_url
         forward_headers["Clerk-Secret-Key"] = secret_key
-    # Must target the correct FAPI host
-    forward_headers["host"] = fapi
 
     # Preserve client IP
     xff = request.headers.get("x-forwarded-for", "")
@@ -107,6 +122,8 @@ async def clerk_proxy(path: str, request: Request) -> Response:
             headers=forward_headers,
             content=body,
         )
+
+    log.info("Clerk proxy upstream status: %s for %s", upstream.status_code, target_url)
 
     response_headers = {
         k: v
