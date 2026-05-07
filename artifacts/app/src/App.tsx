@@ -161,34 +161,6 @@ function ClerkRoutes() {
       signUpUrl={`${basePath}/sign-up`}
       routerPush={(to) => setLocation(stripBase(to))}
       routerReplace={(to) => setLocation(stripBase(to), { replace: true })}
-      appearance={{
-        variables: {
-          colorPrimary: "#7C3AED",
-        },
-        layout: {
-          logoImageUrl: `${window.location.origin}${basePath}/logo.svg`,
-          logoPlacement: "inside",
-        },
-      }}
-      localization={{
-        signIn: {
-          start: {
-            title: "Sign in to Agentic GTM Factory",
-            subtitle: "Welcome back — let's launch your next campaign.",
-            actionText: "Don't have an account?",
-            actionLink: "Sign up",
-          },
-        },
-        signUp: {
-          start: {
-            title: "Create your Agentic GTM Factory account",
-            subtitle: "Spin up your first AI go-to-market strategy in minutes.",
-            actionText: "Already have an account?",
-            actionLink: "Sign in",
-          },
-        },
-        socialButtonsBlockButton: "Continue with {{provider|titleize}}",
-      }}
     >
       <QueryClientProvider client={queryClient}>
         <DebugBanner />
