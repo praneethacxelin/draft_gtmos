@@ -34,7 +34,7 @@ import {
 } from "@/hooks/useM3";
 import { fmtRelative } from "@/lib/format";
 import { Activity, RefreshCcw, MessagesSquare, Workflow, Check } from "lucide-react";
-import { ReasoningPanel } from "@/components/ReasoningPanel";
+import { ReasoningPanel, SourceBadge } from "@/components/ReasoningPanel";
 
 export function Intelligence() {
   const { activeId, active } = useActiveStrategy();
@@ -302,6 +302,7 @@ function IntentTab({ strategyId }: { strategyId: string }) {
                 <span className="font-mono text-sm tabular-nums">
                   {r.score.toFixed(0)}
                 </span>
+                <SourceBadge source="ai_generated" />
               </div>
             </div>
             <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-muted">
@@ -563,7 +564,10 @@ function QualificationTab({ strategyId }: { strategyId: string }) {
                   {c.company_name}
                 </td>
                 <td className="px-4 py-2 font-mono tabular-nums">
-                  {c.total_score.toFixed(0)}
+                  <span className="inline-flex items-center gap-2">
+                    {c.total_score.toFixed(0)}
+                    <SourceBadge source="ai_generated" />
+                  </span>
                 </td>
                 <td className="px-4 py-2 text-right">
                   <Button

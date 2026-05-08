@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
@@ -115,16 +116,19 @@ function FetchLimitsCard() {
                 (1–{data.maximums[f.key]})
               </span>
             </Label>
-            <Input
-              type="number"
-              min={1}
-              max={data.maximums[f.key]}
-              value={draft[f.key]}
-              onChange={(e) =>
-                setDraft({ ...draft, [f.key]: Math.max(1, Math.min(data.maximums[f.key], Number(e.target.value) || 1)) })
-              }
-              data-testid={`input-fetch-${f.key}`}
-            />
+            <div className="flex items-center gap-3" data-testid={`slider-fetch-${f.key}`}>
+              <Slider
+                min={1}
+                max={data.maximums[f.key]}
+                step={1}
+                value={[draft[f.key]]}
+                onValueChange={(v) =>
+                  setDraft({ ...draft, [f.key]: Math.max(1, Math.min(data.maximums[f.key], v[0] ?? 1)) })
+                }
+                className="flex-1"
+              />
+              <span className="w-10 text-right font-mono text-sm tabular-nums">{draft[f.key]}</span>
+            </div>
             <div className="mt-1 text-[11px] text-muted-foreground">{f.help}</div>
           </div>
         ))}

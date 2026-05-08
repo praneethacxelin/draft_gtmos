@@ -238,6 +238,7 @@ export function Prospects() {
                                 <span className="font-mono text-xs tabular-nums">
                                   {a.intent_score.toFixed(0)}
                                 </span>
+                                <SourceBadge source="ai_generated" />
                               </div>
                             ) : (
                               <span className="text-xs text-muted-foreground">—</span>
