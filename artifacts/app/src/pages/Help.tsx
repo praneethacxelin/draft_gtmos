@@ -204,12 +204,10 @@ function HowToUse() {
                   <span className="font-medium text-foreground">Output: </span>{step.output}
                 </div>
 
-                {i < HOW_TO_STEPS.length - 1 && (
-                  <div className="mt-3 flex items-center gap-2 text-xs text-primary">
-                    <ArrowRight className="h-3.5 w-3.5" />
-                    <span>{step.next}</span>
-                  </div>
-                )}
+                <div className="mt-3 flex items-center gap-2 text-xs text-primary">
+                  <ArrowRight className="h-3.5 w-3.5" />
+                  <span>{step.next}</span>
+                </div>
               </div>
             </div>
           </Card>
@@ -498,6 +496,11 @@ function SolutionArchitecture() {
               body: "Add Apollo, SerpAPI, and Instantly keys in Settings to switch from AI-demo data to real people-search, live buying signals, and actual email sends.",
             },
             {
+              icon: <Send className="h-4 w-4" />,
+              label: "Multi-channel automation",
+              body: "Automatically execute every step of a sequence — LinkedIn DMs, emails, and call reminders — on a schedule, without the rep needing to log in and hit Launch each time.",
+            },
+            {
               icon: <Database className="h-4 w-4" />,
               label: "CRM sync",
               body: "Push scored contacts and sequence outcomes directly to HubSpot or Salesforce so your GTM motion lives alongside your existing sales process.",
@@ -506,6 +509,11 @@ function SolutionArchitecture() {
               icon: <Users className="h-4 w-4" />,
               label: "Team collaboration",
               body: "Allow multiple reps to share a strategy, own different contact segments, and see each other's outreach in a unified feed.",
+            },
+            {
+              icon: <TrendingUp className="h-4 w-4" />,
+              label: "RevenueCat gating",
+              body: "Gate advanced features (unlimited strategies, live API connections, team seats) behind a subscription tier managed via RevenueCat — so the free plan stays generous while power users unlock the full pipeline.",
             },
             {
               icon: <TrendingUp className="h-4 w-4" />,
