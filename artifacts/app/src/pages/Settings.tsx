@@ -89,7 +89,7 @@ function FetchLimitsCard() {
   if (!data || !draft) return null;
   const fields: { key: keyof typeof draft; label: string; help: string }[] = [
     { key: "leads_per_run", label: "Leads per run", help: "How many contacts a Discover-leads click pulls (Apollo or AI demo)." },
-    { key: "signals_per_account", label: "Signals per account", help: "How many SerpAPI results to keep per query, per account." },
+    { key: "signals_per_account", label: "Signals per account", help: "Hard cap on SerpAPI signals persisted per account per run (split across funding + hiring queries)." },
     { key: "market_sizing_results", label: "Market sizing results", help: "How many SerpAPI snippets feed the TAM/SAM/SOM prompt." },
   ];
 

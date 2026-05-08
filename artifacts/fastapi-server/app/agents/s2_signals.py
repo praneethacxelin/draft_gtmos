@@ -300,23 +300,34 @@ async def run_signals(db: Session, strategy_id: str, limit: int | None = None) -
 
     added = 0
     if serp_key:
+        # Hard ceiling: at most ``n_per_account`` signals are persisted per
+        # account per run, regardless of how many query types we issue. We
+        # split the budget across query kinds, then truncate the merged
+        # result list before insert as a belt-and-braces guard.
+        query_kinds = [
+            ("funding", "{c} raises funding"),
+            ("hiring", "{c} hiring VP Sales"),
+        ]
+        per_query_budget = max(1, n_per_account // len(query_kinds)) or 1
         for acct in accounts:
-            for kind, query_tpl in [
-                ("funding", "{c} raises funding"),
-                ("hiring", "{c} hiring VP Sales"),
-            ]:
-                results = clients.serpapi_search(serp_key, query_tpl.format(c=acct.company_name), num=n_per_account)
+            collected: list[tuple[str, dict]] = []
+            for kind, query_tpl in query_kinds:
+                results = clients.serpapi_search(
+                    serp_key, query_tpl.format(c=acct.company_name), num=per_query_budget
+                )
                 for r in results or []:
-                    db.add(Signal(
-                        strategy_id=strategy_id,
-                        account_id=acct.id,
-                        signal_type=kind,
-                        source="serpapi",
-                        summary=(r.get("title") or "")[:240],
-                        strength_score=0.7,
-                        raw_data_json=r,
-                    ))
-                    added += 1
+                    collected.append((kind, r))
+            for kind, r in collected[:n_per_account]:
+                db.add(Signal(
+                    strategy_id=strategy_id,
+                    account_id=acct.id,
+                    signal_type=kind,
+                    source="serpapi",
+                    summary=(r.get("title") or "")[:240],
+                    strength_score=0.7,
+                    raw_data_json=r,
+                ))
+                added += 1
     else:
         # AI demo signals
         company_names = [a.company_name for a in accounts]
