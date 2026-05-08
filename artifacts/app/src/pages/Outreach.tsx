@@ -44,7 +44,7 @@ export function Outreach() {
       <PageHeader
         eyebrow="Stage 3 · 3-channel outreach"
         title="Outreach"
-        subtitle={`Persona-aware sequences for top-tier contacts in ${active?.product_name ?? ""}.`}
+        subtitle={`Persona-aware sequences for all contacts in ${active?.product_name ?? ""}, ranked by tier and score.`}
       />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
