@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.db import Strategy, IcpEmbedding
 from app.llm import chat_json, deterministic_embedding, MODEL_NAME
 from app.provenance import stamp
+from app.services.rate_limit import RateLimitExceeded
 
 
 _STAGE_LOGIC: dict[str, tuple[str, list[str]]] = {
@@ -235,6 +236,19 @@ async def stream_s1(db: Session, strategy_id: str) -> AsyncIterator[dict]:
         try:
             await _S1_GRAPH.ainvoke(initial)
             await queue.put({"event": "complete", "data": {"strategy_id": strategy_id}})
+        except RateLimitExceeded as rle:
+            await queue.put({
+                "event": "error",
+                "data": {
+                    "status": 429,
+                    "integration": rle.integration,
+                    "retry_after_seconds": rle.retry_after_seconds,
+                    "message": (
+                        f"Free-tier rate limit reached for {rle.integration}. "
+                        f"Retry in ~{rle.retry_after_seconds}s."
+                    ),
+                },
+            })
         except Exception as exc:  # pragma: no cover
             await queue.put({"event": "error", "data": {"message": str(exc)}})
         finally:

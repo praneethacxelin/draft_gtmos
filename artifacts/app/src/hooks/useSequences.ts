@@ -27,10 +27,20 @@ export interface DeliverabilityReport {
   notes?: string;
 }
 
+export interface SequenceProvenance {
+  source?: string;
+  logic?: string;
+  steps?: string[];
+  model?: string;
+  counts?: Record<string, number>;
+  generated_at?: string;
+}
+
 export interface Sequence {
   id: string;
   status: string;
   channel_plan?: ChannelPlanStep[];
+  provenance?: SequenceProvenance | null;
   deliverability_score?: number;
   deliverability_report?: DeliverabilityReport | null;
   instantly_campaign_id?: string;

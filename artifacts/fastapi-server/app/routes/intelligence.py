@@ -153,7 +153,22 @@ async def post_feedback(
 ) -> dict:
     own_strategy(db, body.strategy_id, user)
     f = await capture_feedback_with_ai(db, body.strategy_id, body.source, body.raw_text, body.contact_id)
-    return {"id": f.id, "sentiment": f.sentiment, "themes": f.themes_json}
+    return {
+        "id": f.id,
+        "sentiment": f.sentiment,
+        "themes": f.themes_json,
+        "provenance": {
+            "source": "ai_generated",
+            "logic": "Sentiment + themes extracted by the model from the verbatim feedback text.",
+            "steps": [
+                "Send raw feedback to the model",
+                "Parse JSON: sentiment + themes[]",
+                "Persist FeedbackEntry",
+            ],
+            "model": MODEL_NAME,
+            "counts": {"themes": len(f.themes_json or [])},
+        },
+    }
 
 
 @router.get("/feedback")

@@ -73,7 +73,6 @@ async def generate_sequence(db: Session, contact_id: str) -> dict:
         db.add(seq)
         db.flush()
 
-    seq.channel_plan_json = channel_plan
     seq.status = "draft"
     sequence_provenance = stamp(
         source="ai_generated",
@@ -91,6 +90,9 @@ async def generate_sequence(db: Session, contact_id: str) -> dict:
         counts={"steps": len(channel_plan)},
         model=MODEL_NAME,
     )
+    # Persist provenance alongside the plan so GET /sequences/by-contact
+    # can serve it back to the UI without re-running the agent.
+    seq.channel_plan_json = {"plan": channel_plan, "_provenance": sequence_provenance}
 
     base_time = datetime.utcnow().replace(hour=9, minute=0, second=0, microsecond=0)
     cumulative = 0

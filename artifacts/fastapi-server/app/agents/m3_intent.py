@@ -93,24 +93,7 @@ async def capture_feedback_with_ai(db: Session, strategy_id: str, source: str, r
         contact_id=contact_id,
         source=source,
         sentiment=extracted.get("sentiment", "neutral"),
-        themes_json={
-            "themes": themes,
-            "_provenance": {
-                "source": "ai_generated",
-                "logic": (
-                    "Sentiment + themes extracted by the model from the verbatim "
-                    "feedback text; raw text persisted alongside for audit."
-                ),
-                "steps": [
-                    "Send raw feedback to the model",
-                    "Parse JSON: sentiment + themes[]",
-                    "Persist FeedbackEntry with both",
-                ],
-                "model": MODEL_NAME,
-                "counts": {"themes": len(themes)},
-                "generated_at": datetime.utcnow().isoformat(),
-            },
-        },
+        themes_json=themes,
         raw_text=raw_text,
     )
     db.add(entry)

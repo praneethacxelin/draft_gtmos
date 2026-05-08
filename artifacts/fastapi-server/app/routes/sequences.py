@@ -31,10 +31,18 @@ def by_contact(
     if not seq:
         return None
     steps = db.query(SequenceStep).filter(SequenceStep.sequence_id == seq.id).order_by(SequenceStep.step_number).all()
+    raw_plan = seq.channel_plan_json
+    if isinstance(raw_plan, dict) and "plan" in raw_plan:
+        channel_plan = raw_plan.get("plan")
+        provenance = raw_plan.get("_provenance")
+    else:
+        channel_plan = raw_plan
+        provenance = None
     return {
         "id": seq.id,
         "status": seq.status,
-        "channel_plan": seq.channel_plan_json,
+        "channel_plan": channel_plan,
+        "provenance": provenance,
         "deliverability_score": seq.deliverability_score,
         "deliverability_report": seq.deliverability_report_json,
         "instantly_campaign_id": seq.instantly_campaign_id,
@@ -70,6 +78,8 @@ def launch(
 ):
     """Stream launch progress (Instantly push or simulated send)."""
     own_sequence(db, sequence_id, user)
+    from app.services.rate_limit import RateLimitExceeded
+
     async def gen():
         yield {"event": "stage_start", "data": json.dumps({"stage": "launch"})}
         db2 = SessionLocal()
@@ -77,6 +87,16 @@ def launch(
             result = launch_sequence(db2, sequence_id)
             yield {"event": "stage_complete", "data": json.dumps({"stage": "launch", "result": result})}
             yield {"event": "complete", "data": json.dumps({"stage": "launch"})}
+        except RateLimitExceeded as rle:
+            yield {"event": "error", "data": json.dumps({
+                "status": 429,
+                "integration": rle.integration,
+                "retry_after_seconds": rle.retry_after_seconds,
+                "message": (
+                    f"Free-tier rate limit reached for {rle.integration}. "
+                    f"Retry in ~{rle.retry_after_seconds}s."
+                ),
+            })}
         except Exception as e:
             yield {"event": "error", "data": json.dumps({"message": str(e)})}
         finally:
