@@ -188,26 +188,30 @@ function App() {
     }
   }, []);
 
-  if (!clerkPubKey) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-background p-8 text-foreground">
-        <div className="max-w-md rounded-lg border border-border p-6 text-sm">
-          <div className="mb-2 font-semibold">Authentication not configured</div>
-          <div className="text-muted-foreground">
-            Missing <code>VITE_CLERK_PUBLISHABLE_KEY</code>. Set it in the
-            environment to enable sign-in.
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <WouterRouter base={basePath}>
       <Switch>
         <Route path="/admin/*?" component={AdminPage} />
         <Route>
-          <ClerkRoutes />
+          {!clerkPubKey ? (
+            <div className="flex min-h-screen items-center justify-center bg-background p-8 text-foreground">
+              <div className="max-w-md rounded-lg border border-border p-6 text-sm">
+                <div className="mb-2 font-semibold">
+                  Authentication not configured
+                </div>
+                <div className="text-muted-foreground">
+                  Missing <code>VITE_CLERK_PUBLISHABLE_KEY</code>. Set it in
+                  the environment to enable sign-in. Admins can still use{" "}
+                  <a href="/admin" className="underline">
+                    /admin
+                  </a>
+                  .
+                </div>
+              </div>
+            </div>
+          ) : (
+            <ClerkRoutes />
+          )}
         </Route>
       </Switch>
     </WouterRouter>
