@@ -17,7 +17,7 @@ import { ReasoningPanel, SourceBadge } from "@/components/ReasoningPanel";
 
 export function Outreach() {
   const { active, activeId } = useActiveStrategy();
-  const { data: contacts } = useContacts(activeId ?? undefined, 1);
+  const { data: contacts } = useContacts(activeId ?? undefined);
   const [selected, setSelected] = useState<string | null>(null);
 
   useEffect(() => {
@@ -50,7 +50,7 @@ export function Outreach() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
         <Card className="lg:col-span-4 border-card-border bg-card p-3">
           <div className="mb-2 px-2 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
-            Tier 1 contacts
+            Contacts
           </div>
           <div className="space-y-1">
             {contacts?.map((c) => (
@@ -75,7 +75,7 @@ export function Outreach() {
             ))}
             {(!contacts || contacts.length === 0) && (
               <div className="px-3 py-6 text-center text-xs text-muted-foreground">
-                No Tier 1 contacts yet.
+                No contacts yet. Run lead discovery first.
               </div>
             )}
           </div>

@@ -91,7 +91,7 @@ export function Dashboard() {
           )}
           {activeId && (!plays || plays.length === 0) && (
             <div className="rounded border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-              No Tier 1 contacts yet. Run lead discovery and signals to populate.
+              No top-tier contacts yet. Run lead discovery then score leads to populate.
             </div>
           )}
           <div className="space-y-2">

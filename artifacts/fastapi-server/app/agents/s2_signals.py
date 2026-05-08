@@ -419,9 +419,14 @@ def score_leads(db: Session, strategy_id: str) -> dict:
         # engagement_score is updated by M3 separately
         total = (c.icp_fit_score * 0.30) + (sig_score * 0.40) + (c.engagement_score * 0.30) + pattern_boost
         c.total_score = round(min(total, 100), 1)
-        if c.total_score >= 70:
+        # Thresholds calibrated for demo/no-live-key installs:
+        # Without SerpAPI or engagement events the max achievable score
+        # via ICP-fit alone is ~45 (VP/Director-level title + champion
+        # persona). Setting Tier 1 at ≥50 lets high-seniority demo
+        # contacts qualify after a lead-discovery run.
+        if c.total_score >= 50:
             c.tier = 1
-        elif c.total_score >= 40:
+        elif c.total_score >= 25:
             c.tier = 2
         else:
             c.tier = 3
