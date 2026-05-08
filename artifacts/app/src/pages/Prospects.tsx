@@ -31,8 +31,8 @@ export function Prospects() {
   const [tierFilter, setTierFilter] = useState<string>("all");
   const tier = tierFilter === "all" ? undefined : Number(tierFilter);
   const { data: caps } = useFetchLimits();
-  const [leadLimit, setLeadLimit] = useState<string>("");
-  const [signalLimit, setSignalLimit] = useState<string>("");
+  const [leadLimit, setLeadLimit] = useState<string>("default");
+  const [signalLimit, setSignalLimit] = useState<string>("default");
 
   const { data: prioritized } = usePrioritizedAccounts(activeId ?? undefined);
   const { data: contacts } = useContacts(activeId ?? undefined, tier);
@@ -66,7 +66,7 @@ export function Prospects() {
                 <SelectValue placeholder={`Leads: ${caps?.limits.leads_per_run ?? "default"}`} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="">Default ({caps?.limits.leads_per_run ?? 5})</SelectItem>
+                <SelectItem value="default">Default ({caps?.limits.leads_per_run ?? 5})</SelectItem>
                 {[3, 5, 10, 15, 25].map((n) => (
                   <SelectItem key={n} value={String(n)}>{n} leads</SelectItem>
                 ))}
@@ -79,7 +79,7 @@ export function Prospects() {
               onClick={() =>
                 leadSearch.mutate({
                   id: activeId,
-                  limit: leadLimit ? Number(leadLimit) : undefined,
+                  limit: leadLimit && leadLimit !== "default" ? Number(leadLimit) : undefined,
                 })
               }
               data-testid="button-discover-leads"
@@ -92,7 +92,7 @@ export function Prospects() {
                 <SelectValue placeholder={`Signals/acct: ${caps?.limits.signals_per_account ?? "default"}`} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="">Default ({caps?.limits.signals_per_account ?? 3})</SelectItem>
+                <SelectItem value="default">Default ({caps?.limits.signals_per_account ?? 3})</SelectItem>
                 {[2, 3, 5, 10].map((n) => (
                   <SelectItem key={n} value={String(n)}>{n} per acct</SelectItem>
                 ))}
@@ -105,7 +105,7 @@ export function Prospects() {
               onClick={() =>
                 runSignals.mutate({
                   id: activeId,
-                  limit: signalLimit ? Number(signalLimit) : undefined,
+                  limit: signalLimit && signalLimit !== "default" ? Number(signalLimit) : undefined,
                 })
               }
               data-testid="button-run-signals"

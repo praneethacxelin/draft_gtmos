@@ -62,7 +62,7 @@ export function StrategyDetail() {
   const { data: patterns } = usePatterns(id);
   const runPatterns = useRunPatterns();
   const { data: fetchCaps } = useFetchLimits();
-  const [marketLimit, setMarketLimit] = useState<string>("");
+  const [marketLimit, setMarketLimit] = useState<string>("default");
 
   useEffect(() => {
     if (!strategy || !id) return;
@@ -256,7 +256,7 @@ export function StrategyDetail() {
                     <SelectValue placeholder={`Sources: ${fetchCaps?.limits.market_sizing_results ?? "default"}`} />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">Default ({fetchCaps?.limits.market_sizing_results ?? 5})</SelectItem>
+                    <SelectItem value="default">Default ({fetchCaps?.limits.market_sizing_results ?? 3})</SelectItem>
                     {[2, 3, 5, 8, 10].map((n) => (
                       <SelectItem key={n} value={String(n)}>{n} sources</SelectItem>
                     ))}
@@ -270,7 +270,7 @@ export function StrategyDetail() {
                   id &&
                   sizing.mutate({
                     id,
-                    limit: marketLimit ? Number(marketLimit) : undefined,
+                    limit: marketLimit && marketLimit !== "default" ? Number(marketLimit) : undefined,
                   })
                 }
                 data-testid="button-market-sizing"
