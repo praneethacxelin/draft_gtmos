@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRoute } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { Card } from "@/components/ui/card";
@@ -52,6 +52,7 @@ export function StrategyDetail() {
   const qc = useQueryClient();
   const [streaming, setStreaming] = useState(false);
   const [stageStatus, setStageStatus] = useState<Record<string, string>>({});
+  const autoRanRef = useRef<string | null>(null);
   const sizing = useMarketSizing();
   const runComps = useRunCompetitors();
   const { data: competitors } = useCompetitors(id);
@@ -59,9 +60,14 @@ export function StrategyDetail() {
   const runPatterns = useRunPatterns();
 
   useEffect(() => {
-    if (!strategy || strategy.status === "ready" || streaming) return;
-    // auto-run if draft
-  }, [strategy, streaming]);
+    if (!strategy || !id) return;
+    if (strategy.status !== "draft") return;
+    if (streaming) return;
+    if (autoRanRef.current === id) return;
+    autoRanRef.current = id;
+    startStream();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [strategy, streaming, id]);
 
   function startStream() {
     if (!id) return;
