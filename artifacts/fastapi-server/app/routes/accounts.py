@@ -16,7 +16,7 @@ def list_accounts(
     own_strategy(db, strategy_id, user)
     accounts = (
         db.query(Account)
-        .filter(Account.strategy_id == strategy_id, Account.user_id == user.id)
+        .filter(Account.strategy_id == strategy_id)
         .all()
     )
     out = []

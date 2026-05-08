@@ -1,24 +1,13 @@
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
-let tokenGetter: (() => Promise<string | null>) | null = null;
-
 /**
- * Register the auth-token getter so apiFetch / streamSse attach a
- * Bearer token to every request. Called from the App once Clerk is
- * loaded.
+ * Auth was removed — every request is anonymous. This setter is kept as
+ * a no-op to avoid breaking imports in older code paths.
  */
-export function setAuthTokenGetter(fn: (() => Promise<string | null>) | null) {
-  tokenGetter = fn;
-}
-
-async function authHeaders(): Promise<Record<string, string>> {
-  if (!tokenGetter) return {};
-  try {
-    const token = await tokenGetter();
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  } catch {
-    return {};
-  }
+export function setAuthTokenGetter(
+  _fn: (() => Promise<string | null>) | null,
+) {
+  // no-op
 }
 
 export function apiUrl(path: string): string {
@@ -27,12 +16,10 @@ export function apiUrl(path: string): string {
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const url = apiUrl(path);
-  const auth = await authHeaders();
   const res = await fetch(url, {
     ...init,
     headers: {
       "Content-Type": "application/json",
-      ...auth,
       ...(init?.headers || {}),
     },
   });
@@ -52,8 +39,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
 /**
  * POST to an SSE endpoint and resolve when the server emits the
  * `complete` event (or rejects on `error`). The final `stage_complete`
- * payload's `result` field is returned when present so callers can
- * still surface a value.
+ * payload's `result` field is returned when present.
  */
 export function streamSse<T = unknown>(
   path: string,
@@ -61,8 +47,7 @@ export function streamSse<T = unknown>(
 ): Promise<T | null> {
   return new Promise((resolve, reject) => {
     const url = apiUrl(path);
-    authHeaders()
-      .then((auth) => fetch(url, { method: "POST", headers: { ...auth } }))
+    fetch(url, { method: "POST" })
       .then(async (res) => {
         if (!res.ok || !res.body) {
           const text = await res.text().catch(() => "");
@@ -99,7 +84,6 @@ export function streamSse<T = unknown>(
         while (true) {
           const { value, done } = await reader.read();
           if (done) {
-            // Flush trailing event then resolve if we never saw "complete".
             flush();
             resolve(lastResult);
             return;

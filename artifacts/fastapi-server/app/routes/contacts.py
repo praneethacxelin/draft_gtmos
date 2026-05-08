@@ -17,7 +17,7 @@ def list_contacts(
     own_strategy(db, strategy_id, user)
     q = (
         db.query(Contact)
-        .filter(Contact.strategy_id == strategy_id, Contact.user_id == user.id)
+        .filter(Contact.strategy_id == strategy_id)
     )
     if tier:
         q = q.filter(Contact.tier == tier)
@@ -25,7 +25,7 @@ def list_contacts(
     accounts = {
         a.id: a
         for a in db.query(Account)
-        .filter(Account.strategy_id == strategy_id, Account.user_id == user.id)
+        .filter(Account.strategy_id == strategy_id)
         .all()
     }
     return [_serialize(c, accounts.get(c.account_id)) for c in contacts]

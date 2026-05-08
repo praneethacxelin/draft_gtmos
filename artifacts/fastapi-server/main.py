@@ -12,7 +12,6 @@ from app.auth import current_user
 from app.db import User
 from app.routes import (
     health,
-    clerk_proxy,
     settings,
     strategies,
     accounts,
@@ -82,13 +81,10 @@ app.add_middleware(
 
 api_prefix = "/api"
 
-# Public — no auth required. Mounted at the root (outside /api) so every
-# route under /api is guaranteed to require a Clerk session.
+# Public — auth removed. All requests are treated as the same shared
+# user (see app.auth.current_user). Routes still take a `user` dep so
+# foreign keys keep working but no token is required.
 app.include_router(health.router)
-
-# Clerk Frontend API proxy — must be public (no auth) and mounted under
-# /api so the application router forwards /api/__clerk/* to FastAPI.
-app.include_router(clerk_proxy.router, prefix="/api")
 
 
 @app.get(api_prefix + "/me")
@@ -96,11 +92,6 @@ def me(user: User = Depends(current_user)) -> dict:
     return {"id": user.id, "email": user.email}
 
 
-# Authenticated — every route below already declares
-# ``user: User = Depends(current_user)`` on each endpoint, which both
-# enforces auth and provides the user object. We deliberately avoid
-# adding a duplicate router-level ``dependencies=[Depends(current_user)]``
-# here so JWKS verification + DB upsert run only once per request.
 app.include_router(settings.router, prefix=api_prefix)
 app.include_router(strategies.router, prefix=api_prefix)
 app.include_router(accounts.router, prefix=api_prefix)

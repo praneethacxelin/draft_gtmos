@@ -24,7 +24,7 @@ def list_signals(
     accounts = {
         a.id: a
         for a in db.query(Account)
-        .filter(Account.strategy_id == strategy_id, Account.user_id == user.id)
+        .filter(Account.strategy_id == strategy_id)
         .all()
     }
     return [{

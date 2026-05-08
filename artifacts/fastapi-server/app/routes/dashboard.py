@@ -22,21 +22,21 @@ def summary(
     user: User = Depends(current_user),
 ) -> dict:
     user_strategy_ids = [
-        r[0] for r in db.query(Strategy.id).filter(Strategy.user_id == user.id).all()
+        r[0] for r in db.query(Strategy.id).all()
     ]
     strategies = len(user_strategy_ids)
     ready_strategies = (
         db.query(Strategy)
-        .filter(Strategy.user_id == user.id, Strategy.status == "ready")
+        .filter(Strategy.status == "ready")
         .count()
     )
     if user_strategy_ids:
         total_contacts = (
-            db.query(Contact).filter(Contact.user_id == user.id).count()
+            db.query(Contact).count()
         )
         tier_1 = (
             db.query(Contact)
-            .filter(Contact.user_id == user.id, Contact.tier == 1)
+            .filter(Contact.tier == 1)
             .count()
         )
         sequences = (
@@ -77,7 +77,7 @@ def activity(
     user: User = Depends(current_user),
 ) -> list[dict]:
     user_strategy_ids = [
-        r[0] for r in db.query(Strategy.id).filter(Strategy.user_id == user.id).all()
+        r[0] for r in db.query(Strategy.id).all()
     ]
     out = []
     if user_strategy_ids:
@@ -96,7 +96,7 @@ def activity(
             })
     for st in (
         db.query(Strategy)
-        .filter(Strategy.user_id == user.id)
+        # auth removed — show all strategies
         .order_by(Strategy.created_at.desc())
         .limit(5)
         .all()

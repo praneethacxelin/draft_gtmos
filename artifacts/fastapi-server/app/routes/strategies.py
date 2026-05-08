@@ -35,7 +35,6 @@ def list_strategies(
 ) -> list[dict]:
     rows = (
         db.query(Strategy)
-        .filter(Strategy.user_id == user.id)
         .order_by(Strategy.created_at.desc())
         .all()
     )
