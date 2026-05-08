@@ -62,19 +62,31 @@ def _bucket(name: str) -> _Bucket:
     return b
 
 
-def consume(name: str, cost: float = 1.0) -> None:
-    """Atomically deduct ``cost`` tokens; raise if insufficient."""
-    with _LOCK:
-        b = _bucket(name)
-        now = time.monotonic()
-        elapsed = now - b.last_refill
-        b.tokens = min(b.capacity, b.tokens + elapsed * b.refill_per_sec)
-        b.last_refill = now
-        if b.tokens < cost:
+def consume(name: str, cost: float = 1.0, max_wait: float = 2.0) -> None:
+    """Atomically deduct ``cost`` tokens.
+
+    If the bucket is short, briefly wait (up to ``max_wait`` seconds, in
+    short sleeps) for it to refill before raising. This smooths out
+    bursty traffic without making the user re-click for sub-second
+    overshoots, while still protecting free-tier quotas.
+    """
+    deadline = time.monotonic() + max(0.0, max_wait)
+    while True:
+        with _LOCK:
+            b = _bucket(name)
+            now = time.monotonic()
+            elapsed = now - b.last_refill
+            b.tokens = min(b.capacity, b.tokens + elapsed * b.refill_per_sec)
+            b.last_refill = now
+            if b.tokens >= cost:
+                b.tokens -= cost
+                return
             needed = cost - b.tokens
             retry = needed / b.refill_per_sec if b.refill_per_sec else 60.0
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or retry > remaining:
             raise RateLimitExceeded(name, retry)
-        b.tokens -= cost
+        time.sleep(min(0.25, remaining))
 
 
 def status() -> dict[str, dict]:

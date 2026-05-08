@@ -56,8 +56,8 @@ def now() -> datetime:
 #
 # Authentication has been removed. The ``users`` table is kept because
 # downstream rows still hold user_id foreign keys (legacy from when the
-# app shipped with Clerk). All requests resolve to the shared
-# ``user_public`` row created on startup by ``app.auth``.
+# app shipped with an auth provider). All requests resolve to the
+# shared ``user_public`` row created on startup by ``app.auth``.
 
 
 class User(Base):

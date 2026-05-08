@@ -116,7 +116,15 @@ async def run_s1_stream_get(
 
 def _sse(coro_or_value, label: str):
     """Wrap a coroutine or sync value in a 3-event SSE stream
-    (stage_start → stage_complete → complete) using a fresh DB session."""
+    (stage_start → stage_complete → complete) using a fresh DB session.
+
+    Rate-limit hits propagate as a typed ``error`` event with
+    ``status: 429`` and ``retry_after_seconds`` so the frontend
+    ``streamSse`` helper can surface the same friendly toast as the
+    JSON ``apiFetch`` path.
+    """
+    from app.services.rate_limit import RateLimitExceeded
+
     async def gen():
         yield {"event": "stage_start", "data": json.dumps({"stage": label})}
         db2 = SessionLocal()
@@ -124,6 +132,13 @@ def _sse(coro_or_value, label: str):
             result = await coro_or_value(db2)
             yield {"event": "stage_complete", "data": json.dumps({"stage": label, "result": result})}
             yield {"event": "complete", "data": json.dumps({"stage": label})}
+        except RateLimitExceeded as rle:
+            yield {"event": "error", "data": json.dumps({
+                "status": 429,
+                "integration": rle.name,
+                "retry_after_seconds": int(rle.retry_after),
+                "message": str(rle),
+            })}
         except Exception as e:
             yield {"event": "error", "data": json.dumps({"message": str(e)})}
         finally:

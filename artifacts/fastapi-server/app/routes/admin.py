@@ -1,4 +1,4 @@
-"""Admin-only endpoints. Independent of Clerk; gated by ADMIN_PASSWORD.
+"""Admin-only endpoints. Gated by ADMIN_PASSWORD; no end-user auth required.
 
 - ``POST /admin/login`` — exchange the admin password for a token.
 - ``GET  /admin/strategies`` — list every strategy across every user.

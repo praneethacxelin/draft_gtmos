@@ -76,7 +76,14 @@ export function streamSse<T = unknown>(
           if (!dataLines.length) return;
           const dataStr = dataLines.join("\n");
           dataLines = [];
-          let parsed: { stage?: string; result?: T; message?: string } = {};
+          let parsed: {
+            stage?: string;
+            result?: T;
+            message?: string;
+            status?: number;
+            integration?: string;
+            retry_after_seconds?: number;
+          } = {};
           try {
             parsed = JSON.parse(dataStr);
           } catch {}
@@ -88,7 +95,17 @@ export function streamSse<T = unknown>(
           } else if (currentEvent === "complete") {
             resolve(lastResult);
           } else if (currentEvent === "error") {
-            reject(new Error(parsed.message || "Stream error"));
+            if (parsed.status === 429) {
+              const integ = parsed.integration ? ` (${parsed.integration})` : "";
+              const retry = parsed.retry_after_seconds
+                ? ` Retry in ~${parsed.retry_after_seconds}s.`
+                : "";
+              const friendly = `Free-tier rate limit hit${integ}.${retry}`;
+              import("sonner").then(({ toast }) => toast.error(friendly)).catch(() => {});
+              reject(new Error(friendly));
+            } else {
+              reject(new Error(parsed.message || "Stream error"));
+            }
           }
         };
 

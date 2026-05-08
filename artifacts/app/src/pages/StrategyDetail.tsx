@@ -25,6 +25,8 @@ import {
 } from "@/hooks/useStrategies";
 import { StakeholderFlow } from "@/components/StakeholderFlow";
 import { ReasoningPanel } from "@/components/ReasoningPanel";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useFetchLimits } from "@/hooks/useSettings";
 import { apiUrl } from "@/lib/api";
 import { fmtUsd } from "@/lib/format";
 import {
@@ -59,6 +61,8 @@ export function StrategyDetail() {
   const { data: competitors } = useCompetitors(id);
   const { data: patterns } = usePatterns(id);
   const runPatterns = useRunPatterns();
+  const { data: fetchCaps } = useFetchLimits();
+  const [marketLimit, setMarketLimit] = useState<string>("");
 
   useEffect(() => {
     if (!strategy || !id) return;
@@ -244,17 +248,36 @@ export function StrategyDetail() {
             }}
           />
           <Card className="border-card-border bg-card p-5">
-            <div className="mb-3 flex items-center justify-between">
+            <div className="mb-3 flex items-center justify-between gap-2">
               <div className="text-sm font-semibold">TAM / SAM / SOM</div>
+              <div className="flex items-center gap-2">
+                <Select value={marketLimit} onValueChange={setMarketLimit}>
+                  <SelectTrigger className="h-8 w-32 text-xs" data-testid="select-market-limit">
+                    <SelectValue placeholder={`Sources: ${fetchCaps?.limits.market_sizing_results ?? "default"}`} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">Default ({fetchCaps?.limits.market_sizing_results ?? 5})</SelectItem>
+                    {[2, 3, 5, 8, 10].map((n) => (
+                      <SelectItem key={n} value={String(n)}>{n} sources</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               <Button
                 size="sm"
                 variant="secondary"
                 disabled={sizing.isPending}
-                onClick={() => id && sizing.mutate(id)}
+                onClick={() =>
+                  id &&
+                  sizing.mutate({
+                    id,
+                    limit: marketLimit ? Number(marketLimit) : undefined,
+                  })
+                }
                 data-testid="button-market-sizing"
               >
                 {sizing.isPending ? "Sizing…" : "Recompute"}
               </Button>
+              </div>
             </div>
             {strategy.tam_sam_som ? (
               <div className="grid grid-cols-1 gap-3 md:grid-cols-3">

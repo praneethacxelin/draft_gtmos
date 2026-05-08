@@ -23,7 +23,7 @@ import {
 } from "@/hooks/useStrategies";
 import { fmtRelative } from "@/lib/format";
 import { Search, Radar, Sparkles, Crosshair, Building2 } from "lucide-react";
-import { ReasoningPanel } from "@/components/ReasoningPanel";
+import { ReasoningPanel, SourceBadge } from "@/components/ReasoningPanel";
 import { useFetchLimits } from "@/hooks/useSettings";
 
 export function Prospects() {
@@ -302,13 +302,10 @@ export function Prospects() {
                       <TierBadge tier={c.tier} />
                     </td>
                     <td className="px-4 py-2">
-                      <div className="font-medium">
-                        {c.full_name}
-                        {c.is_demo && (
-                          <span className="ml-2">
-                            <DemoBadge />
-                          </span>
-                        )}
+                      <div className="font-medium flex items-center gap-2 flex-wrap">
+                        <span>{c.full_name}</span>
+                        <SourceBadge source={c.is_demo ? "ai_generated" : "apollo"} />
+                        {c.is_demo && <DemoBadge />}
                       </div>
                       <div className="text-[11px] text-muted-foreground">
                         {c.title}
@@ -380,6 +377,7 @@ export function Prospects() {
                         {s.signal_type}
                       </span>
                       <span className="font-medium">{s.company_name}</span>
+                      <SourceBadge source={s.is_demo ? "ai_generated" : "serpapi"} />
                       {s.is_demo && <DemoBadge />}
                       <span className="ml-auto font-mono text-[10px] text-muted-foreground">
                         {fmtRelative(s.detected_at)}
