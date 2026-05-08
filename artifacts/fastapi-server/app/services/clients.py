@@ -117,22 +117,45 @@ def test_connection(name: str, api_key: str) -> tuple[bool, str]:
                 return False, f"HTTP {r.status_code}"
         if name == "apollo":
             with httpx.Client(timeout=TIMEOUT) as c:
-                r = c.post(
+                r = c.get(
                     "https://api.apollo.io/v1/auth/health",
-                    json={"api_key": api_key},
+                    headers={
+                        "X-Api-Key": api_key,
+                        "Cache-Control": "no-cache",
+                        "Content-Type": "application/json",
+                    },
                 )
-                if r.status_code in (200, 201):
-                    return True, "Connected"
-                return False, f"HTTP {r.status_code}"
+                if r.status_code == 200:
+                    try:
+                        data = r.json()
+                    except Exception:
+                        data = {}
+                    if data.get("is_logged_in") is True:
+                        return True, "Connected"
+                    return False, "Key rejected by Apollo"
+                if r.status_code in (401, 403):
+                    return False, "Invalid Apollo API key"
+                return False, f"Apollo HTTP {r.status_code}"
         if name == "instantly":
+            # Try Instantly v2 (Bearer auth) first, then fall back to v1.
             with httpx.Client(timeout=TIMEOUT) as c:
                 r = c.get(
+                    "https://api.instantly.ai/api/v2/accounts",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    params={"limit": 1},
+                )
+                if r.status_code == 200:
+                    return True, "Connected (v2)"
+                if r.status_code in (401, 403):
+                    return False, "Invalid Instantly API key (v2)"
+                # Fallback to v1 query-param style for legacy keys.
+                r2 = c.get(
                     "https://api.instantly.ai/api/v1/account/list",
                     params={"api_key": api_key},
                 )
-                if r.status_code == 200:
-                    return True, "Connected"
-                return False, f"HTTP {r.status_code}"
+                if r2.status_code == 200:
+                    return True, "Connected (v1)"
+                return False, f"Instantly HTTP v2={r.status_code} v1={r2.status_code}"
         if name == "clay":
             # Clay does not have a simple health endpoint — treat presence as ok
             if len(api_key) >= 8:
