@@ -89,12 +89,16 @@ def set_limits(db: Session, user_id: str, values: dict) -> dict[str, int]:
 
 
 def clamp(name: str, requested: int | None, limits: dict[str, int]) -> int:
-    """Combine a per-run ``requested`` override with the configured cap."""
+    """Combine a per-run ``requested`` override with the configured cap.
+
+    The configured deployment limit is the **hard ceiling** — per-run
+    overrides may go below it but never above it. The static
+    ``MAXIMUMS`` only cap what an admin can save in the first place.
+    """
     base = limits.get(name, DEFAULTS.get(name, 5))
-    cap = MAXIMUMS.get(name, base)
     if requested is None:
         return base
     try:
-        return max(1, min(int(requested), int(cap)))
+        return max(1, min(int(requested), int(base)))
     except (TypeError, ValueError):
         return base

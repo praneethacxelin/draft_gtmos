@@ -9,7 +9,7 @@ import hashlib
 from typing import Any, AsyncIterator
 from openai import OpenAI, AsyncOpenAI
 
-from app.services.rate_limit import consume as _rl_consume
+from app.services.rate_limit import consume as _rl_consume, RateLimitExceeded
 
 _MODEL = "gpt-4o-mini"
 MODEL_NAME = _MODEL
@@ -30,8 +30,10 @@ def _async_client() -> AsyncOpenAI:
 
 
 def _chat_json_sync(prompt: str, system: str, max_tokens: int) -> dict:
+    # Rate-limit hits must escape so FastAPI/SSE return a typed 429
+    # to the user instead of being swallowed into ``{"_error": ...}``.
+    _rl_consume("openai")
     try:
-        _rl_consume("openai")
         resp = _client().chat.completions.create(
             model=_MODEL,
             messages=[
@@ -43,8 +45,10 @@ def _chat_json_sync(prompt: str, system: str, max_tokens: int) -> dict:
         )
         content = resp.choices[0].message.content or "{}"
         return json.loads(content)
+    except RateLimitExceeded:
+        raise
     except Exception as e:
-        # Hard failure shouldn't crash the agent — return an error envelope
+        # Provider-side failures shouldn't crash the agent — return an error envelope
         return {"_error": str(e)}
 
 
@@ -60,8 +64,8 @@ async def chat_json(prompt: str, system: str = "You are a helpful sales strategi
 
 
 def _chat_text_sync(prompt: str, system: str, max_tokens: int) -> str:
+    _rl_consume("openai")
     try:
-        _rl_consume("openai")
         resp = _client().chat.completions.create(
             model=_MODEL,
             messages=[
@@ -71,6 +75,8 @@ def _chat_text_sync(prompt: str, system: str, max_tokens: int) -> str:
             max_tokens=max_tokens,
         )
         return resp.choices[0].message.content or ""
+    except RateLimitExceeded:
+        raise
     except Exception as e:
         return f"[LLM error: {e}]"
 

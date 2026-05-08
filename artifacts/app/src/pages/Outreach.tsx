@@ -13,7 +13,7 @@ import {
 } from "@/hooks/useSequences";
 import { Mail, Linkedin, Phone, ShieldCheck, Send, Wand2 } from "lucide-react";
 import { fmtDate } from "@/lib/format";
-import { ReasoningPanel } from "@/components/ReasoningPanel";
+import { ReasoningPanel, SourceBadge } from "@/components/ReasoningPanel";
 
 export function Outreach() {
   const { active, activeId } = useActiveStrategy();
@@ -214,8 +214,9 @@ export function Outreach() {
                       )}
                     </div>
                     <div className="flex-1">
-                      <div className="text-xs uppercase tracking-widest text-muted-foreground">
-                        Step {s.step_number} · {s.channel}
+                      <div className="flex items-center gap-2 text-xs uppercase tracking-widest text-muted-foreground">
+                        <span>Step {s.step_number} · {s.channel}</span>
+                        <SourceBadge source="ai_generated" />
                       </div>
                       <div className="text-sm font-medium">
                         {s.subject || (s.channel === "call" ? "Call talking points" : "(no subject)")}
