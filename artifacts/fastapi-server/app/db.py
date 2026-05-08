@@ -59,6 +59,7 @@ class User(Base):
     __tablename__ = "users"
     id = Column(String, primary_key=True)  # Clerk user id (e.g. user_xxx)
     email = Column(String, nullable=True)
+    is_admin = Column(Boolean, nullable=False, default=False, server_default="false")
     created_at = Column(DateTime, default=now)
     updated_at = Column(DateTime, default=now, onupdate=now)
 

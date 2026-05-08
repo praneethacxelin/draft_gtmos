@@ -22,7 +22,7 @@ async function adminFetch<T>(
   token: string,
   init?: RequestInit,
 ): Promise<T> {
-  const res = await fetch(apiUrl(path), {
+  const res = await fetch(apiUrl(`/api${path}`), {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -47,7 +47,7 @@ function LoginForm({ onLogin }: { onLogin: (token: string) => void }) {
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(apiUrl("/admin/login"), {
+      const res = await fetch(apiUrl("/api/admin/login"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password }),
