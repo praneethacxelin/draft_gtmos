@@ -90,11 +90,11 @@ def launch(
         except RateLimitExceeded as rle:
             yield {"event": "error", "data": json.dumps({
                 "status": 429,
-                "integration": rle.integration,
-                "retry_after_seconds": rle.retry_after_seconds,
+                "integration": rle.name,
+                "retry_after_seconds": int(rle.retry_after),
                 "message": (
-                    f"Free-tier rate limit reached for {rle.integration}. "
-                    f"Retry in ~{rle.retry_after_seconds}s."
+                    f"Free-tier rate limit reached for {rle.name}. "
+                    f"Retry in ~{int(rle.retry_after)}s."
                 ),
             })}
         except Exception as e:

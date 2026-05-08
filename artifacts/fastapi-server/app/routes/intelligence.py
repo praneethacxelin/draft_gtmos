@@ -18,6 +18,7 @@ from app.db import (
 )
 from app.auth import current_user
 from app.scoping import own_strategy, own_contact
+from app.llm import MODEL_NAME
 from app.agents.m3_intent import (
     score_intent,
     capture_feedback_with_ai,
