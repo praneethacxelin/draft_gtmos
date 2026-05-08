@@ -360,8 +360,8 @@ function IcpView({ icp }: { icp?: Icp | null }) {
         <div className="text-sm font-semibold">Firmographics</div>
         <dl className="mt-3 space-y-2 text-sm">
           <Field k="Industries" v={(icp.industries ?? []).join(", ")} />
-          <Field k="Employee size" v={icp.employee_size_range} />
-          <Field k="Revenue" v={icp.revenue_range} />
+          <Field k="Employee size" v={fmtRange(icp.employee_size_range)} />
+          <Field k="Revenue" v={fmtRange(icp.revenue_range, true)} />
           <Field k="Geographies" v={(icp.geographies ?? []).join(", ")} />
           <Field
             k="Tech signals"
@@ -392,6 +392,29 @@ function IcpView({ icp }: { icp?: Icp | null }) {
       </Card>
     </div>
   );
+}
+
+function fmtRange(
+  v: unknown,
+  money = false,
+): string | undefined {
+  if (v == null) return undefined;
+  if (typeof v === "string" || typeof v === "number") return String(v);
+  if (typeof v === "object") {
+    const o = v as { min?: number | string; max?: number | string };
+    const fmt = (n: number | string | undefined) => {
+      if (n == null || n === "") return "?";
+      if (!money) return String(n);
+      const num = typeof n === "number" ? n : Number(n);
+      if (!isFinite(num)) return String(n);
+      if (num >= 1_000_000_000) return `$${(num / 1e9).toFixed(1)}B`;
+      if (num >= 1_000_000) return `$${(num / 1e6).toFixed(1)}M`;
+      if (num >= 1_000) return `$${(num / 1e3).toFixed(0)}K`;
+      return `$${num}`;
+    };
+    return `${fmt(o.min)}–${fmt(o.max)}`;
+  }
+  return undefined;
 }
 
 function Field({ k, v }: { k: string; v?: string }) {
