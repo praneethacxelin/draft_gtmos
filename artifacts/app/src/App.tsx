@@ -11,6 +11,7 @@ import { Prospects } from "@/pages/Prospects";
 import { Outreach } from "@/pages/Outreach";
 import { Intelligence } from "@/pages/Intelligence";
 import { Settings } from "@/pages/Settings";
+import { Help } from "@/pages/Help";
 import NotFound from "@/pages/not-found";
 import { AdminPage } from "@/pages/Admin";
 
@@ -32,6 +33,7 @@ function AppRoutes() {
         <Route path="/prospects" component={Prospects} />
         <Route path="/outreach" component={Outreach} />
         <Route path="/intelligence" component={Intelligence} />
+        <Route path="/help" component={Help} />
         <Route path="/settings" component={Settings} />
         <Route component={NotFound} />
       </Switch>

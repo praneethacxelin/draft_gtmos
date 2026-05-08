@@ -6,6 +6,7 @@ import {
   Users,
   Send,
   Activity,
+  BookOpen,
   Settings as SettingsIcon,
   Sun,
   Moon,
@@ -28,6 +29,7 @@ const NAV = [
   { href: "/prospects", label: "Prospects", icon: Users },
   { href: "/outreach", label: "Outreach", icon: Send },
   { href: "/intelligence", label: "Intelligence", icon: Activity },
+  { href: "/help", label: "Help", icon: BookOpen },
   { href: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 
