@@ -134,11 +134,12 @@ def _sse(coro_or_value, label: str):
 @router.post("/{strategy_id}/market-sizing")
 async def market_sizing(
     strategy_id: str,
+    limit: int | None = Query(None, ge=1, le=10),
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ):
     own_strategy(db, strategy_id, user)
-    return _sse(lambda d: run_market_sizing(d, strategy_id), "market_sizing")
+    return _sse(lambda d: run_market_sizing(d, strategy_id, limit=limit), "market_sizing")
 
 
 @router.post("/{strategy_id}/competitors/run")
@@ -174,21 +175,23 @@ def list_competitors(
 @router.post("/{strategy_id}/leads/search")
 async def lead_search(
     strategy_id: str,
+    limit: int | None = Query(None, ge=1, le=25),
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ):
     own_strategy(db, strategy_id, user)
-    return _sse(lambda d: run_lead_search(d, strategy_id), "leads")
+    return _sse(lambda d: run_lead_search(d, strategy_id, limit=limit), "leads")
 
 
 @router.post("/{strategy_id}/signals/run")
 async def signals_run(
     strategy_id: str,
+    limit: int | None = Query(None, ge=1, le=10),
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ):
     own_strategy(db, strategy_id, user)
-    return _sse(lambda d: run_signals(d, strategy_id), "signals")
+    return _sse(lambda d: run_signals(d, strategy_id, limit=limit), "signals")
 
 
 @router.post("/{strategy_id}/score")

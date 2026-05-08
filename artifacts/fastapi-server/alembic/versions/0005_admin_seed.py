@@ -2,7 +2,7 @@
 
 - Adds ``is_admin`` boolean to ``users``.
 - Creates a system admin user (``user_system_admin``) that owns the
-  seeded strategy. The system user has no Clerk identity and is only
+  seeded strategy. The system user has no external identity and is only
   used as an FK target for shared/demo data.
 - Seeds one default Strategy (the "default product") if no strategy
   with that id exists yet. Idempotent: re-running does nothing.

@@ -10,6 +10,7 @@ import { useActiveStrategy } from "@/hooks/useActiveStrategy";
 import { useCopilotFeed } from "@/hooks/useCopilot";
 import { fmtRelative } from "@/lib/format";
 import { ArrowUpRight, Plus, Zap, Target, Send, Layers } from "lucide-react";
+import { ReasoningPanel } from "@/components/ReasoningPanel";
 
 export function Dashboard() {
   const { data: summary, isLoading: sumLoading } = useDashboardSummary();
@@ -31,6 +32,21 @@ export function Dashboard() {
             </Button>
           </Link>
         }
+      />
+
+      <ReasoningPanel
+        title="How this dashboard is built"
+        fallback={{
+          source: "computed",
+          logic:
+            "Metrics are computed live from the database: strategies/contacts/sequences are direct counts, the top intent account is the highest-scoring Account row, and the prioritised plays come from the SDR Copilot ranker which orders Tier 1 contacts by recent signal recency and reply detection.",
+          steps: [
+            "Count strategies / contacts / sequences",
+            "Pick max intent_score from Account",
+            "Rank Tier 1 contacts by signal recency + reply state",
+          ],
+        }}
+        className="mb-4"
       />
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">

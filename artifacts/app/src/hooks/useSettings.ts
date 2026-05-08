@@ -40,6 +40,31 @@ export function useUpdateIntegration() {
   });
 }
 
+export interface FetchLimitsPayload {
+  limits: { leads_per_run: number; signals_per_account: number; market_sizing_results: number };
+  maximums: { leads_per_run: number; signals_per_account: number; market_sizing_results: number };
+  defaults: { leads_per_run: number; signals_per_account: number; market_sizing_results: number };
+}
+
+export function useFetchLimits() {
+  return useQuery<FetchLimitsPayload>({
+    queryKey: ["fetch-limits"],
+    queryFn: () => apiFetch("/api/settings/fetch-limits"),
+  });
+}
+
+export function useUpdateFetchLimits() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Partial<FetchLimitsPayload["limits"]>) =>
+      apiFetch<FetchLimitsPayload>("/api/settings/fetch-limits", {
+        method: "PUT",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["fetch-limits"] }),
+  });
+}
+
 export function useTestIntegration() {
   const qc = useQueryClient();
   return useMutation({

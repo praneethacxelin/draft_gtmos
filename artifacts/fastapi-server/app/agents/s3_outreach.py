@@ -4,9 +4,10 @@ import random
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from app.db import Strategy, Contact, Sequence, SequenceStep, Account, InstantlyCampaign, OutreachEvent
-from app.llm import chat_json, chat_text
+from app.llm import chat_json, chat_text, MODEL_NAME
 from app.services import settings_service, clients
 from app.services.instantly_poller import simulate_engagement_timeline
+from app.provenance import stamp
 
 
 SPAM_TRIGGERS = ["free", "guarantee", "$$$", "act now", "click here", "buy now", "no risk"]
@@ -74,6 +75,22 @@ async def generate_sequence(db: Session, contact_id: str) -> dict:
 
     seq.channel_plan_json = channel_plan
     seq.status = "draft"
+    sequence_provenance = stamp(
+        source="ai_generated",
+        logic=(
+            "Picked an email-first or LinkedIn-first 4-step plan based on the "
+            "contact's seniority, then asked the model to write personalised "
+            "subject lines and bodies grounded in the persona profile and top use cases."
+        ),
+        steps=[
+            "Read contact + strategy + persona profile",
+            f"Choose '{'email-first' if email_first else 'linkedin-first'}' plan based on seniority",
+            "Prompt model for per-step subject + body",
+            "Schedule send_at timestamps",
+        ],
+        counts={"steps": len(channel_plan)},
+        model=MODEL_NAME,
+    )
 
     base_time = datetime.utcnow().replace(hour=9, minute=0, second=0, microsecond=0)
     cumulative = 0
@@ -96,6 +113,7 @@ async def generate_sequence(db: Session, contact_id: str) -> dict:
     return {
         "sequence_id": seq.id,
         "step_count": len(channel_plan),
+        "provenance": sequence_provenance,
     }
 
 

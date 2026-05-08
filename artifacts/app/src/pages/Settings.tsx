@@ -9,9 +9,11 @@ import {
   useIntegrations,
   useUpdateIntegration,
   useTestIntegration,
+  useFetchLimits,
+  useUpdateFetchLimits,
   Integration,
 } from "@/hooks/useSettings";
-import { Plug, Check, AlertCircle, KeyRound, UserRound } from "lucide-react";
+import { Plug, Check, AlertCircle, KeyRound, UserRound, Gauge } from "lucide-react";
 
 export function Settings() {
   const { data: integrations } = useIntegrations();
@@ -25,6 +27,8 @@ export function Settings() {
       />
 
       <AccountCard />
+
+      <FetchLimitsCard />
 
       <Card className="mb-6 border-card-border bg-card p-4">
         <div className="flex items-start gap-3">
@@ -67,6 +71,81 @@ function AccountCard() {
             workspace and see all strategies.
           </div>
         </div>
+      </div>
+    </Card>
+  );
+}
+
+function FetchLimitsCard() {
+  const { data } = useFetchLimits();
+  const update = useUpdateFetchLimits();
+  const [draft, setDraft] = useState<{ leads_per_run: number; signals_per_account: number; market_sizing_results: number } | null>(null);
+
+  useEffect(() => {
+    if (data && !draft) setDraft(data.limits);
+  }, [data, draft]);
+
+  if (!data || !draft) return null;
+  const fields: { key: keyof typeof draft; label: string; help: string }[] = [
+    { key: "leads_per_run", label: "Leads per run", help: "How many contacts a Discover-leads click pulls (Apollo or AI demo)." },
+    { key: "signals_per_account", label: "Signals per account", help: "How many SerpAPI results to keep per query, per account." },
+    { key: "market_sizing_results", label: "Market sizing results", help: "How many SerpAPI snippets feed the TAM/SAM/SOM prompt." },
+  ];
+
+  return (
+    <Card className="mb-6 border-card-border bg-card p-5" data-testid="card-fetch-limits">
+      <div className="flex items-start gap-3">
+        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/15 text-primary">
+          <Gauge className="h-5 w-5" />
+        </div>
+        <div className="flex-1">
+          <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Fetch caps</div>
+          <div className="text-sm font-semibold">Per-deployment fetch limits</div>
+          <div className="text-xs text-muted-foreground">
+            Soft caps that protect your free-tier API quotas. Each agent run can also be overridden per click.
+          </div>
+        </div>
+      </div>
+      <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+        {fields.map((f) => (
+          <div key={f.key}>
+            <Label className="text-xs">
+              {f.label}
+              <span className="ml-1 text-muted-foreground">
+                (1–{data.maximums[f.key]})
+              </span>
+            </Label>
+            <Input
+              type="number"
+              min={1}
+              max={data.maximums[f.key]}
+              value={draft[f.key]}
+              onChange={(e) =>
+                setDraft({ ...draft, [f.key]: Math.max(1, Math.min(data.maximums[f.key], Number(e.target.value) || 1)) })
+              }
+              data-testid={`input-fetch-${f.key}`}
+            />
+            <div className="mt-1 text-[11px] text-muted-foreground">{f.help}</div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 flex items-center justify-end gap-2">
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => setDraft(data.defaults)}
+          data-testid="button-fetch-defaults"
+        >
+          Reset defaults
+        </Button>
+        <Button
+          size="sm"
+          disabled={update.isPending}
+          onClick={() => update.mutate(draft)}
+          data-testid="button-fetch-save"
+        >
+          {update.isPending ? "Saving…" : "Save limits"}
+        </Button>
       </div>
     </Card>
   );

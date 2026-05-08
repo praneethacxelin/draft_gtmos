@@ -7,7 +7,7 @@ export interface IcpSegment {
   rationale?: string;
 }
 
-export interface Icp {
+export interface Icp extends WithProvenance {
   industries?: string[];
   employee_size_range?: string;
   revenue_range?: string;
@@ -26,7 +26,7 @@ export interface Persona {
   objections?: string[];
 }
 
-export interface PersonaMatrix {
+export interface PersonaMatrix extends WithProvenance {
   champion?: Persona;
   economic_buyer?: Persona;
   blocker?: Persona;
@@ -64,7 +64,7 @@ export interface StakeholderEdge {
   label?: string;
 }
 
-export interface StakeholderMap {
+export interface StakeholderMap extends WithProvenance {
   nodes?: StakeholderNode[];
   edges?: StakeholderEdge[];
 }
@@ -83,7 +83,30 @@ export interface MoneyBlock {
   label?: string;
 }
 
-export interface TamSamSom {
+export type ProvenanceSource =
+  | "ai_generated"
+  | "serpapi"
+  | "apollo"
+  | "instantly"
+  | "clay"
+  | "computed"
+  | "legacy";
+
+export interface Provenance {
+  source: ProvenanceSource;
+  logic: string;
+  steps: string[];
+  counts: Record<string, number>;
+  generated_at: string;
+  model?: string;
+  extra?: Record<string, unknown>;
+}
+
+export interface WithProvenance {
+  _provenance?: Provenance;
+}
+
+export interface TamSamSom extends WithProvenance {
   tam?: MoneyBlock;
   sam?: MoneyBlock;
   som?: MoneyBlock;
@@ -101,10 +124,10 @@ export interface Strategy {
   status: "draft" | "generating" | "ready";
   icp?: Icp | null;
   personas?: PersonaMatrix | null;
-  problems?: { problems?: ProblemRow[] } | null;
-  naics?: { segments?: NaicsSegment[] } | null;
+  problems?: ({ problems?: ProblemRow[] } & WithProvenance) | null;
+  naics?: ({ segments?: NaicsSegment[] } & WithProvenance) | null;
   stakeholder_map?: StakeholderMap | null;
-  use_cases?: { use_cases?: UseCase[] } | null;
+  use_cases?: ({ use_cases?: UseCase[] } & WithProvenance) | null;
   tam_sam_som?: TamSamSom | null;
   created_at?: string;
 }
@@ -175,12 +198,21 @@ export function useDeleteStrategy() {
   });
 }
 
+function withLimit(path: string, limit?: number) {
+  return limit ? `${path}?limit=${limit}` : path;
+}
+
 export function useMarketSizing() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => streamSse(`/api/strategies/${id}/market-sizing`),
-    onSuccess: (_, id) =>
-      qc.invalidateQueries({ queryKey: strategyKeys.detail(id) }),
+    mutationFn: (vars: string | { id: string; limit?: number }) => {
+      const { id, limit } = typeof vars === "string" ? { id: vars, limit: undefined } : vars;
+      return streamSse(withLimit(`/api/strategies/${id}/market-sizing`, limit));
+    },
+    onSuccess: (_, vars) => {
+      const id = typeof vars === "string" ? vars : vars.id;
+      qc.invalidateQueries({ queryKey: strategyKeys.detail(id) });
+    },
   });
 }
 
@@ -223,7 +255,10 @@ export function useRunPatterns() {
 export function useLeadSearch() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => streamSse(`/api/strategies/${id}/leads/search`),
+    mutationFn: (vars: string | { id: string; limit?: number }) => {
+      const { id, limit } = typeof vars === "string" ? { id: vars, limit: undefined } : vars;
+      return streamSse(withLimit(`/api/strategies/${id}/leads/search`, limit));
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["accounts"] });
       qc.invalidateQueries({ queryKey: ["contacts"] });
@@ -234,7 +269,10 @@ export function useLeadSearch() {
 export function useRunSignals() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => streamSse(`/api/strategies/${id}/signals/run`),
+    mutationFn: (vars: string | { id: string; limit?: number }) => {
+      const { id, limit } = typeof vars === "string" ? { id: vars, limit: undefined } : vars;
+      return streamSse(withLimit(`/api/strategies/${id}/signals/run`, limit));
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["signals"] });
       qc.invalidateQueries({ queryKey: ["contacts"] });

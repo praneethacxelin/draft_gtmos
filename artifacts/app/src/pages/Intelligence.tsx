@@ -34,6 +34,7 @@ import {
 } from "@/hooks/useM3";
 import { fmtRelative } from "@/lib/format";
 import { Activity, RefreshCcw, MessagesSquare, Workflow, Check } from "lucide-react";
+import { ReasoningPanel } from "@/components/ReasoningPanel";
 
 export function Intelligence() {
   const { activeId, active } = useActiveStrategy();
@@ -63,22 +64,63 @@ export function Intelligence() {
           <TabsTrigger value="loop-back">Loop-back</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="engagement">
+        <TabsContent value="engagement" className="space-y-4">
+          <ReasoningPanel
+            fallback={{
+              source: "computed",
+              logic: "Engagement events are stored verbatim and weighted by event_type to produce per-account intent.",
+            }}
+          />
           <EngagementTab strategyId={activeId} />
         </TabsContent>
-        <TabsContent value="intent">
+        <TabsContent value="intent" className="space-y-4">
+          <ReasoningPanel
+            fallback={{
+              source: "computed",
+              logic: "Account intent = sum of weighted engagement events bucketed into low / medium / high.",
+              steps: [
+                "Sum event weights per account",
+                "Bucket score into classification thresholds",
+                "Persist score on Account row",
+              ],
+            }}
+          />
           <IntentTab strategyId={activeId} />
         </TabsContent>
-        <TabsContent value="feedback">
+        <TabsContent value="feedback" className="space-y-4">
+          <ReasoningPanel
+            fallback={{
+              source: "ai_generated",
+              logic: "Sentiment + themes auto-extracted by the model from each verbatim feedback entry.",
+            }}
+          />
           <FeedbackTab strategyId={activeId} />
         </TabsContent>
-        <TabsContent value="attribution">
+        <TabsContent value="attribution" className="space-y-4">
+          <ReasoningPanel
+            fallback={{
+              source: "computed",
+              logic: "Channel attribution rolled up deterministically from logged AttributionEvent rows.",
+            }}
+          />
           <AttributionTab strategyId={activeId} />
         </TabsContent>
-        <TabsContent value="qualification">
+        <TabsContent value="qualification" className="space-y-4">
+          <ReasoningPanel
+            fallback={{
+              source: "computed",
+              logic: "MQL/SQL/Nurture buckets derived from each contact's composite total score.",
+            }}
+          />
           <QualificationTab strategyId={activeId} />
         </TabsContent>
-        <TabsContent value="loop-back">
+        <TabsContent value="loop-back" className="space-y-4">
+          <ReasoningPanel
+            fallback={{
+              source: "ai_generated",
+              logic: "Aggregates qualification, attribution, and feedback themes, then asks the model to suggest concrete ICP refinements.",
+            }}
+          />
           <LoopBackTab strategyId={activeId} />
         </TabsContent>
       </Tabs>

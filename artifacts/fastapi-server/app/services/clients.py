@@ -8,6 +8,8 @@ import logging
 from typing import Optional, Any
 import httpx
 
+from app.services.rate_limit import consume as _rl_consume, RateLimitExceeded
+
 log = logging.getLogger("gtm.clients")
 TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
@@ -15,6 +17,7 @@ TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 def serpapi_search(api_key: str, query: str, num: int = 5) -> Optional[list[dict]]:
     if not api_key:
         return None
+    _rl_consume("serpapi")
     try:
         with httpx.Client(timeout=TIMEOUT) as c:
             r = c.get(
@@ -39,6 +42,7 @@ def serpapi_search(api_key: str, query: str, num: int = 5) -> Optional[list[dict
 def apollo_people_search(api_key: str, filters: dict, per_page: int = 10) -> Optional[list[dict]]:
     if not api_key:
         return None
+    _rl_consume("apollo")
     try:
         body = {
             "api_key": api_key,
@@ -74,6 +78,7 @@ def clay_enrich(api_key: str, contacts: list[dict]) -> Optional[list[dict]]:
 def instantly_create_campaign(api_key: str, name: str, sequence_steps: list[dict]) -> Optional[dict]:
     if not api_key:
         return None
+    _rl_consume("instantly")
     try:
         with httpx.Client(timeout=TIMEOUT) as c:
             r = c.post(
@@ -92,6 +97,7 @@ def instantly_get_events(api_key: str, campaign_id: str) -> Optional[list[dict]]
     failure so callers can skip silently."""
     if not api_key or not campaign_id:
         return None
+    _rl_consume("instantly")
     try:
         with httpx.Client(timeout=TIMEOUT) as c:
             r = c.get(

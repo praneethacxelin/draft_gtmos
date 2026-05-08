@@ -26,10 +26,21 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   if (!res.ok) {
     const text = await res.text();
     let msg = text;
+    let parsed: { detail?: string; message?: string; integration?: string; retry_after_seconds?: number } = {};
     try {
-      const parsed = JSON.parse(text);
+      parsed = JSON.parse(text);
       msg = parsed.detail || parsed.message || text;
     } catch {}
+    if (res.status === 429) {
+      const integ = parsed.integration ? ` (${parsed.integration})` : "";
+      const retry = parsed.retry_after_seconds ? ` Retry in ~${parsed.retry_after_seconds}s.` : "";
+      const friendly = `Free-tier rate limit hit${integ}.${retry}`;
+      try {
+        const { toast } = await import("sonner");
+        toast.error(friendly);
+      } catch {}
+      throw new Error(friendly);
+    }
     throw new Error(msg || res.statusText);
   }
   if (res.status === 204) return null as T;

@@ -17,7 +17,36 @@ from langgraph.graph import StateGraph, START, END
 from sqlalchemy.orm import Session
 
 from app.db import Strategy, IcpEmbedding
-from app.llm import chat_json, deterministic_embedding
+from app.llm import chat_json, deterministic_embedding, MODEL_NAME
+from app.provenance import stamp
+
+
+_STAGE_LOGIC: dict[str, tuple[str, list[str]]] = {
+    "icp": (
+        "Asked the model to draft an Ideal Customer Profile from the product brief.",
+        ["Read product brief", "Prompt model with ICP schema", "Persist firmographics + segments"],
+    ),
+    "personas": (
+        "Generated a champion / economic-buyer / blocker persona matrix grounded in the ICP.",
+        ["Read latest ICP", "Prompt model with persona schema", "Persist persona matrix + influence edges"],
+    ),
+    "problems": (
+        "Mapped persona pains, triggers, and product angles into a problem-solution table.",
+        ["Read personas", "Prompt model with problem-map schema", "Persist problem rows"],
+    ),
+    "naics": (
+        "Segmented the ICP into NAICS industry codes with opportunity scores.",
+        ["Read ICP", "Prompt model with NAICS schema", "Persist 5–7 segments"],
+    ),
+    "stakeholders": (
+        "Built a buying-committee graph with influence edges between stakeholders.",
+        ["Read personas", "Prompt model with graph schema", "Persist nodes + edges"],
+    ),
+    "use_cases": (
+        "Generated a use-case library cross-referencing personas and segments.",
+        ["Read NAICS + personas", "Prompt model with use-case schema", "Persist 6–8 use cases"],
+    ),
+}
 
 
 class S1State(TypedDict, total=False):
@@ -58,6 +87,17 @@ def _make_stage(
     async def node(state: S1State) -> S1State:
         await _emit(state, "stage_start", {"stage": stage})
         result = await chat_json(prompt_fn(state), max_tokens=1500)
+        if isinstance(result, dict) and "_error" not in result:
+            logic, steps = _STAGE_LOGIC.get(
+                stage,
+                (f"Generated {stage} payload via LLM.", ["Prompt model", "Persist payload"]),
+            )
+            result["_provenance"] = stamp(
+                source="ai_generated",
+                logic=logic,
+                steps=steps,
+                model=MODEL_NAME,
+            )
         _persist(state["db"], state["strategy_id"], field, result)
         await _emit(state, "stage_complete", {"stage": stage, "result": result})
         return {**state, stage: result, "last_stage": stage}

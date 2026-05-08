@@ -9,7 +9,10 @@ import hashlib
 from typing import Any, AsyncIterator
 from openai import OpenAI, AsyncOpenAI
 
+from app.services.rate_limit import consume as _rl_consume
+
 _MODEL = "gpt-4o-mini"
+MODEL_NAME = _MODEL
 
 
 def _client() -> OpenAI:
@@ -28,6 +31,7 @@ def _async_client() -> AsyncOpenAI:
 
 def _chat_json_sync(prompt: str, system: str, max_tokens: int) -> dict:
     try:
+        _rl_consume("openai")
         resp = _client().chat.completions.create(
             model=_MODEL,
             messages=[
@@ -57,6 +61,7 @@ async def chat_json(prompt: str, system: str = "You are a helpful sales strategi
 
 def _chat_text_sync(prompt: str, system: str, max_tokens: int) -> str:
     try:
+        _rl_consume("openai")
         resp = _client().chat.completions.create(
             model=_MODEL,
             messages=[

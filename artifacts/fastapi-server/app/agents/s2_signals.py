@@ -4,23 +4,28 @@ import random
 from typing import AsyncIterator
 from sqlalchemy.orm import Session
 from app.db import Strategy, Account, Contact, Signal, Competitor, PatternCluster, IcpEmbedding, LeadScore
-from app.llm import chat_json, deterministic_embedding
-from app.services import settings_service, clients
+from app.llm import chat_json, deterministic_embedding, MODEL_NAME
+from app.services import settings_service, clients, fetch_limits
+from app.provenance import stamp
 
 
-async def run_market_sizing(db: Session, strategy_id: str) -> dict:
+async def run_market_sizing(db: Session, strategy_id: str, limit: int | None = None) -> dict:
     strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
     if not strategy:
         return {"error": "Strategy not found"}
 
+    limits = fetch_limits.get_limits(db, strategy.user_id or "user_public")
+    n_results = fetch_limits.clamp("market_sizing_results", limit, limits)
+
     serp_key = settings_service.get_key(db, strategy.user_id, "serpapi")
     serp_context = ""
+    serp_count = 0
     if serp_key and strategy.naics_json:
-        # Pull a quick sizing snippet from SerpAPI
         first_segment = (strategy.naics_json.get("segments") or [{}])[0]
         seg_name = first_segment.get("name", strategy.target_market or "market")
-        results = clients.serpapi_search(serp_key, f"{seg_name} TAM market size 2025", num=3)
+        results = clients.serpapi_search(serp_key, f"{seg_name} TAM market size 2025", num=n_results)
         if results:
+            serp_count = len(results)
             serp_context = " Recent search snippets: " + " | ".join(
                 f"{r['title']}: {r.get('snippet', '')}" for r in results
             )
@@ -31,7 +36,25 @@ async def run_market_sizing(db: Session, strategy_id: str) -> dict:
         "keys: tam {value_usd, label}, sam {value_usd, label}, som {value_usd, label}, "
         "methodology, confidence 'low'|'medium'|'high', uses_live_data (bool)."
     )
-    sizing["uses_live_data"] = bool(serp_key)
+    if isinstance(sizing, dict):
+        sizing["uses_live_data"] = bool(serp_key)
+        sizing["_provenance"] = stamp(
+            source="serpapi" if serp_key else "ai_generated",
+            logic=(
+                "Pulled sizing snippets from SerpAPI then asked the model to "
+                "estimate TAM/SAM/SOM grounded in those snippets."
+                if serp_key
+                else "Model produced TAM/SAM/SOM estimates from the product brief alone (no SerpAPI key)."
+            ),
+            steps=[
+                ("Pick top NAICS segment as the search anchor" if serp_key else "Skip live search (no SerpAPI key)"),
+                f"SerpAPI search: '{n_results}' results requested" if serp_key else "Compose sizing prompt",
+                "Prompt model with sizing schema",
+                "Persist TAM/SAM/SOM payload",
+            ],
+            counts={"serp_results": serp_count, "limit_used": n_results},
+            model=MODEL_NAME,
+        )
     strategy.tam_sam_som_json = sizing
     db.commit()
     return sizing
@@ -76,11 +99,14 @@ async def run_competitors(db: Session, strategy_id: str) -> list[dict]:
     return out
 
 
-async def run_lead_search(db: Session, strategy_id: str) -> dict:
+async def run_lead_search(db: Session, strategy_id: str, limit: int | None = None) -> dict:
     """Discover and enrich leads. Apollo/Clay if configured, else AI demo data."""
     strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
     if not strategy:
         return {"error": "Strategy not found"}
+
+    limits = fetch_limits.get_limits(db, strategy.user_id or "user_public")
+    n_leads = fetch_limits.clamp("leads_per_run", limit, limits)
 
     apollo_key = settings_service.get_key(db, strategy.user_id, "apollo")
     clay_key = settings_service.get_key(db, strategy.user_id, "clay")
@@ -101,7 +127,7 @@ async def run_lead_search(db: Session, strategy_id: str) -> dict:
                 "titles": titles or ["VP of Sales", "Head of Marketing"],
                 "employee_ranges": ["51,200", "201,500", "501,1000"],
             },
-            per_page=8,
+            per_page=n_leads,
         )
 
     # Pre-load existing accounts/contacts to avoid duplicate inserts on re-run
@@ -173,7 +199,7 @@ async def run_lead_search(db: Session, strategy_id: str) -> dict:
     else:
         # AI demo data
         demo = await chat_json(
-            f"Generate 8 realistic but synthetic prospects for product '{strategy.product_name}' "
+            f"Generate {n_leads} realistic but synthetic prospects for product '{strategy.product_name}' "
             f"targeting {strategy.target_market or 'businesses'}. ICP: {json.dumps(icp)[:1000]}. "
             "Return JSON with key 'prospects' = array of {company_name, domain, industry, "
             "employee_count, revenue_range, full_name, title, email, linkedin_url, seniority, "
@@ -221,19 +247,48 @@ async def run_lead_search(db: Session, strategy_id: str) -> dict:
     # Auto-trigger scoring
     score_leads(db, strategy_id)
 
+    provenance = stamp(
+        source="apollo" if apollo_key else "ai_generated",
+        logic=(
+            f"Pulled up to {n_leads} contacts from Apollo using the persona titles "
+            "and ICP firmographics as filters; deduped against existing rows; "
+            "scored ICP fit + signals automatically."
+            if apollo_key
+            else f"No Apollo key — generated {n_leads} synthetic-but-realistic prospects "
+                 "with the model and badged them as demo data."
+        ),
+        steps=[
+            "Read ICP and persona titles from the strategy",
+            ("Apollo people search with filters" if apollo_key else "Prompt model for synthetic prospects"),
+            "Dedupe by email + (account, name)",
+            "Insert accounts and contacts",
+            "Run lead scoring",
+        ],
+        counts={
+            "limit_used": n_leads,
+            "accounts_added": len(newly_added_accounts),
+            "contacts_added": len(new_contacts),
+        },
+        model=None if apollo_key else MODEL_NAME,
+    )
+
     return {
         "accounts_added": len(newly_added_accounts),
         "contacts_added": len(new_contacts),
         "is_demo": is_demo,
         "uses_clay": bool(clay_key),
+        "provenance": provenance,
     }
 
 
-async def run_signals(db: Session, strategy_id: str) -> dict:
+async def run_signals(db: Session, strategy_id: str, limit: int | None = None) -> dict:
     """Detect buying signals per account."""
     strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
     if not strategy:
         return {"signals_added": 0}
+    limits = fetch_limits.get_limits(db, strategy.user_id or "user_public")
+    n_per_account = fetch_limits.clamp("signals_per_account", limit, limits)
+
     serp_key = settings_service.get_key(db, strategy.user_id, "serpapi")
     accounts = db.query(Account).filter(Account.strategy_id == strategy_id).limit(10).all()
     if not accounts:
@@ -250,7 +305,7 @@ async def run_signals(db: Session, strategy_id: str) -> dict:
                 ("funding", "{c} raises funding"),
                 ("hiring", "{c} hiring VP Sales"),
             ]:
-                results = clients.serpapi_search(serp_key, query_tpl.format(c=acct.company_name), num=2)
+                results = clients.serpapi_search(serp_key, query_tpl.format(c=acct.company_name), num=n_per_account)
                 for r in results or []:
                     db.add(Signal(
                         strategy_id=strategy_id,
@@ -288,7 +343,31 @@ async def run_signals(db: Session, strategy_id: str) -> dict:
             added += 1
     db.commit()
     score_leads(db, strategy_id)
-    return {"signals_added": added, "is_demo": not serp_key}
+    return {
+        "signals_added": added,
+        "is_demo": not serp_key,
+        "provenance": stamp(
+            source="serpapi" if serp_key else "ai_generated",
+            logic=(
+                f"Queried SerpAPI for funding + hiring signals across the top "
+                f"{len(accounts)} accounts (up to {n_per_account} results per query)."
+                if serp_key
+                else "No SerpAPI key — model generated synthetic-but-realistic buying signals "
+                     "for the existing account list."
+            ),
+            steps=[
+                f"Pull top {len(accounts)} accounts in this strategy",
+                ("SerpAPI: 'funding' and 'hiring' query per account" if serp_key else "Prompt model with company list"),
+                "Persist signals + run lead scoring",
+            ],
+            counts={
+                "accounts_scanned": len(accounts),
+                "signals_added": added,
+                "limit_per_account": n_per_account,
+            },
+            model=None if serp_key else MODEL_NAME,
+        ),
+    }
 
 
 def score_leads(db: Session, strategy_id: str) -> dict:

@@ -3,8 +3,11 @@ import logging
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from app.services.rate_limit import RateLimitExceeded
 from alembic import command
 from alembic.config import Config
 
@@ -70,6 +73,19 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Agentic GTM Factory API", version="0.1.0", lifespan=lifespan)
+
+
+@app.exception_handler(RateLimitExceeded)
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    return JSONResponse(
+        status_code=429,
+        headers={"Retry-After": str(int(exc.retry_after))},
+        content={
+            "detail": str(exc),
+            "integration": exc.name,
+            "retry_after_seconds": int(exc.retry_after),
+        },
+    )
 
 app.add_middleware(
     CORSMiddleware,

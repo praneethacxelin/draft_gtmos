@@ -52,12 +52,17 @@ def now() -> datetime:
     return datetime.utcnow()
 
 
-# ---------- Users (Clerk-authenticated) ----------
+# ---------- Users ----------
+#
+# Authentication has been removed. The ``users`` table is kept because
+# downstream rows still hold user_id foreign keys (legacy from when the
+# app shipped with Clerk). All requests resolve to the shared
+# ``user_public`` row created on startup by ``app.auth``.
 
 
 class User(Base):
     __tablename__ = "users"
-    id = Column(String, primary_key=True)  # Clerk user id (e.g. user_xxx)
+    id = Column(String, primary_key=True)  # opaque user id (e.g. user_public)
     email = Column(String, nullable=True)
     is_admin = Column(Boolean, nullable=False, default=False, server_default="false")
     created_at = Column(DateTime, default=now)

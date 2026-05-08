@@ -75,7 +75,6 @@
     "zod": "catalog:"
   },
   "dependencies": {
-    "@clerk/react": "^6.6.0",
     "reactflow": "^11.11.4"
   }
 }

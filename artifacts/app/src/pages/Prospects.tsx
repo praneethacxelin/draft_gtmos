@@ -23,11 +23,16 @@ import {
 } from "@/hooks/useStrategies";
 import { fmtRelative } from "@/lib/format";
 import { Search, Radar, Sparkles, Crosshair, Building2 } from "lucide-react";
+import { ReasoningPanel } from "@/components/ReasoningPanel";
+import { useFetchLimits } from "@/hooks/useSettings";
 
 export function Prospects() {
   const { active, activeId } = useActiveStrategy();
   const [tierFilter, setTierFilter] = useState<string>("all");
   const tier = tierFilter === "all" ? undefined : Number(tierFilter);
+  const { data: caps } = useFetchLimits();
+  const [leadLimit, setLeadLimit] = useState<string>("");
+  const [signalLimit, setSignalLimit] = useState<string>("");
 
   const { data: prioritized } = usePrioritizedAccounts(activeId ?? undefined);
   const { data: contacts } = useContacts(activeId ?? undefined, tier);
@@ -56,21 +61,53 @@ export function Prospects() {
         subtitle={`Accounts, contacts, and live buying signals for ${active?.product_name ?? "this strategy"}.`}
         actions={
           <div className="flex flex-wrap items-center gap-2">
+            <Select value={leadLimit} onValueChange={setLeadLimit}>
+              <SelectTrigger className="h-8 w-28 text-xs" data-testid="select-lead-limit">
+                <SelectValue placeholder={`Leads: ${caps?.limits.leads_per_run ?? "default"}`} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">Default ({caps?.limits.leads_per_run ?? 5})</SelectItem>
+                {[3, 5, 10, 15, 25].map((n) => (
+                  <SelectItem key={n} value={String(n)}>{n} leads</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Button
               size="sm"
               variant="secondary"
               disabled={leadSearch.isPending}
-              onClick={() => leadSearch.mutate(activeId)}
+              onClick={() =>
+                leadSearch.mutate({
+                  id: activeId,
+                  limit: leadLimit ? Number(leadLimit) : undefined,
+                })
+              }
               data-testid="button-discover-leads"
             >
               <Search className="mr-2 h-4 w-4" />
               {leadSearch.isPending ? "Searching…" : "Discover leads"}
             </Button>
+            <Select value={signalLimit} onValueChange={setSignalLimit}>
+              <SelectTrigger className="h-8 w-32 text-xs" data-testid="select-signal-limit">
+                <SelectValue placeholder={`Signals/acct: ${caps?.limits.signals_per_account ?? "default"}`} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">Default ({caps?.limits.signals_per_account ?? 3})</SelectItem>
+                {[2, 3, 5, 10].map((n) => (
+                  <SelectItem key={n} value={String(n)}>{n} per acct</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Button
               size="sm"
               variant="secondary"
               disabled={runSignals.isPending}
-              onClick={() => runSignals.mutate(activeId)}
+              onClick={() =>
+                runSignals.mutate({
+                  id: activeId,
+                  limit: signalLimit ? Number(signalLimit) : undefined,
+                })
+              }
               data-testid="button-run-signals"
             >
               <Radar className="mr-2 h-4 w-4" />
@@ -98,6 +135,21 @@ export function Prospects() {
             </Button>
           </div>
         }
+      />
+
+      <ReasoningPanel
+        title="How prospects are produced"
+        fallback={{
+          source: "ai_generated",
+          logic:
+            "Without an Apollo or SerpAPI key, accounts, contacts, and signals are AI-generated demo data. Add live keys in Settings to swap to real Apollo people-search and SerpAPI funding/hiring queries — the per-run limits below cap how many records each click pulls.",
+          steps: [
+            "Discover leads → Apollo people search (or AI demo) capped by leads_per_run",
+            "Run signals → SerpAPI funding + hiring queries (or AI demo) capped by signals_per_account",
+            "Score leads → composite ICP fit + signals + engagement + pgvector boost",
+          ],
+        }}
+        className="mb-4"
       />
 
       <Tabs defaultValue="accounts" className="space-y-4">

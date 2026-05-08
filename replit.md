@@ -48,7 +48,7 @@
 
 ## Gotchas
 
-- **No auth.** This is a single-operator console; all `/api/*` routes are unauthenticated. Add Replit Auth or Clerk before exposing externally.
+- **No auth.** This is a single-operator console; all `/api/*` routes are unauthenticated. Wire in Replit Auth (or any OIDC provider) before exposing externally.
 - S1 SSE rejects re-runs while `status == "generating"` to prevent interleaved writes.
 - LLM JSON failures surface as `{"_error": ...}` and are **not** persisted into strategy fields; the stage event still fires so the UI can show the previous payload.
 - Lead discovery is now idempotent — re-running matches by email and `(account_id, full_name)` so no duplicates accumulate.

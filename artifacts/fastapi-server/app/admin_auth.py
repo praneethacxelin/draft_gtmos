@@ -1,4 +1,4 @@
-"""Password-based admin authentication, independent of Clerk.
+"""Password-based admin authentication.
 
 The admin password is read from the ``ADMIN_PASSWORD`` env var. Clients
 POST it to ``/admin/login`` and receive an opaque token that they then

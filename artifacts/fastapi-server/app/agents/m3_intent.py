@@ -15,7 +15,8 @@ from app.db import (
     Account,
     Signal,
 )
-from app.llm import chat_json
+from app.llm import chat_json, MODEL_NAME
+from app.provenance import stamp
 
 
 HIGH_INTENT_PAGES = ("pricing", "demo", "case-study", "case_study", "trial")
@@ -170,6 +171,28 @@ async def loop_back(db: Session, strategy_id: str) -> dict:
         "suggested_value, reason}), promote_personas (array of strings), deprioritize_personas "
         f"(array of strings). Summary: {json.dumps(summary)[:3000]}"
     )
+
+    if isinstance(delta, dict) and "_error" not in delta:
+        delta["_provenance"] = stamp(
+            source="ai_generated",
+            logic=(
+                "Aggregated qualification, attribution, and feedback themes, then "
+                "asked the model to suggest concrete ICP refinements as a delta."
+            ),
+            steps=[
+                "Aggregate SQL/MQL counts from QualificationRecord",
+                "Group AttributionEvent by source channel",
+                "Tally FeedbackEntry themes",
+                "Prompt model with the summary",
+            ],
+            counts={
+                "sql_count": sql_count,
+                "mql_count": mql_count,
+                "feedback_themes": len(feedback_themes),
+                "channels": len(attr_rows),
+            },
+            model=MODEL_NAME,
+        )
 
     update = GtmLoopUpdate(
         strategy_id=strategy_id,
