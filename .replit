@@ -50,3 +50,4 @@ channel = "stable-25_05"
 
 [userenv.shared]
 ENCRYPTION_KEY = "Ra-zlfHVFjkT7EXD_AiuGVoOHQsyhGhp2cIEaCGSouQ="
+ADMIN_PASSWORD = "ErZq5_29HlYsaDbrjywcaJL2"

@@ -21,6 +21,7 @@ import { Outreach } from "@/pages/Outreach";
 import { Intelligence } from "@/pages/Intelligence";
 import { Settings } from "@/pages/Settings";
 import NotFound from "@/pages/not-found";
+import { AdminPage } from "@/pages/Admin";
 import { setAuthTokenGetter } from "@/lib/api";
 
 const queryClient = new QueryClient({
@@ -203,7 +204,12 @@ function App() {
 
   return (
     <WouterRouter base={basePath}>
-      <ClerkRoutes />
+      <Switch>
+        <Route path="/admin/*?" component={AdminPage} />
+        <Route>
+          <ClerkRoutes />
+        </Route>
+      </Switch>
     </WouterRouter>
   );
 }

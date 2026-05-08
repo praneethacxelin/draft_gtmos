@@ -22,6 +22,7 @@ from app.routes import (
     copilot,
     intelligence,
     dashboard,
+    admin,
 )
 from app.services.instantly_poller import poll_loop
 from app.services.m3_tracking import m3_loop
@@ -109,6 +110,7 @@ app.include_router(sequences.router, prefix=api_prefix)
 app.include_router(copilot.router, prefix=api_prefix)
 app.include_router(intelligence.router, prefix=api_prefix)
 app.include_router(dashboard.router, prefix=api_prefix)
+app.include_router(admin.router, prefix=api_prefix)
 
 
 if __name__ == "__main__":
