@@ -92,17 +92,21 @@ export function Prospects() {
 
   async function saveContact() {
     if (!editingContactId) return;
-    await updateContact.mutateAsync({
-      id: editingContactId,
-      data: {
-        full_name: editDraft.full_name,
-        title: editDraft.title,
-        persona_type: editDraft.persona_type || undefined,
-        icp_fit_score: editDraft.icp_fit_score,
-      },
-    });
-    setEditingContactId(null);
-    setContactDirty(true);
+    try {
+      await updateContact.mutateAsync({
+        id: editingContactId,
+        data: {
+          full_name: editDraft.full_name,
+          title: editDraft.title,
+          persona_type: editDraft.persona_type || undefined,
+          icp_fit_score: editDraft.icp_fit_score,
+        },
+      });
+      setEditingContactId(null);
+      setContactDirty(true);
+    } catch (err) {
+      console.error("Failed to save contact:", err);
+    }
   }
 
   const retriggerActions: RetriggerAction[] = [

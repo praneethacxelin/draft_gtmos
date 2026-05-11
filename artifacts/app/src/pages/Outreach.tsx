@@ -74,9 +74,13 @@ export function Outreach() {
 
   async function saveStep() {
     if (!editingStepId) return;
-    await patchStep.mutateAsync({ id: editingStepId, data: editDraft });
-    setEditingStepId(null);
-    setStepDirty(true);
+    try {
+      await patchStep.mutateAsync({ id: editingStepId, data: editDraft });
+      setEditingStepId(null);
+      setStepDirty(true);
+    } catch (err) {
+      console.error("Failed to save step:", err);
+    }
   }
 
   const retriggerActions: RetriggerAction[] = [

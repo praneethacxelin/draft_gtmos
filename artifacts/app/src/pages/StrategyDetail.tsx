@@ -35,6 +35,7 @@ import {
   type UseCase,
   type StrategySection,
 } from "@/hooks/useStrategies";
+import { apiUrl } from "@/lib/api";
 import { useFetchLimits } from "@/hooks/useSettings";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -97,14 +98,22 @@ export function StrategyDetail() {
     pain_points_raw?: string;
   }) {
     if (!id) return;
-    await updateStrategy.mutateAsync({ id, data });
-    onSaved();
+    try {
+      await updateStrategy.mutateAsync({ id, data });
+      onSaved();
+    } catch (err) {
+      console.error("Failed to save field:", err);
+    }
   }
 
   async function saveSection(section: StrategySection, data: object) {
     if (!id) return;
-    await updateSection.mutateAsync({ id, section, data });
-    onSaved();
+    try {
+      await updateSection.mutateAsync({ id, section, data });
+      onSaved();
+    } catch (err) {
+      console.error("Failed to save section:", err);
+    }
   }
 
   const ready = strategy?.status === "ready";
@@ -113,7 +122,7 @@ export function StrategyDetail() {
     if (!id) return;
     setStreaming(true);
     setStageStatus({});
-    const es = new EventSource(`/app/api/strategies/${id}/run`);
+    const es = new EventSource(apiUrl(`/api/strategies/${id}/run`));
     es.addEventListener("stage_start", (e) => {
       const d = JSON.parse((e as MessageEvent).data ?? "{}");
       setStageStatus((prev) => ({ ...prev, [d.stage]: "running" }));

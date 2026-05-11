@@ -265,12 +265,16 @@ function IntegrationCard({ integration }: { integration: Integration }) {
             size="sm"
             disabled={update.isPending}
             onClick={async () => {
-              await update.mutateAsync({
-                name: integration.name,
-                api_key: key || undefined,
-                is_enabled: enabled,
-              });
-              setKey("");
+              try {
+                await update.mutateAsync({
+                  name: integration.name,
+                  api_key: key || undefined,
+                  is_enabled: enabled,
+                });
+                setKey("");
+              } catch (err) {
+                console.error("Failed to save integration:", err);
+              }
             }}
             data-testid={`button-save-${integration.name}`}
           >
