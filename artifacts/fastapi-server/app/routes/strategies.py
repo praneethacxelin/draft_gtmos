@@ -81,6 +81,125 @@ def delete_strategy(
     return {"ok": True}
 
 
+# ---------------------------------------------------------------------------
+# PATCH endpoints — inline editing from the frontend
+# ---------------------------------------------------------------------------
+
+class StrategyPatch(BaseModel):
+    product_name: str | None = None
+    description: str | None = None
+    target_market: str | None = None
+    pain_points_raw: str | None = None
+
+
+class IcpSectionPatch(BaseModel):
+    industries: list | None = None
+    employee_size_range: str | None = None
+    revenue_range: str | None = None
+    geographies: list | None = None
+    tech_stack_signals: list | None = None
+    segments: list | None = None
+
+
+class PersonasSectionPatch(BaseModel):
+    champion: dict | None = None
+    economic_buyer: dict | None = None
+    blocker: dict | None = None
+
+
+class ProblemsSectionPatch(BaseModel):
+    problems: list
+
+
+class UseCasesSectionPatch(BaseModel):
+    use_cases: list
+
+
+@router.patch("/{strategy_id}")
+def patch_strategy(
+    strategy_id: str,
+    body: StrategyPatch,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    s = own_strategy(db, strategy_id, user)
+    if body.product_name is not None:
+        s.product_name = body.product_name
+    if body.description is not None:
+        s.description = body.description
+    if body.target_market is not None:
+        s.target_market = body.target_market
+    if body.pain_points_raw is not None:
+        s.pain_points_raw = body.pain_points_raw
+    db.commit()
+    db.refresh(s)
+    return _serialize(s)
+
+
+@router.patch("/{strategy_id}/icp")
+def patch_icp(
+    strategy_id: str,
+    body: IcpSectionPatch,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    s = own_strategy(db, strategy_id, user)
+    current = dict(s.icp_json or {})
+    current.update(body.model_dump(exclude_unset=True))
+    s.icp_json = current
+    db.commit()
+    db.refresh(s)
+    return _serialize(s)
+
+
+@router.patch("/{strategy_id}/personas")
+def patch_personas(
+    strategy_id: str,
+    body: PersonasSectionPatch,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    s = own_strategy(db, strategy_id, user)
+    current = dict(s.personas_json or {})
+    current.update(body.model_dump(exclude_unset=True))
+    s.personas_json = current
+    db.commit()
+    db.refresh(s)
+    return _serialize(s)
+
+
+@router.patch("/{strategy_id}/problems")
+def patch_problems(
+    strategy_id: str,
+    body: ProblemsSectionPatch,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    s = own_strategy(db, strategy_id, user)
+    current = dict(s.problems_json or {})
+    current["problems"] = body.problems
+    s.problems_json = current
+    db.commit()
+    db.refresh(s)
+    return _serialize(s)
+
+
+@router.patch("/{strategy_id}/use-cases")
+def patch_use_cases(
+    strategy_id: str,
+    body: UseCasesSectionPatch,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    s = own_strategy(db, strategy_id, user)
+    current = dict(s.use_cases_json or {})
+    current["use_cases"] = body.use_cases
+    s.use_cases_json = current
+    db.commit()
+    db.refresh(s)
+    return _serialize(s)
+
+
 def _s1_event_gen(strategy_id: str):
     async def event_gen():
         db2 = SessionLocal()

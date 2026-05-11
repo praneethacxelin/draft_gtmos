@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api";
 
 export interface Contact {
@@ -38,5 +38,30 @@ export function useContact(id?: string) {
     queryKey: ["contact", id],
     queryFn: () => apiFetch(`/api/contacts/${id}`),
     enabled: !!id,
+  });
+}
+
+export function useUpdateContact() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      data,
+    }: {
+      id: string;
+      data: Partial<
+        Pick<
+          Contact,
+          "full_name" | "title" | "persona_type" | "icp_fit_score" | "seniority"
+        >
+      >;
+    }) =>
+      apiFetch<Contact>(`/api/contacts/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["contacts"] });
+    },
   });
 }

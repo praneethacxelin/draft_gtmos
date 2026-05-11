@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.db import get_session, Contact, Account, User
 from app.auth import current_user
@@ -38,6 +39,38 @@ def get_contact(
     user: User = Depends(current_user),
 ) -> dict:
     c = own_contact(db, contact_id, user)
+    a = db.query(Account).filter(Account.id == c.account_id).first()
+    return _serialize(c, a)
+
+
+class ContactPatch(BaseModel):
+    full_name: str | None = None
+    title: str | None = None
+    persona_type: str | None = None
+    icp_fit_score: float | None = None
+    seniority: str | None = None
+
+
+@router.patch("/{contact_id}")
+def patch_contact(
+    contact_id: str,
+    body: ContactPatch,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    c = own_contact(db, contact_id, user)
+    if body.full_name is not None:
+        c.full_name = body.full_name
+    if body.title is not None:
+        c.title = body.title
+    if body.persona_type is not None:
+        c.persona_type = body.persona_type
+    if body.icp_fit_score is not None:
+        c.icp_fit_score = body.icp_fit_score
+    if body.seniority is not None:
+        c.seniority = body.seniority
+    db.commit()
+    db.refresh(c)
     a = db.query(Account).filter(Account.id == c.account_id).first()
     return _serialize(c, a)
 

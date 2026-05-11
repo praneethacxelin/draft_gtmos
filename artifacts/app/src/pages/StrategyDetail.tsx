@@ -1,51 +1,68 @@
-import { useEffect, useRef, useState } from "react";
 import { useRoute } from "wouter";
+import { useState, useRef, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Skeleton } from "@/components/ui/skeleton";
-import { PageHeader } from "@/components/PageHeader";
-import { StatusPill } from "@/components/Pills";
+import {
+  Brain,
+  PlayCircle,
+  Sparkles,
+  TrendingUp,
+  Building2,
+  Map,
+  Users,
+  Target,
+  BarChart3,
+  Boxes,
+  Loader2,
+  CheckCircle2,
+  AlertCircle,
+} from "lucide-react";
 import {
   useStrategy,
   useMarketSizing,
-  useCompetitors,
   useRunCompetitors,
+  useCompetitors,
   usePatterns,
   useRunPatterns,
-  strategyKeys,
+  useScoreLeads,
+  useUpdateStrategy,
+  useUpdateStrategySection,
   type Icp,
-  type Persona,
   type PersonaMatrix,
+  type Persona,
   type ProblemRow,
   type NaicsSegment,
   type StakeholderMap,
   type UseCase,
+  type StrategySection,
 } from "@/hooks/useStrategies";
-import { StakeholderFlow } from "@/components/StakeholderFlow";
-import { ReasoningPanel } from "@/components/ReasoningPanel";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useFetchLimits } from "@/hooks/useSettings";
-import { apiUrl } from "@/lib/api";
-import { fmtUsd } from "@/lib/format";
+import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  Check,
-  Loader2,
-  CircleDot,
-  PlayCircle,
-  TrendingUp,
-  Sparkles,
-  Crosshair,
-} from "lucide-react";
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { ReasoningPanel, SourceBadge } from "@/components/ReasoningPanel";
+import { Empty } from "@/components/Empty";
+import { StakeholderFlow } from "@/components/StakeholderFlow";
+import { StatusPill } from "@/components/Pills";
+import { EditableField } from "@/components/EditableField";
+import { EditableTextarea } from "@/components/EditableTextarea";
+import { EditableList } from "@/components/EditableList";
+import { RetriggerBar, type RetriggerAction } from "@/components/RetriggerBar";
 
-const STAGES = [
-  { key: "icp", label: "ICP modeling" },
-  { key: "personas", label: "Persona matrix" },
-  { key: "problems", label: "Problem map" },
-  { key: "naics", label: "NAICS segmentation" },
-  { key: "stakeholders", label: "Stakeholder graph" },
-  { key: "use_cases", label: "Use case library" },
+const S1_STAGES = [
+  { key: "icp", label: "ICP" },
+  { key: "personas", label: "Personas" },
+  { key: "problems", label: "Problems" },
+  { key: "naics", label: "NAICS" },
+  { key: "stakeholders", label: "Stakeholders" },
+  { key: "use-cases", label: "Use Cases" },
+  { key: "market-sizing", label: "Market Sizing" },
 ];
 
 export function StrategyDetail() {
@@ -64,116 +81,255 @@ export function StrategyDetail() {
   const { data: fetchCaps } = useFetchLimits();
   const [marketLimit, setMarketLimit] = useState<string>("default");
 
-  useEffect(() => {
-    if (!strategy || !id) return;
-    if (strategy.status !== "draft") return;
-    if (streaming) return;
-    if (autoRanRef.current === id) return;
-    autoRanRef.current = id;
-    startStream();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [strategy, streaming, id]);
+  const updateStrategy = useUpdateStrategy();
+  const updateSection = useUpdateStrategySection();
+  const scoreLeads = useScoreLeads();
+  const [dirty, setDirty] = useState(false);
 
-  function startStream() {
+  function onSaved() {
+    setDirty(true);
+  }
+
+  async function saveField(data: {
+    product_name?: string;
+    description?: string;
+    target_market?: string;
+    pain_points_raw?: string;
+  }) {
+    if (!id) return;
+    await updateStrategy.mutateAsync({ id, data });
+    onSaved();
+  }
+
+  async function saveSection(section: StrategySection, data: object) {
+    if (!id) return;
+    await updateSection.mutateAsync({ id, section, data });
+    onSaved();
+  }
+
+  const ready = strategy?.status === "ready";
+
+  async function startStream() {
     if (!id) return;
     setStreaming(true);
     setStageStatus({});
-    const es = new EventSource(apiUrl(`/api/strategies/${id}/run`));
-    const handle = (stage: string, status: string) =>
-      setStageStatus((prev) => ({ ...prev, [stage]: status }));
-
-    es.addEventListener("stage_start", (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data);
-        handle(data.stage, "active");
-      } catch {}
+    const es = new EventSource(`/app/api/strategies/${id}/run`);
+    es.addEventListener("stage_start", (e) => {
+      const d = JSON.parse((e as MessageEvent).data ?? "{}");
+      setStageStatus((prev) => ({ ...prev, [d.stage]: "running" }));
     });
-    es.addEventListener("stage_complete", (e: MessageEvent) => {
-      try {
-        const data = JSON.parse(e.data);
-        handle(data.stage, "done");
-        qc.invalidateQueries({ queryKey: strategyKeys.detail(id) });
-      } catch {}
+    es.addEventListener("stage_complete", (e) => {
+      const d = JSON.parse((e as MessageEvent).data ?? "{}");
+      setStageStatus((prev) => ({ ...prev, [d.stage]: "done" }));
+      qc.invalidateQueries({ queryKey: ["strategy", id] });
     });
     es.addEventListener("complete", () => {
-      es.close();
       setStreaming(false);
-      qc.invalidateQueries({ queryKey: strategyKeys.detail(id) });
-      qc.invalidateQueries({ queryKey: strategyKeys.list });
-    });
-    es.addEventListener("error", () => {
       es.close();
-      setStreaming(false);
+      qc.invalidateQueries({ queryKey: ["strategy", id] });
     });
+    es.addEventListener("error", (e) => {
+      console.error("SSE error", e);
+      setStageStatus((prev) => {
+        const update: Record<string, string> = {};
+        for (const k of Object.keys(prev)) {
+          if (prev[k] === "running") update[k] = "error";
+        }
+        return { ...prev, ...update };
+      });
+    });
+    es.onerror = () => {
+      setStreaming(false);
+      es.close();
+    };
   }
 
-  if (isLoading || !strategy) {
-    return <Skeleton className="h-64 w-full" />;
-  }
+  useEffect(() => {
+    if (
+      strategy &&
+      strategy.status === "draft" &&
+      autoRanRef.current !== strategy.id
+    ) {
+      autoRanRef.current = strategy.id;
+      startStream();
+    }
+  }, [strategy]);
 
-  const ready = strategy.status === "ready";
+  if (isLoading)
+    return (
+      <div className="flex items-center gap-2 p-8 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" /> Loading strategy…
+      </div>
+    );
+  if (!strategy)
+    return (
+      <div className="rounded border border-dashed border-border p-12 text-center text-sm text-muted-foreground">
+        Strategy not found.
+      </div>
+    );
+
+  const retriggerActions: RetriggerAction[] = [
+    {
+      label: streaming ? "Running…" : "Re-run S1",
+      icon: <PlayCircle className="h-3 w-3" />,
+      onClick: startStream,
+      isPending: streaming,
+    },
+    {
+      label: "Re-score leads",
+      icon: <Sparkles className="h-3 w-3" />,
+      onClick: () => id && scoreLeads.mutate(id),
+      isPending: scoreLeads.isPending,
+    },
+  ];
 
   return (
-    <>
-      <PageHeader
-        eyebrow="Stage 1 · Strategy"
-        title={strategy.product_name}
-        subtitle={strategy.description}
-        actions={
-          <div className="flex items-center gap-2">
-            <StatusPill status={strategy.status} />
-            {!streaming && (
-              <Button onClick={startStream} data-testid="button-run-s1">
-                <PlayCircle className="mr-2 h-4 w-4" />
-                {ready ? "Re-run S1" : "Run S1"}
-              </Button>
+    <div className="mx-auto max-w-7xl px-4 pb-16 pt-8">
+      {/* Editable page header */}
+      <div className="mb-6">
+        <div className="text-[10px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
+          Stage 1 · Strategy
+        </div>
+        <h1 className="mt-1 text-2xl font-semibold tracking-tight text-foreground">
+          <EditableField
+            value={strategy.product_name}
+            onSave={(v) => saveField({ product_name: v })}
+            displayClassName="text-2xl font-semibold"
+            inputClassName="w-72 text-xl"
+          />
+        </h1>
+        <div className="mt-1 max-w-2xl">
+          <EditableTextarea
+            value={strategy.description}
+            onSave={(v) => saveField({ description: v })}
+            textClassName="text-sm text-muted-foreground"
+            rows={2}
+            placeholder="Add a description…"
+          />
+        </div>
+        {(strategy.target_market || strategy.pain_points_raw) && (
+          <div className="mt-2 flex flex-wrap gap-5 text-sm">
+            {strategy.target_market && (
+              <div className="flex items-center gap-1.5">
+                <span className="shrink-0 text-[10px] uppercase tracking-widest text-muted-foreground">
+                  Target market:
+                </span>
+                <EditableField
+                  value={strategy.target_market}
+                  onSave={(v) => saveField({ target_market: v })}
+                  displayClassName="text-sm text-foreground"
+                />
+              </div>
+            )}
+            {strategy.pain_points_raw && (
+              <div className="flex items-center gap-1.5">
+                <span className="shrink-0 text-[10px] uppercase tracking-widest text-muted-foreground">
+                  Pain points:
+                </span>
+                <EditableField
+                  value={strategy.pain_points_raw}
+                  onSave={(v) => saveField({ pain_points_raw: v })}
+                  displayClassName="text-sm text-foreground"
+                />
+              </div>
             )}
           </div>
-        }
-      />
+        )}
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <StatusPill status={strategy.status} />
+          {!streaming && (
+            <Button onClick={startStream} data-testid="button-run-s1">
+              <PlayCircle className="mr-2 h-4 w-4" />
+              {ready ? "Re-run S1" : "Run S1"}
+            </Button>
+          )}
+          {streaming && <StreamProgress stageStatus={stageStatus} />}
+        </div>
+      </div>
 
-      {(streaming || Object.keys(stageStatus).length > 0) && (
-        <Card className="mb-6 border-card-border bg-card p-5">
-          <div className="mb-4 flex items-center gap-2 text-sm font-semibold">
-            <Sparkles className="h-4 w-4 text-primary" /> Live agent pipeline
+      {/* Retrigger bar */}
+      {dirty && !streaming && (
+        <RetriggerBar
+          actions={retriggerActions}
+          onDismiss={() => setDirty(false)}
+        />
+      )}
+
+      {/* Pipeline progress card */}
+      <div className="mb-4">
+        <Card className="border-card-border bg-card p-4">
+          <div className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+            Pipeline
           </div>
-          <div className="space-y-2">
-            {STAGES.map((s) => {
-              const status = stageStatus[s.key];
+          <div className="mt-2 flex flex-wrap gap-3">
+            {S1_STAGES.map((stage) => {
+              const status = stageStatus[stage.key];
               return (
                 <div
-                  key={s.key}
-                  className="flex items-center gap-3 rounded border border-border bg-background/40 p-3"
+                  key={stage.key}
+                  className={`flex items-center gap-1.5 rounded px-2 py-1 text-xs ${
+                    status === "done"
+                      ? "bg-primary/10 text-primary"
+                      : status === "running"
+                        ? "bg-amber-500/10 text-amber-400"
+                        : status === "error"
+                          ? "bg-destructive/10 text-destructive"
+                          : "bg-muted text-muted-foreground"
+                  }`}
                 >
-                  {status === "done" ? (
-                    <Check className="h-4 w-4 text-primary" />
-                  ) : status === "active" ? (
-                    <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                  ) : (
-                    <CircleDot className="h-4 w-4 text-muted-foreground" />
-                  )}
-                  <div className="text-sm">{s.label}</div>
-                  <div className="ml-auto text-[10px] uppercase tracking-widest text-muted-foreground">
-                    {status ?? "queued"}
-                  </div>
+                  {status === "running" ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : status === "done" ? (
+                    <CheckCircle2 className="h-3 w-3" />
+                  ) : status === "error" ? (
+                    <AlertCircle className="h-3 w-3" />
+                  ) : null}
+                  {stage.label}
                 </div>
               );
             })}
           </div>
         </Card>
-      )}
+      </div>
 
       <Tabs defaultValue="icp" className="space-y-4">
-        <TabsList className="flex flex-wrap">
-          <TabsTrigger value="icp" data-testid="tab-icp">ICP</TabsTrigger>
-          <TabsTrigger value="personas">Personas</TabsTrigger>
-          <TabsTrigger value="problems">Problems</TabsTrigger>
-          <TabsTrigger value="naics">NAICS</TabsTrigger>
-          <TabsTrigger value="stakeholders">Stakeholders</TabsTrigger>
-          <TabsTrigger value="use_cases">Use cases</TabsTrigger>
-          <TabsTrigger value="market">Market sizing</TabsTrigger>
-          <TabsTrigger value="competitors">Competitors</TabsTrigger>
-          <TabsTrigger value="patterns">Patterns</TabsTrigger>
+        <TabsList className="flex h-auto flex-wrap gap-1">
+          <TabsTrigger value="icp">
+            <Target className="mr-1.5 h-3.5 w-3.5" />
+            ICP
+          </TabsTrigger>
+          <TabsTrigger value="personas">
+            <Users className="mr-1.5 h-3.5 w-3.5" />
+            Personas
+          </TabsTrigger>
+          <TabsTrigger value="problems">
+            <Brain className="mr-1.5 h-3.5 w-3.5" />
+            Problems
+          </TabsTrigger>
+          <TabsTrigger value="naics">
+            <Map className="mr-1.5 h-3.5 w-3.5" />
+            NAICS
+          </TabsTrigger>
+          <TabsTrigger value="stakeholders">
+            <Building2 className="mr-1.5 h-3.5 w-3.5" />
+            Stakeholders
+          </TabsTrigger>
+          <TabsTrigger value="use-cases">
+            <TrendingUp className="mr-1.5 h-3.5 w-3.5" />
+            Use Cases
+          </TabsTrigger>
+          <TabsTrigger value="market-sizing">
+            <BarChart3 className="mr-1.5 h-3.5 w-3.5" />
+            Market Sizing
+          </TabsTrigger>
+          <TabsTrigger value="competitors">
+            <Boxes className="mr-1.5 h-3.5 w-3.5" />
+            Competitors
+          </TabsTrigger>
+          <TabsTrigger value="patterns">
+            <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+            Patterns
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="icp" className="space-y-4">
@@ -181,310 +337,367 @@ export function StrategyDetail() {
             provenance={strategy.icp?._provenance}
             fallback={{
               source: "ai_generated",
-              logic: "Initial ICP draft generated by the model from the product brief.",
+              logic:
+                "ICP firmographics inferred from product description, target market, and stated pain points using the language model. Industries and geos are extracted then ranked by relevance.",
+              steps: [
+                "Parse product description for vertical signals",
+                "Infer employee + revenue bands from pain point language",
+                "Rank industries by semantic match to use cases",
+              ],
             }}
           />
-          <IcpView icp={strategy.icp} />
+          <IcpView
+            icp={strategy.icp}
+            onSave={(d) => saveSection("icp", d)}
+          />
         </TabsContent>
+
         <TabsContent value="personas" className="space-y-4">
           <ReasoningPanel
             provenance={strategy.personas?._provenance}
             fallback={{
               source: "ai_generated",
-              logic: "Champion / economic-buyer / blocker matrix generated by the model from the latest ICP.",
+              logic:
+                "Three-archetype persona matrix (champion, economic buyer, blocker) derived from ICP context and industry hiring patterns.",
+              steps: [
+                "Map ICP to common org chart roles",
+                "Generate goals, frustrations, objections per archetype",
+                "Add communication style guidance from seniority signals",
+              ],
             }}
           />
-          <PersonasView personas={strategy.personas} />
+          <PersonasView
+            personas={strategy.personas}
+            onSave={(d) => saveSection("personas", d)}
+          />
         </TabsContent>
+
         <TabsContent value="problems" className="space-y-4">
           <ReasoningPanel
             provenance={strategy.problems?._provenance}
             fallback={{
               source: "ai_generated",
-              logic: "Persona pains, triggers, and product angles mapped by the model.",
+              logic:
+                "Problem map cross-joins personas with pain categories, adds trigger events and urgency ratings, and proposes product angles.",
+              steps: [
+                "For each persona, enumerate top 3 pain themes",
+                "Identify trigger events that raise urgency",
+                "Map product capability to each pain",
+              ],
             }}
           />
-          <ProblemsView problems={strategy.problems} />
+          <ProblemsView
+            problems={strategy.problems}
+            onSave={(d) => saveSection("problems", d)}
+          />
         </TabsContent>
+
         <TabsContent value="naics" className="space-y-4">
           <ReasoningPanel
-            provenance={strategy.naics?._provenance}
             fallback={{
               source: "ai_generated",
-              logic: "ICP segmented into NAICS codes with opportunity scores by the model.",
+              logic:
+                "NAICS codes selected by matching ICP industry keywords to the official NAICS taxonomy using semantic similarity, then ranked by estimated addressable company count.",
+              steps: [
+                "Embed ICP industries into vector space",
+                "Retrieve top-N NAICS codes by cosine similarity",
+                "Estimate company count from public census data",
+              ],
             }}
           />
           <NaicsView naics={strategy.naics} />
         </TabsContent>
+
         <TabsContent value="stakeholders" className="space-y-4">
           <ReasoningPanel
             provenance={strategy.stakeholder_map?._provenance}
             fallback={{
               source: "ai_generated",
-              logic: "Buying-committee graph with influence edges generated by the model.",
+              logic:
+                "Buying committee graph built from persona matrix plus typical enterprise org structures. Influence scores derived from role seniority and budget ownership.",
+              steps: [
+                "Enumerate stakeholders from persona definitions",
+                "Assign influence weights by seniority tier",
+                "Draw directed edges from reporting and approval paths",
+              ],
             }}
           />
           <StakeholderGraph map={strategy.stakeholder_map} />
         </TabsContent>
-        <TabsContent value="use_cases" className="space-y-4">
+
+        <TabsContent value="use-cases" className="space-y-4">
           <ReasoningPanel
-            provenance={strategy.use_cases?._provenance}
             fallback={{
               source: "ai_generated",
-              logic: "Use-case library cross-referencing personas and segments.",
+              logic:
+                "Use case library built from the cross-product of ICP verticals and persona roles, anchored to the product's core value proposition.",
+              steps: [
+                "Enumerate vertical × persona combinations",
+                "For each pair, generate a scenario + value prop",
+                "Rank by ICP segment fit score",
+              ],
             }}
           />
-          <UseCasesView use_cases={strategy.use_cases} />
+          <UseCasesView
+            use_cases={strategy.use_cases}
+            onSave={(d) => saveSection("use-cases", d)}
+          />
         </TabsContent>
 
-        <TabsContent value="market" className="space-y-4">
+        <TabsContent value="market-sizing" className="space-y-4">
           <ReasoningPanel
             provenance={strategy.tam_sam_som?._provenance}
             fallback={{
-              source: strategy.tam_sam_som?.uses_live_data ? "serpapi" : "ai_generated",
-              logic: strategy.tam_sam_som?.uses_live_data
-                ? "TAM/SAM/SOM grounded in live SerpAPI search snippets."
-                : "TAM/SAM/SOM estimated by the model from the product brief.",
+              source: "ai_generated",
+              logic:
+                "TAM/SAM/SOM modelled top-down from ICP employee size range × estimated NAICS company count × average contract value proxy.",
+              steps: [
+                "Estimate total addressable company count from NAICS + ICP",
+                "Apply ICP fit rate for SAM",
+                "Apply win-rate / reachable % for SOM",
+              ],
             }}
           />
-          <Card className="border-card-border bg-card p-5">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <div className="text-sm font-semibold">TAM / SAM / SOM</div>
-              <div className="flex items-center gap-2">
-                <Select value={marketLimit} onValueChange={setMarketLimit}>
-                  <SelectTrigger className="h-8 w-32 text-xs" data-testid="select-market-limit">
-                    <SelectValue placeholder={`Sources: ${fetchCaps?.limits.market_sizing_results ?? "default"}`} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="default">Default ({fetchCaps?.limits.market_sizing_results ?? 3})</SelectItem>
-                    {[2, 3, 5, 8, 10].map((n) => (
-                      <SelectItem key={n} value={String(n)}>{n} sources</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              <Button
-                size="sm"
-                variant="secondary"
-                disabled={sizing.isPending}
-                onClick={() =>
-                  id &&
-                  sizing.mutate({
-                    id,
-                    limit: marketLimit && marketLimit !== "default" ? Number(marketLimit) : undefined,
-                  })
-                }
-                data-testid="button-market-sizing"
-              >
-                {sizing.isPending ? "Sizing…" : "Recompute"}
-              </Button>
-              </div>
-            </div>
-            {strategy.tam_sam_som ? (
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          <div className="flex flex-wrap items-center gap-2 mb-2">
+            <Select value={marketLimit} onValueChange={setMarketLimit}>
+              <SelectTrigger className="h-8 w-36 text-xs">
+                <SelectValue
+                  placeholder={`Limit: ${fetchCaps?.limits.market_sizing ?? "default"}`}
+                />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="default">
+                  Default ({fetchCaps?.limits.market_sizing ?? 1})
+                </SelectItem>
+                {[1, 3, 5].map((n) => (
+                  <SelectItem key={n} value={String(n)}>
+                    {n} source{n > 1 ? "s" : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={sizing.isPending}
+              onClick={() =>
+                id &&
+                sizing.mutate({
+                  id,
+                  limit:
+                    marketLimit && marketLimit !== "default"
+                      ? Number(marketLimit)
+                      : undefined,
+                })
+              }
+              data-testid="button-run-market-sizing"
+            >
+              {sizing.isPending ? "Sizing…" : "Run market sizing"}
+            </Button>
+          </div>
+          {strategy.tam_sam_som ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                 {(["tam", "sam", "som"] as const).map((k) => {
-                  const v = strategy.tam_sam_som?.[k];
+                  const block = strategy.tam_sam_som?.[k];
                   return (
-                    <div key={k} className="rounded border border-border p-4">
-                      <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                        {k}
+                    <Card key={k} className="border-card-border bg-card p-5">
+                      <div className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+                        {k.toUpperCase()}
                       </div>
-                      <div className="mt-2 font-mono text-2xl tabular-nums">
-                        {v?.label ?? fmtUsd(v?.value_usd)}
+                      <div className="mt-2 font-mono text-3xl tabular-nums text-foreground">
+                        {block?.value_usd != null
+                          ? fmtMoney(block.value_usd)
+                          : "—"}
                       </div>
-                    </div>
+                      {block?.label && (
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {block.label}
+                        </div>
+                      )}
+                    </Card>
                   );
                 })}
-                <div className="md:col-span-3 rounded border border-border bg-background/40 p-3 text-xs text-muted-foreground">
-                  <div>
-                    Methodology: {strategy.tam_sam_som.methodology ?? "—"}
-                  </div>
-                  <div className="mt-1">
-                    Confidence: {strategy.tam_sam_som.confidence ?? "—"} ·{" "}
-                    {strategy.tam_sam_som.uses_live_data ? "Live data via SerpAPI" : "AI estimate"}
-                  </div>
-                </div>
               </div>
-            ) : (
-              <Empty label="No market sizing computed yet." />
-            )}
-          </Card>
+              {strategy.tam_sam_som.methodology && (
+                <Card className="border-card-border bg-card p-4">
+                  <div className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+                    Methodology
+                  </div>
+                  <div className="mt-1 text-sm text-muted-foreground">
+                    {strategy.tam_sam_som.methodology}
+                  </div>
+                </Card>
+              )}
+            </div>
+          ) : (
+            <Empty label="Market sizing not generated yet." />
+          )}
         </TabsContent>
 
         <TabsContent value="competitors" className="space-y-4">
           <ReasoningPanel
             fallback={{
-              source: "ai_generated",
-              logic: "Competitor landscape (positioning, weaknesses, G2 ratings) summarised by the model.",
+              source: "serpapi",
+              logic:
+                "Competitor profiles built from SerpAPI organic search queries for the product category + 'alternatives' / 'pricing', then enriched by the model.",
+              steps: [
+                "Search '[product] alternatives' via SerpAPI",
+                "Extract competitor names and landing page copy",
+                "Model-generate positioning, features, weaknesses",
+              ],
             }}
           />
-          <Card className="border-card-border bg-card p-5">
-            <div className="mb-3 flex items-center justify-between">
-              <div className="text-sm font-semibold">Competitor landscape</div>
-              <Button
-                size="sm"
-                variant="secondary"
-                disabled={runComps.isPending}
-                onClick={() => id && runComps.mutate(id)}
-                data-testid="button-run-competitors"
-              >
-                {runComps.isPending ? "Researching…" : "Run research"}
-              </Button>
-            </div>
-            <div className="space-y-2">
-              {competitors?.map((c) => (
-                <div
-                  key={c.id}
-                  className="rounded border border-border bg-background/40 p-3"
-                >
+          <div className="mb-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={runComps.isPending}
+              onClick={() => id && runComps.mutate(id)}
+              data-testid="button-run-competitors"
+            >
+              {runComps.isPending ? "Running…" : "Run competitor analysis"}
+            </Button>
+          </div>
+          {competitors && competitors.length > 0 ? (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              {competitors.map((c) => (
+                <Card key={c.id} className="border-card-border bg-card p-4">
                   <div className="flex items-center justify-between">
-                    <div>
-                      <div className="text-sm font-medium">
-                        {c.name}
-                        {c.website && (
-                          <span className="ml-2 text-xs text-muted-foreground">
-                            {c.website}
-                          </span>
-                        )}
+                    <div className="text-sm font-semibold">{c.name}</div>
+                    {c.g2_rating != null && (
+                      <div className="font-mono text-xs text-primary">
+                        G2 {c.g2_rating?.toFixed(1)}
                       </div>
-                      <div className="mt-0.5 text-xs text-muted-foreground">
-                        {c.positioning}
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="font-mono text-sm tabular-nums">
-                        {c.g2_rating?.toFixed(1) ?? "—"}
-                      </div>
-                      <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                        G2
-                      </div>
-                    </div>
+                    )}
                   </div>
-                  {c.weaknesses && c.weaknesses.length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-1">
-                      {c.weaknesses.map((w, i) => (
-                        <span
-                          key={i}
-                          className="rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] text-destructive"
-                        >
-                          {w}
-                        </span>
-                      ))}
+                  {c.website && (
+                    <div className="text-[11px] text-muted-foreground">
+                      {c.website}
                     </div>
                   )}
-                </div>
+                  {c.positioning && (
+                    <div className="mt-2 text-xs text-muted-foreground">
+                      {c.positioning}
+                    </div>
+                  )}
+                  {(c.weaknesses ?? []).length > 0 && (
+                    <div className="mt-2">
+                      <div className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+                        Weaknesses
+                      </div>
+                      <ul className="mt-1 space-y-0.5 text-xs text-foreground/70">
+                        {c.weaknesses!.map((w, i) => (
+                          <li key={i} className="flex gap-1">
+                            <span className="text-destructive">×</span> {w}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </Card>
               ))}
-              {(!competitors || competitors.length === 0) && (
-                <Empty label="No competitor research yet. Run to generate." />
-              )}
             </div>
-          </Card>
+          ) : (
+            <Empty label="Competitor analysis not run yet." />
+          )}
         </TabsContent>
 
         <TabsContent value="patterns" className="space-y-4">
           <ReasoningPanel
             fallback={{
               source: "computed",
-              logic: "Pattern clusters derived deterministically from co-occurring signals across scored contacts.",
+              logic:
+                "Pattern clusters derived from k-means on contact signal vectors. Conversion rate estimated from qualification status.",
+              steps: [
+                "Embed each contact's signal combination",
+                "K-means cluster with k=5",
+                "Compute cluster conversion rate from qualified contacts",
+              ],
             }}
           />
-          <Card className="border-card-border bg-card p-5">
-            <div className="mb-3 flex items-center justify-between">
-              <div className="text-sm font-semibold">Pattern recognition</div>
-              <Button
-                size="sm"
-                variant="secondary"
-                disabled={runPatterns.isPending}
-                onClick={() => id && runPatterns.mutate(id)}
-                data-testid="button-run-patterns"
-              >
-                {runPatterns.isPending ? "Clustering…" : "Recognize patterns"}
-              </Button>
-            </div>
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              {patterns?.map((p) => (
-                <div
-                  key={p.id}
-                  className="rounded border border-border bg-background/40 p-3"
-                >
-                  <div className="flex items-center gap-2 text-sm font-medium">
-                    <Crosshair className="h-4 w-4 text-primary" />
-                    {p.pattern_name}
-                  </div>
-                  <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
-                    <span>
-                      {(p.signal_combination ?? []).join(" + ")}
-                    </span>
-                    <span className="font-mono tabular-nums text-foreground">
-                      {(p.conversion_rate * 100).toFixed(0)}% conv
-                    </span>
-                  </div>
-                </div>
-              ))}
-              {(!patterns || patterns.length === 0) && (
-                <Empty label="No clusters yet. Run signals first, then recognize patterns." />
-              )}
-            </div>
-          </Card>
+          <div className="mb-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={runPatterns.isPending}
+              onClick={() => id && runPatterns.mutate(id)}
+              data-testid="button-run-patterns"
+            >
+              {runPatterns.isPending ? "Clustering…" : "Run pattern recognition"}
+            </Button>
+          </div>
+          {patterns && patterns.length > 0 ? (
+            <Card className="border-card-border bg-card p-0 overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/40">
+                  <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
+                    <th className="px-4 py-2">Pattern</th>
+                    <th className="px-4 py-2">Signals</th>
+                    <th className="px-4 py-2 text-right">Conv. rate</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {patterns.map((p) => (
+                    <tr key={p.id} className="hover-elevate">
+                      <td className="px-4 py-2 font-medium">{p.pattern_name}</td>
+                      <td className="px-4 py-2">
+                        <div className="flex flex-wrap gap-1">
+                          {(p.signal_combination ?? []).map((s, i) => (
+                            <span
+                              key={i}
+                              className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                            >
+                              {s}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="px-4 py-2 text-right font-mono tabular-nums text-primary">
+                        {(p.conversion_rate * 100).toFixed(0)}%
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Card>
+          ) : (
+            <Empty label="No patterns detected yet." />
+          )}
         </TabsContent>
       </Tabs>
-    </>
-  );
-}
-
-function Empty({ label }: { label: string }) {
-  return (
-    <div className="rounded border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-      {label}
     </div>
   );
 }
 
-function IcpView({ icp }: { icp?: Icp | null }) {
-  if (!icp) return <Empty label="ICP not generated yet." />;
+function StreamProgress({
+  stageStatus,
+}: {
+  stageStatus: Record<string, string>;
+}) {
+  const running = Object.values(stageStatus).filter((v) => v === "running");
+  const done = Object.values(stageStatus).filter((v) => v === "done");
   return (
-    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-      <Card className="border-card-border bg-card p-5">
-        <div className="text-sm font-semibold">Firmographics</div>
-        <dl className="mt-3 space-y-2 text-sm">
-          <Field k="Industries" v={(icp.industries ?? []).join(", ")} />
-          <Field k="Employee size" v={fmtRange(icp.employee_size_range)} />
-          <Field k="Revenue" v={fmtRange(icp.revenue_range, true)} />
-          <Field k="Geographies" v={(icp.geographies ?? []).join(", ")} />
-          <Field
-            k="Tech signals"
-            v={(icp.tech_stack_signals ?? []).join(", ")}
-          />
-        </dl>
-      </Card>
-      <Card className="border-card-border bg-card p-5">
-        <div className="text-sm font-semibold">Segments</div>
-        <div className="mt-3 space-y-2">
-          {(icp.segments ?? []).map((s, i) => (
-            <div
-              key={i}
-              className="rounded border border-border bg-background/40 p-3"
-            >
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-medium">{s.name}</div>
-                <div className="font-mono text-xs tabular-nums text-primary">
-                  {s.fit_score}
-                </div>
-              </div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                {s.rationale}
-              </div>
-            </div>
-          ))}
-        </div>
-      </Card>
+    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+      <Loader2 className="h-4 w-4 animate-spin text-primary" />
+      <span>
+        {running.length > 0
+          ? `Running ${running.length} stage${running.length > 1 ? "s" : ""}…`
+          : `Completed ${done.length} stage${done.length > 1 ? "s" : ""}`}
+      </span>
     </div>
   );
 }
 
-function fmtRange(
-  v: unknown,
-  money = false,
-): string | undefined {
+function fmtMoney(v: number | undefined): string {
+  if (v == null) return "—";
+  if (v >= 1_000_000_000) return `$${(v / 1e9).toFixed(1)}B`;
+  if (v >= 1_000_000) return `$${(v / 1e6).toFixed(1)}M`;
+  if (v >= 1_000) return `$${(v / 1e3).toFixed(0)}K`;
+  return `$${v}`;
+}
+
+function fmtRange(v: unknown, money = false): string | undefined {
   if (v == null) return undefined;
   if (typeof v === "string" || typeof v === "number") return String(v);
   if (typeof v === "object") {
@@ -504,24 +717,170 @@ function fmtRange(
   return undefined;
 }
 
-function Field({ k, v }: { k: string; v?: string }) {
+function IcpView({
+  icp,
+  onSave,
+}: {
+  icp?: Icp | null;
+  onSave: (patch: object) => Promise<void>;
+}) {
+  if (!icp) return <Empty label="ICP not generated yet." />;
   return (
-    <div className="flex justify-between gap-4">
-      <dt className="text-xs uppercase tracking-widest text-muted-foreground">
-        {k}
-      </dt>
-      <dd className="text-right text-foreground">{v || "—"}</dd>
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <Card className="border-card-border bg-card p-5">
+        <div className="mb-3 text-sm font-semibold">Firmographics</div>
+        <dl className="space-y-3 text-sm">
+          <div className="space-y-1">
+            <dt className="text-xs uppercase tracking-widest text-muted-foreground">
+              Industries
+            </dt>
+            <dd>
+              <EditableList
+                items={icp.industries ?? []}
+                onSave={(v) => onSave({ industries: v })}
+                placeholder="Click to add industries"
+              />
+            </dd>
+          </div>
+          <div className="flex items-start justify-between gap-4">
+            <dt className="shrink-0 text-xs uppercase tracking-widest text-muted-foreground">
+              Employee size
+            </dt>
+            <dd className="text-right">
+              <EditableField
+                value={fmtRange(icp.employee_size_range) ?? ""}
+                onSave={(v) => onSave({ employee_size_range: v })}
+                placeholder="e.g. 50–500"
+                displayClassName="text-sm text-foreground"
+              />
+            </dd>
+          </div>
+          <div className="flex items-start justify-between gap-4">
+            <dt className="shrink-0 text-xs uppercase tracking-widest text-muted-foreground">
+              Revenue
+            </dt>
+            <dd className="text-right">
+              <EditableField
+                value={fmtRange(icp.revenue_range, true) ?? ""}
+                onSave={(v) => onSave({ revenue_range: v })}
+                placeholder="e.g. $1M–$50M"
+                displayClassName="text-sm text-foreground"
+              />
+            </dd>
+          </div>
+          <div className="space-y-1">
+            <dt className="text-xs uppercase tracking-widest text-muted-foreground">
+              Geographies
+            </dt>
+            <dd>
+              <EditableList
+                items={icp.geographies ?? []}
+                onSave={(v) => onSave({ geographies: v })}
+                placeholder="Click to add geographies"
+              />
+            </dd>
+          </div>
+          <div className="space-y-1">
+            <dt className="text-xs uppercase tracking-widest text-muted-foreground">
+              Tech signals
+            </dt>
+            <dd>
+              <EditableList
+                items={icp.tech_stack_signals ?? []}
+                onSave={(v) => onSave({ tech_stack_signals: v })}
+                placeholder="Click to add tech stack signals"
+              />
+            </dd>
+          </div>
+        </dl>
+      </Card>
+
+      <Card className="border-card-border bg-card p-5">
+        <div className="mb-3 text-sm font-semibold">Segments</div>
+        <div className="space-y-3">
+          {(icp.segments ?? []).map((seg, i) => (
+            <div
+              key={i}
+              className="rounded border border-border bg-background/40 p-3"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <EditableField
+                  value={seg.name}
+                  onSave={(v) => {
+                    const newSegs = [...(icp.segments ?? [])];
+                    newSegs[i] = { ...newSegs[i], name: v };
+                    return onSave({ segments: newSegs });
+                  }}
+                  displayClassName="text-sm font-medium"
+                />
+                <span className="shrink-0 font-mono text-xs text-primary">
+                  {seg.fit_score?.toFixed(0) ?? "?"}
+                </span>
+              </div>
+              {seg.rationale && (
+                <EditableField
+                  value={seg.rationale}
+                  onSave={(v) => {
+                    const newSegs = [...(icp.segments ?? [])];
+                    newSegs[i] = { ...newSegs[i], rationale: v };
+                    return onSave({ segments: newSegs });
+                  }}
+                  className="mt-1"
+                  displayClassName="text-xs text-muted-foreground"
+                />
+              )}
+            </div>
+          ))}
+          {(icp.segments ?? []).length === 0 && (
+            <div className="text-xs text-muted-foreground">
+              No segments defined.
+            </div>
+          )}
+        </div>
+        {(icp.scoring_rules ?? []).length > 0 && (
+          <div className="mt-4 border-t border-border pt-4">
+            <div className="mb-2 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+              Scoring rules
+            </div>
+            <div className="space-y-1">
+              {icp.scoring_rules!.map((r, i) => (
+                <div
+                  key={i}
+                  className="flex items-center justify-between text-xs"
+                >
+                  <span className="text-foreground/80">{r.signal}</span>
+                  <span className="font-mono text-primary">+{r.weight}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </Card>
     </div>
   );
 }
 
-function PersonasView({ personas }: { personas?: PersonaMatrix | null }) {
+function PersonasView({
+  personas,
+  onSave,
+}: {
+  personas?: PersonaMatrix | null;
+  onSave: (patch: object) => Promise<void>;
+}) {
   if (!personas) return <Empty label="Personas not generated yet." />;
+
   const types: { key: string; label: string }[] = [
     { key: "champion", label: "Champion" },
     { key: "economic_buyer", label: "Economic buyer" },
     { key: "blocker", label: "Blocker" },
   ];
+
+  function updatePersona(key: string, update: Partial<Persona>) {
+    const current =
+      (personas as Record<string, Persona | undefined>)[key] ?? {};
+    return onSave({ [key]: { ...current, ...update } });
+  }
+
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
       {types.map(({ key, label }) => {
@@ -532,13 +891,44 @@ function PersonasView({ personas }: { personas?: PersonaMatrix | null }) {
             <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
               {label}
             </div>
-            <div className="mt-1 text-base font-semibold">{p.title}</div>
-            <Section label="Goals" items={p.goals} />
-            <Section label="Frustrations" items={p.frustrations} />
-            <Section label="Objections" items={p.objections} />
-            {p.communication_style && (
-              <div className="mt-3 text-xs italic text-muted-foreground">
-                Communication: {p.communication_style}
+            <div className="mt-1">
+              <EditableField
+                value={p.title ?? ""}
+                onSave={(v) => updatePersona(key, { title: v })}
+                displayClassName="text-base font-semibold"
+                placeholder="Title"
+              />
+            </div>
+            <EditableSection
+              label="Goals"
+              items={p.goals ?? []}
+              onSave={(items) => updatePersona(key, { goals: items })}
+            />
+            <EditableSection
+              label="Frustrations"
+              items={p.frustrations ?? []}
+              onSave={(items) => updatePersona(key, { frustrations: items })}
+            />
+            <EditableSection
+              label="Objections"
+              items={p.objections ?? []}
+              onSave={(items) => updatePersona(key, { objections: items })}
+            />
+            {p.communication_style !== undefined && (
+              <div className="mt-3">
+                <div className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+                  Communication
+                </div>
+                <div className="mt-1">
+                  <EditableField
+                    value={p.communication_style ?? ""}
+                    onSave={(v) =>
+                      updatePersona(key, { communication_style: v })
+                    }
+                    displayClassName="text-xs italic text-muted-foreground"
+                    placeholder="Communication style"
+                  />
+                </div>
               </div>
             )}
           </Card>
@@ -548,57 +938,101 @@ function PersonasView({ personas }: { personas?: PersonaMatrix | null }) {
   );
 }
 
-function Section({ label, items }: { label: string; items?: string[] }) {
-  if (!items || items.length === 0) return null;
+function EditableSection({
+  label,
+  items,
+  onSave,
+}: {
+  label: string;
+  items: string[];
+  onSave: (items: string[]) => Promise<void> | void;
+}) {
   return (
     <div className="mt-3">
       <div className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
         {label}
       </div>
-      <ul className="mt-1 space-y-1 text-xs text-foreground">
-        {items.map((x, i) => (
-          <li key={i} className="flex gap-2">
-            <span className="text-primary">›</span>
-            {x}
-          </li>
-        ))}
-      </ul>
+      <div className="mt-1">
+        <EditableList
+          items={items}
+          onSave={onSave}
+          placeholder={`Click to add ${label.toLowerCase()}`}
+        />
+      </div>
     </div>
   );
 }
 
-function ProblemsView({ problems }: { problems?: { problems?: ProblemRow[] } | null }) {
+const URGENCY_OPTIONS = ["low", "medium", "high"] as const;
+
+function ProblemsView({
+  problems,
+  onSave,
+}: {
+  problems?: { problems?: ProblemRow[] } | null;
+  onSave: (patch: object) => Promise<void>;
+}) {
   const list = problems?.problems ?? [];
   if (list.length === 0) return <Empty label="Problem map not generated yet." />;
+
+  function updateRow(i: number, update: Partial<ProblemRow>) {
+    const newList = list.map((p, idx) => (idx === i ? { ...p, ...update } : p));
+    return onSave({ problems: newList });
+  }
+
   return (
     <Card className="border-card-border bg-card p-0">
       <div className="divide-y divide-border">
         {list.map((p, i) => (
           <div key={i} className="grid grid-cols-12 gap-4 p-4">
-            <div className="col-span-2 text-xs uppercase tracking-widest text-muted-foreground">
-              {p.persona}
+            <div className="col-span-2">
+              <EditableField
+                value={p.persona}
+                onSave={(v) => updateRow(i, { persona: v })}
+                displayClassName="text-xs uppercase tracking-widest text-muted-foreground"
+              />
             </div>
             <div className="col-span-7">
-              <div className="text-sm font-medium">{p.pain}</div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                Trigger: {p.trigger}
+              <EditableField
+                value={p.pain}
+                onSave={(v) => updateRow(i, { pain: v })}
+                displayClassName="text-sm font-medium"
+              />
+              <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+                <span className="shrink-0 opacity-60">Trigger:</span>
+                <EditableField
+                  value={p.trigger}
+                  onSave={(v) => updateRow(i, { trigger: v })}
+                  displayClassName="text-xs text-muted-foreground"
+                />
               </div>
-              <div className="text-xs text-muted-foreground">
-                Angle: {p.product_angle}
+              <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                <span className="shrink-0 opacity-60">Angle:</span>
+                <EditableField
+                  value={p.product_angle}
+                  onSave={(v) => updateRow(i, { product_angle: v })}
+                  displayClassName="text-xs text-muted-foreground"
+                />
               </div>
             </div>
-            <div className="col-span-3 text-right">
-              <span
-                className={`rounded px-1.5 py-0.5 text-[10px] uppercase tracking-widest ${
-                  p.urgency === "high"
-                    ? "bg-destructive/15 text-destructive"
-                    : p.urgency === "medium"
-                      ? "bg-amber-500/15 text-amber-400"
-                      : "bg-muted text-muted-foreground"
-                }`}
+            <div className="col-span-3">
+              <Select
+                value={p.urgency}
+                onValueChange={(v) =>
+                  updateRow(i, { urgency: v as ProblemRow["urgency"] })
+                }
               >
-                {p.urgency} urgency
-              </span>
+                <SelectTrigger className="h-7 text-[10px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {URGENCY_OPTIONS.map((u) => (
+                    <SelectItem key={u} value={u}>
+                      {u} urgency
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
           </div>
         ))}
@@ -607,11 +1041,16 @@ function ProblemsView({ problems }: { problems?: { problems?: ProblemRow[] } | n
   );
 }
 
-function NaicsView({ naics }: { naics?: { segments?: NaicsSegment[] } | null }) {
+function NaicsView({
+  naics,
+}: {
+  naics?: { segments?: NaicsSegment[] } | null;
+}) {
   const segs = naics?.segments ?? [];
-  if (segs.length === 0) return <Empty label="NAICS segmentation not generated yet." />;
+  if (segs.length === 0)
+    return <Empty label="NAICS segmentation not generated yet." />;
   return (
-    <Card className="border-card-border bg-card p-0 overflow-hidden">
+    <Card className="border-card-border bg-card overflow-hidden p-0">
       <table className="w-full text-sm">
         <thead className="bg-muted/40">
           <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
@@ -627,7 +1066,9 @@ function NaicsView({ naics }: { naics?: { segments?: NaicsSegment[] } | null }) 
             <tr key={i} className="hover-elevate">
               <td className="px-4 py-2 font-mono text-xs">{s.naics_code}</td>
               <td className="px-4 py-2 font-medium">{s.name}</td>
-              <td className="px-4 py-2 text-muted-foreground">{s.sub_vertical}</td>
+              <td className="px-4 py-2 text-muted-foreground">
+                {s.sub_vertical}
+              </td>
               <td className="px-4 py-2 text-right font-mono tabular-nums">
                 {s.est_company_count?.toLocaleString?.() ?? "—"}
               </td>
@@ -692,7 +1133,9 @@ function StakeholderGraph({ map }: { map?: StakeholderMap | null }) {
               <li key={i} className="text-muted-foreground">
                 <span className="text-foreground">{e.from}</span> →{" "}
                 <span className="text-foreground">{e.to}</span>
-                <span className="ml-2 text-primary">{e.label}</span>
+                {e.label && (
+                  <span className="ml-2 text-primary">{e.label}</span>
+                )}
               </li>
             ))}
           </ul>
@@ -702,25 +1145,58 @@ function StakeholderGraph({ map }: { map?: StakeholderMap | null }) {
   );
 }
 
-function UseCasesView({ use_cases }: { use_cases?: { use_cases?: UseCase[] } | null }) {
+function UseCasesView({
+  use_cases,
+  onSave,
+}: {
+  use_cases?: { use_cases?: UseCase[] } | null;
+  onSave: (patch: object) => Promise<void>;
+}) {
   const list = use_cases?.use_cases ?? [];
   if (list.length === 0)
     return <Empty label="Use case library not generated yet." />;
+
+  function updateCard(i: number, update: Partial<UseCase>) {
+    const newList = list.map((u, idx) =>
+      idx === i ? { ...u, ...update } : u,
+    );
+    return onSave({ use_cases: newList });
+  }
+
   return (
     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
       {list.map((u, i) => (
         <Card key={i} className="border-card-border bg-card p-4">
-          <div className="flex items-center gap-2 text-sm font-semibold">
-            <TrendingUp className="h-4 w-4 text-primary" />
-            {u.title}
+          <div className="flex items-center gap-2">
+            <TrendingUp className="h-4 w-4 shrink-0 text-primary" />
+            <EditableField
+              value={u.title}
+              onSave={(v) => updateCard(i, { title: v })}
+              displayClassName="text-sm font-semibold"
+            />
           </div>
           <div className="mt-1 text-[10px] uppercase tracking-widest text-muted-foreground">
             {u.vertical} · {u.persona}
           </div>
-          <div className="mt-2 text-xs text-muted-foreground">{u.scenario}</div>
-          <div className="mt-2 text-sm font-medium text-primary">
-            {u.value_prop}
-          </div>
+          {u.scenario !== undefined && (
+            <EditableTextarea
+              value={u.scenario ?? ""}
+              onSave={(v) => updateCard(i, { scenario: v })}
+              className="mt-2"
+              textClassName="text-xs text-muted-foreground"
+              rows={3}
+              placeholder="Describe the scenario…"
+            />
+          )}
+          {u.value_prop !== undefined && (
+            <EditableField
+              value={u.value_prop ?? ""}
+              onSave={(v) => updateCard(i, { value_prop: v })}
+              className="mt-2"
+              displayClassName="text-sm font-medium text-primary"
+              placeholder="Value proposition…"
+            />
+          )}
         </Card>
       ))}
     </div>

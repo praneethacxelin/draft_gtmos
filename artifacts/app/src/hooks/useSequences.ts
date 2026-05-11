@@ -78,3 +78,23 @@ export function useLaunchSequence() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["sequence"] }),
   });
 }
+
+export function useUpdateSequenceStep() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      data,
+    }: {
+      id: string;
+      data: Partial<Pick<SequenceStep, "subject" | "body" | "channel" | "wait_days">>;
+    }) =>
+      apiFetch(`/api/sequences/steps/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sequence"] });
+    },
+  });
+}

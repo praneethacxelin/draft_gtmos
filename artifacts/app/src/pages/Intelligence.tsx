@@ -35,6 +35,7 @@ import {
 import { fmtRelative } from "@/lib/format";
 import { Activity, RefreshCcw, MessagesSquare, Workflow, Check } from "lucide-react";
 import { ReasoningPanel, SourceBadge } from "@/components/ReasoningPanel";
+import { RetriggerBar, type RetriggerAction } from "@/components/RetriggerBar";
 
 export function Intelligence() {
   const { activeId, active } = useActiveStrategy();
@@ -132,13 +133,32 @@ function EngagementTab({ strategyId }: { strategyId: string }) {
   const { data: events } = useEngagementEvents(strategyId);
   const { data: accounts } = useAccounts(strategyId);
   const create = useCreateEvent();
+  const score = useScoreIntent();
   const [form, setForm] = useState({
     account_id: "",
     channel: "website",
     event_type: "page_view",
   });
+  const [dirty, setDirty] = useState(false);
+
+  const retriggerActions: RetriggerAction[] = [
+    {
+      label: score.isPending ? "Scoring…" : "Recompute intent",
+      icon: <RefreshCcw className="h-3 w-3" />,
+      onClick: () => score.mutate(strategyId),
+      isPending: score.isPending,
+    },
+  ];
 
   return (
+    <div className="space-y-4">
+    {dirty && (
+      <RetriggerBar
+        message="Event captured."
+        actions={retriggerActions}
+        onDismiss={() => setDirty(false)}
+      />
+    )}
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
       <Card className="lg:col-span-2 border-card-border bg-card p-5">
         <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
@@ -243,20 +263,24 @@ function EngagementTab({ strategyId }: { strategyId: string }) {
           </div>
           <Button
             disabled={!form.account_id || create.isPending}
-            onClick={() =>
-              create.mutate({
-                strategy_id: strategyId,
-                account_id: form.account_id,
-                channel: form.channel,
-                event_type: form.event_type,
-              })
-            }
+            onClick={() => {
+              create.mutate(
+                {
+                  strategy_id: strategyId,
+                  account_id: form.account_id,
+                  channel: form.channel,
+                  event_type: form.event_type,
+                },
+                { onSuccess: () => setDirty(true) },
+              );
+            }}
             data-testid="button-create-event"
           >
             {create.isPending ? "Saving…" : "Capture event"}
           </Button>
         </div>
       </Card>
+    </div>
     </div>
   );
 }
@@ -326,10 +350,29 @@ function IntentTab({ strategyId }: { strategyId: string }) {
 function FeedbackTab({ strategyId }: { strategyId: string }) {
   const { data: list } = useFeedback(strategyId);
   const create = useCreateFeedback();
+  const run = useRunLoopBack();
   const [text, setText] = useState("");
   const [source, setSource] = useState("survey");
+  const [dirty, setDirty] = useState(false);
+
+  const retriggerActions: RetriggerAction[] = [
+    {
+      label: run.isPending ? "Analyzing…" : "Run loop-back",
+      icon: <Workflow className="h-3 w-3" />,
+      onClick: () => run.mutate(strategyId),
+      isPending: run.isPending,
+    },
+  ];
 
   return (
+    <div className="space-y-4">
+    {dirty && (
+      <RetriggerBar
+        message="Feedback captured."
+        actions={retriggerActions}
+        onDismiss={() => setDirty(false)}
+      />
+    )}
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
       <Card className="border-card-border bg-card p-5">
         <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
@@ -370,6 +413,7 @@ function FeedbackTab({ strategyId }: { strategyId: string }) {
                 raw_text: text,
               });
               setText("");
+              setDirty(true);
             }}
             data-testid="button-capture-feedback"
           >
@@ -421,6 +465,7 @@ function FeedbackTab({ strategyId }: { strategyId: string }) {
           )}
         </div>
       </Card>
+    </div>
     </div>
   );
 }

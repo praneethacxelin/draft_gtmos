@@ -1,6 +1,16 @@
 import { useState, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { PageHeader } from "@/components/PageHeader";
 import { TierBadge, StatusPill } from "@/components/Pills";
 import { useActiveStrategy } from "@/hooks/useActiveStrategy";
@@ -10,10 +20,19 @@ import {
   useGenerateSequence,
   useDeliverabilityCheck,
   useLaunchSequence,
+  useUpdateSequenceStep,
 } from "@/hooks/useSequences";
-import { Mail, Linkedin, Phone, ShieldCheck, Send, Wand2 } from "lucide-react";
+import { Mail, Linkedin, Phone, ShieldCheck, Send, Wand2, Pencil, X } from "lucide-react";
 import { fmtDate } from "@/lib/format";
 import { ReasoningPanel, SourceBadge } from "@/components/ReasoningPanel";
+import { RetriggerBar, type RetriggerAction } from "@/components/RetriggerBar";
+
+interface StepDraft {
+  subject: string;
+  body: string;
+  channel: string;
+  wait_days: number;
+}
 
 export function Outreach() {
   const { active, activeId } = useActiveStrategy();
@@ -28,8 +47,52 @@ export function Outreach() {
   const generate = useGenerateSequence();
   const check = useDeliverabilityCheck();
   const launch = useLaunchSequence();
+  const patchStep = useUpdateSequenceStep();
 
   const contact = contacts?.find((c) => c.id === selected);
+
+  const [editingStepId, setEditingStepId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState<StepDraft>({
+    subject: "",
+    body: "",
+    channel: "email",
+    wait_days: 1,
+  });
+  const [stepDirty, setStepDirty] = useState(false);
+
+  function startEditStep(stepId: string) {
+    const step = sequence?.steps.find((s) => s.id === stepId);
+    if (!step) return;
+    setEditDraft({
+      subject: step.subject ?? "",
+      body: step.body ?? "",
+      channel: step.channel,
+      wait_days: step.wait_days,
+    });
+    setEditingStepId(stepId);
+  }
+
+  async function saveStep() {
+    if (!editingStepId) return;
+    await patchStep.mutateAsync({ id: editingStepId, data: editDraft });
+    setEditingStepId(null);
+    setStepDirty(true);
+  }
+
+  const retriggerActions: RetriggerAction[] = [
+    {
+      label: check.isPending ? "Checking…" : "Check deliverability",
+      icon: <ShieldCheck className="h-3 w-3" />,
+      onClick: () => sequence && check.mutate(sequence.id),
+      isPending: check.isPending,
+    },
+    {
+      label: generate.isPending ? "Generating…" : "Regenerate sequence",
+      icon: <Wand2 className="h-3 w-3" />,
+      onClick: () => selected && generate.mutate(selected),
+      isPending: generate.isPending,
+    },
+  ];
 
   if (!activeId) {
     return (
@@ -47,6 +110,14 @@ export function Outreach() {
         subtitle={`Persona-aware sequences for all contacts in ${active?.product_name ?? ""}, ranked by tier and score.`}
       />
 
+      {stepDirty && (
+        <RetriggerBar
+          message="Step updated."
+          actions={retriggerActions}
+          onDismiss={() => setStepDirty(false)}
+        />
+      )}
+
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
         <Card className="lg:col-span-4 border-card-border bg-card p-3">
           <div className="mb-2 px-2 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
@@ -56,7 +127,11 @@ export function Outreach() {
             {contacts?.map((c) => (
               <button
                 key={c.id}
-                onClick={() => setSelected(c.id)}
+                onClick={() => {
+                  setSelected(c.id);
+                  setEditingStepId(null);
+                  setStepDirty(false);
+                }}
                 className={`flex w-full items-center justify-between rounded px-3 py-2 text-left text-sm hover-elevate ${
                   selected === c.id ? "bg-sidebar-accent" : ""
                 }`}
@@ -158,9 +233,10 @@ export function Outreach() {
                     {sequence.deliverability_score?.toFixed(0)} / 100
                   </div>
                 </div>
-                {sequence.deliverability_report.flagged_phrases?.length > 0 && (
+                {(sequence.deliverability_report.flagged_phrases?.length ?? 0) >
+                  0 && (
                   <div className="mt-2 flex flex-wrap gap-1">
-                    {sequence.deliverability_report.flagged_phrases.map(
+                    {sequence.deliverability_report.flagged_phrases!.map(
                       (p: string, i: number) => (
                         <span
                           key={i}
@@ -182,7 +258,7 @@ export function Outreach() {
                 provenance={sequence.provenance ?? undefined}
                 fallback={{
                   source: "ai_generated",
-                  logic: `4-step ${sequence.steps.some((s) => s.channel === "linkedin" && s.step_number === 1) ? "LinkedIn-first" : "email-first"} sequence generated by the model from the contact's persona profile and the strategy's top use cases. Deliverability score is computed deterministically from spam-trigger phrases, message length, and link count.`,
+                  logic: `4-step ${sequence.steps.some((s) => s.channel === "linkedin" && s.step_number === 1) ? "LinkedIn-first" : "email-first"} sequence generated by the model from the contact's persona profile and the strategy's top use cases.`,
                   steps: [
                     "Pick channel order based on contact seniority",
                     "Prompt model for per-step subject + body",
@@ -196,7 +272,7 @@ export function Outreach() {
                   className="border-card-border bg-card p-4"
                   data-testid={`step-${s.step_number}`}
                 >
-                  <div className="mb-2 flex items-center gap-3">
+                  <div className="mb-3 flex items-center gap-3">
                     <div
                       className={`flex h-8 w-8 items-center justify-center rounded ${
                         s.channel === "email"
@@ -216,20 +292,136 @@ export function Outreach() {
                     </div>
                     <div className="flex-1">
                       <div className="flex items-center gap-2 text-xs uppercase tracking-widest text-muted-foreground">
-                        <span>Step {s.step_number} · {s.channel}</span>
+                        <span>
+                          Step {s.step_number} · {editingStepId === s.id ? editDraft.channel : s.channel}
+                        </span>
                         <SourceBadge source="ai_generated" />
                       </div>
-                      <div className="text-sm font-medium">
-                        {s.subject || (s.channel === "call" ? "Call talking points" : "(no subject)")}
+                      {editingStepId !== s.id && (
+                        <div className="text-sm font-medium">
+                          {s.subject ||
+                            (s.channel === "call"
+                              ? "Call talking points"
+                              : "(no subject)")}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {editingStepId !== s.id && (
+                        <div className="text-right text-[11px] text-muted-foreground">
+                          Wait {s.wait_days}d · {fmtDate(s.send_at)}
+                        </div>
+                      )}
+                      {editingStepId === s.id ? (
+                        <button
+                          onClick={() => setEditingStepId(null)}
+                          className="rounded p-1 text-muted-foreground hover:text-foreground"
+                          title="Cancel edit"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => startEditStep(s.id)}
+                          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                          title="Edit step"
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {editingStepId === s.id ? (
+                    <div className="space-y-3 border-t border-border pt-3">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <Label className="text-xs">Channel</Label>
+                          <Select
+                            value={editDraft.channel}
+                            onValueChange={(v) =>
+                              setEditDraft({ ...editDraft, channel: v })
+                            }
+                          >
+                            <SelectTrigger className="h-8 text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="email">Email</SelectItem>
+                              <SelectItem value="linkedin">LinkedIn</SelectItem>
+                              <SelectItem value="call">Call</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div>
+                          <Label className="text-xs">Wait days</Label>
+                          <Input
+                            type="number"
+                            min={0}
+                            value={editDraft.wait_days}
+                            onChange={(e) =>
+                              setEditDraft({
+                                ...editDraft,
+                                wait_days: Number(e.target.value),
+                              })
+                            }
+                            className="h-8 text-xs"
+                          />
+                        </div>
+                      </div>
+                      {editDraft.channel !== "call" && (
+                        <div>
+                          <Label className="text-xs">Subject</Label>
+                          <Input
+                            value={editDraft.subject}
+                            onChange={(e) =>
+                              setEditDraft({
+                                ...editDraft,
+                                subject: e.target.value,
+                              })
+                            }
+                            className="text-sm"
+                          />
+                        </div>
+                      )}
+                      <div>
+                        <Label className="text-xs">Body</Label>
+                        <Textarea
+                          value={editDraft.body}
+                          rows={7}
+                          onChange={(e) =>
+                            setEditDraft({
+                              ...editDraft,
+                              body: e.target.value,
+                            })
+                          }
+                          className="text-sm"
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          onClick={saveStep}
+                          disabled={patchStep.isPending}
+                          className="h-7 text-xs"
+                        >
+                          {patchStep.isPending ? "Saving…" : "Save changes"}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setEditingStepId(null)}
+                          className="h-7 text-xs"
+                        >
+                          Cancel
+                        </Button>
                       </div>
                     </div>
-                    <div className="text-right text-[11px] text-muted-foreground">
-                      Wait {s.wait_days}d · {fmtDate(s.send_at)}
+                  ) : (
+                    <div className="whitespace-pre-wrap rounded border border-border bg-background/40 p-3 text-sm text-foreground/90">
+                      {s.body || "—"}
                     </div>
-                  </div>
-                  <div className="whitespace-pre-wrap rounded border border-border bg-background/40 p-3 text-sm text-foreground/90">
-                    {s.body || "—"}
-                  </div>
+                  )}
                 </Card>
               ))}
             </div>

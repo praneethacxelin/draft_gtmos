@@ -290,3 +290,53 @@ export function useScoreLeads() {
     },
   });
 }
+
+export function useUpdateStrategy() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      data,
+    }: {
+      id: string;
+      data: Partial<
+        Pick<
+          Strategy,
+          "product_name" | "description" | "target_market" | "pain_points_raw"
+        >
+      >;
+    }) =>
+      apiFetch<Strategy>(`/api/strategies/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: (_, { id }) => {
+      qc.invalidateQueries({ queryKey: strategyKeys.detail(id) });
+      qc.invalidateQueries({ queryKey: strategyKeys.list });
+    },
+  });
+}
+
+export type StrategySection = "icp" | "personas" | "problems" | "use-cases";
+
+export function useUpdateStrategySection() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      section,
+      data,
+    }: {
+      id: string;
+      section: StrategySection;
+      data: object;
+    }) =>
+      apiFetch<Strategy>(`/api/strategies/${id}/${section}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: (_, { id }) => {
+      qc.invalidateQueries({ queryKey: strategyKeys.detail(id) });
+    },
+  });
+}
