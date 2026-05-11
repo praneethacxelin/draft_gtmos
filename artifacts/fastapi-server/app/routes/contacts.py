@@ -47,6 +47,7 @@ def get_contact(
 class ContactPatch(BaseModel):
     full_name: str | None = None
     title: str | None = None
+    email: str | None = None
     persona_type: str | None = None
     icp_fit_score: float | None = None
     seniority: str | None = None

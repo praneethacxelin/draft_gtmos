@@ -52,7 +52,7 @@ export function useUpdateContact() {
       data: Partial<
         Pick<
           Contact,
-          "full_name" | "title" | "persona_type" | "icp_fit_score" | "seniority"
+          "full_name" | "title" | "email" | "persona_type" | "icp_fit_score" | "seniority"
         >
       >;
     }) =>

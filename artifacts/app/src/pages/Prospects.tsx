@@ -40,6 +40,7 @@ import { RetriggerBar, type RetriggerAction } from "@/components/RetriggerBar";
 interface ContactDraft {
   full_name: string;
   title: string;
+  email: string;
   persona_type: string;
   icp_fit_score: number;
 }
@@ -73,6 +74,7 @@ export function Prospects() {
   const [editDraft, setEditDraft] = useState<ContactDraft>({
     full_name: "",
     title: "",
+    email: "",
     persona_type: "",
     icp_fit_score: 0,
   });
@@ -84,6 +86,7 @@ export function Prospects() {
     setEditDraft({
       full_name: c.full_name,
       title: c.title ?? "",
+      email: c.email ?? "",
       persona_type: c.persona_type ?? "",
       icp_fit_score: c.icp_fit_score,
     });
@@ -98,6 +101,7 @@ export function Prospects() {
         data: {
           full_name: editDraft.full_name,
           title: editDraft.title,
+          email: editDraft.email || undefined,
           persona_type: editDraft.persona_type || undefined,
           icp_fit_score: editDraft.icp_fit_score,
         },
@@ -508,6 +512,21 @@ export function Prospects() {
                                   setEditDraft({
                                     ...editDraft,
                                     title: e.target.value,
+                                  })
+                                }
+                                className="h-8 text-xs"
+                              />
+                            </div>
+                            <div>
+                              <Label className="text-xs">Email</Label>
+                              <Input
+                                type="email"
+                                placeholder="override@company.com"
+                                value={editDraft.email}
+                                onChange={(e) =>
+                                  setEditDraft({
+                                    ...editDraft,
+                                    email: e.target.value,
                                   })
                                 }
                                 className="h-8 text-xs"

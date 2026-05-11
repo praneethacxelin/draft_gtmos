@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/PageHeader";
@@ -208,7 +208,7 @@ export function Audit() {
   const [offset, setOffset] = useState(0);
   const LIMIT = 50;
 
-  const fromTs = tsFromHours(timeRange);
+  const fromTs = useMemo(() => tsFromHours(timeRange), [timeRange]);
   const { data, isLoading, isError, error, refetch, isFetching } = useAuditLogs({
     strategy_id: strategyId || undefined,
     service: service || undefined,

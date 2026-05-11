@@ -26,6 +26,7 @@ from app.routes import (
     dashboard,
     admin,
     audit,
+    analytics,
 )
 from app.services.instantly_poller import poll_loop
 from app.services.m3_tracking import m3_loop
@@ -121,6 +122,7 @@ app.include_router(intelligence.router, prefix=api_prefix)
 app.include_router(dashboard.router, prefix=api_prefix)
 app.include_router(admin.router, prefix=api_prefix)
 app.include_router(audit.router, prefix=api_prefix)
+app.include_router(analytics.router, prefix=api_prefix)
 
 
 if __name__ == "__main__":

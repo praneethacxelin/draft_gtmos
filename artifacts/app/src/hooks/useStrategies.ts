@@ -245,9 +245,17 @@ export function useRunPatterns() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => streamSse(`/api/strategies/${id}/patterns/run`),
-    onSuccess: (_, id) => {
+    onSuccess: (result: unknown, id) => {
       qc.invalidateQueries({ queryKey: strategyKeys.patterns(id) });
       qc.invalidateQueries({ queryKey: ["contacts"] });
+      import("sonner").then(({ toast }) => {
+        const r = result as { patterns?: unknown[] } | null;
+        const n = Array.isArray(r?.patterns) ? r!.patterns.length : null;
+        toast.success(n != null ? `Pattern recognition complete — ${n} patterns found` : "Pattern recognition complete");
+      }).catch(() => {});
+    },
+    onError: (err: Error) => {
+      import("sonner").then(({ toast }) => toast.error(err.message)).catch(() => {});
     },
   });
 }
@@ -273,9 +281,17 @@ export function useRunSignals() {
       const { id, limit } = typeof vars === "string" ? { id: vars, limit: undefined } : vars;
       return streamSse(withLimit(`/api/strategies/${id}/signals/run`, limit));
     },
-    onSuccess: () => {
+    onSuccess: (result: unknown) => {
       qc.invalidateQueries({ queryKey: ["signals"] });
       qc.invalidateQueries({ queryKey: ["contacts"] });
+      import("sonner").then(({ toast }) => {
+        const r = result as { signals_added?: number } | null;
+        const n = r?.signals_added;
+        toast.success(n != null ? `Signals scan complete — ${n} signals added` : "Signals scan complete");
+      }).catch(() => {});
+    },
+    onError: (err: Error) => {
+      import("sonner").then(({ toast }) => toast.error(err.message)).catch(() => {});
     },
   });
 }
@@ -284,9 +300,17 @@ export function useScoreLeads() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => streamSse(`/api/strategies/${id}/score`),
-    onSuccess: () => {
+    onSuccess: (result: unknown) => {
       qc.invalidateQueries({ queryKey: ["accounts"] });
       qc.invalidateQueries({ queryKey: ["contacts"] });
+      import("sonner").then(({ toast }) => {
+        const r = result as { scored?: number } | null;
+        const n = r?.scored;
+        toast.success(n != null ? `Scored ${n} leads` : "Lead scoring complete");
+      }).catch(() => {});
+    },
+    onError: (err: Error) => {
+      import("sonner").then(({ toast }) => toast.error(err.message)).catch(() => {});
     },
   });
 }

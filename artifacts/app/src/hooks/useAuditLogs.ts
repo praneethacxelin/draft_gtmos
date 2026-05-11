@@ -54,6 +54,6 @@ export function useAuditLogs(filters: AuditFilters = {}) {
   return useQuery<AuditLogsPayload>({
     queryKey: ["audit-logs", filters],
     queryFn: () => apiFetch(`/api/audit-logs${qs ? `?${qs}` : ""}`),
-    staleTime: 10_000,
+    staleTime: Infinity,
   });
 }
