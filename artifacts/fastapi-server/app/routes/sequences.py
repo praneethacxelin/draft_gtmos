@@ -1,5 +1,6 @@
 import json
 from fastapi import APIRouter, Depends, HTTPException
+from app.services import audit_service
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
@@ -126,16 +127,24 @@ def patch_step(
     if not seq:
         raise HTTPException(404, "Sequence not found")
     own_contact(db, seq.contact_id, user)
-    if body.subject is not None:
-        step.subject = body.subject
-    if body.body is not None:
-        step.body = body.body
-    if body.channel is not None:
-        step.channel = body.channel
-    if body.wait_days is not None:
-        step.wait_days = body.wait_days
+    changes = body.model_dump(exclude_unset=True)
+    before = {k: getattr(step, k) for k in changes}
+    for field, val in changes.items():
+        setattr(step, field, val)
     db.commit()
     db.refresh(step)
+    for field, old_val in before.items():
+        audit_service.log_change(
+            event_type="step_change",
+            entity_type="step",
+            entity_id=step.id,
+            strategy_id=seq.strategy_id,
+            change_field=field,
+            change_before=old_val,
+            change_after=getattr(step, field),
+            actor="user",
+            summary=f"Sequence step {step.step_number} ({step.channel}) · {field} updated",
+        )
     return {
         "id": step.id,
         "step_number": step.step_number,

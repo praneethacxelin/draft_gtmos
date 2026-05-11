@@ -14,6 +14,7 @@ import { Settings } from "@/pages/Settings";
 import { Help } from "@/pages/Help";
 import NotFound from "@/pages/not-found";
 import { AdminPage } from "@/pages/Admin";
+import { Audit } from "@/pages/Audit";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -35,6 +36,7 @@ function AppRoutes() {
         <Route path="/intelligence" component={Intelligence} />
         <Route path="/help" component={Help} />
         <Route path="/settings" component={Settings} />
+        <Route path="/audit" component={Audit} />
         <Route component={NotFound} />
       </Switch>
     </AppShell>

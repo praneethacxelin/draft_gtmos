@@ -8,6 +8,7 @@ import {
   Activity,
   BookOpen,
   Settings as SettingsIcon,
+  ClipboardList,
   Sun,
   Moon,
   CircleDot,
@@ -31,6 +32,7 @@ const NAV = [
   { href: "/intelligence", label: "Intelligence", icon: Activity },
   { href: "/help", label: "Help", icon: BookOpen },
   { href: "/settings", label: "Settings", icon: SettingsIcon },
+  { href: "/audit", label: "Audit", icon: ClipboardList },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {

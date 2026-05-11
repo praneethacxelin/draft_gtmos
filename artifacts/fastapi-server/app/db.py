@@ -347,6 +347,39 @@ class GtmLoopUpdate(Base):
     created_at = Column(DateTime, default=now)
 
 
+# ---------- Audit ----------
+
+
+class AuditLog(Base):
+    """Immutable log of every external API call and every data change.
+
+    ``strategy_id`` is stored as a plain string (no FK) so audit rows
+    survive strategy deletion.
+    """
+    __tablename__ = "audit_logs"
+    id = Column(String, primary_key=True, default=gen_id)
+    occurred_at = Column(DateTime, default=now, index=True)
+    event_type = Column(String, nullable=False)  # api_call | strategy_change | contact_change | step_change
+    service = Column(String, nullable=True)       # serpapi / apollo / instantly / openai / internal
+    strategy_id = Column(String, nullable=True, index=True)
+    strategy_name = Column(String, nullable=True)
+    http_method = Column(String, nullable=True)
+    endpoint_url = Column(Text, nullable=True)
+    request_params = Column(JSONB, nullable=True)
+    response_status = Column(Integer, nullable=True)
+    response_summary = Column(JSONB, nullable=True)
+    latency_ms = Column(Integer, nullable=True)
+    curl_command = Column(Text, nullable=True)
+    is_live = Column(Boolean, default=True)
+    entity_type = Column(String, nullable=True)   # strategy / contact / step
+    entity_id = Column(String, nullable=True)
+    change_field = Column(String, nullable=True)
+    change_before = Column(JSONB, nullable=True)
+    change_after = Column(JSONB, nullable=True)
+    actor = Column(String, nullable=True)         # user | agent
+    summary = Column(Text, nullable=True)
+
+
 # ---------- Helpers ----------
 
 

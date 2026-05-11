@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from app.services import audit_service
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.db import get_session, Contact, Account, User
@@ -59,19 +60,25 @@ def patch_contact(
     user: User = Depends(current_user),
 ) -> dict:
     c = own_contact(db, contact_id, user)
-    if body.full_name is not None:
-        c.full_name = body.full_name
-    if body.title is not None:
-        c.title = body.title
-    if body.persona_type is not None:
-        c.persona_type = body.persona_type
-    if body.icp_fit_score is not None:
-        c.icp_fit_score = body.icp_fit_score
-    if body.seniority is not None:
-        c.seniority = body.seniority
+    changes = body.model_dump(exclude_unset=True)
+    before = {k: getattr(c, k) for k in changes}
+    for field, val in changes.items():
+        setattr(c, field, val)
     db.commit()
     db.refresh(c)
     a = db.query(Account).filter(Account.id == c.account_id).first()
+    for field, old_val in before.items():
+        audit_service.log_change(
+            event_type="contact_change",
+            entity_type="contact",
+            entity_id=c.id,
+            strategy_id=c.strategy_id,
+            change_field=field,
+            change_before=old_val,
+            change_after=getattr(c, field),
+            actor="user",
+            summary=f"Contact \"{c.full_name}\" · {field} updated",
+        )
     return _serialize(c, a)
 
 

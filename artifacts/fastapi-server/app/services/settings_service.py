@@ -36,6 +36,17 @@ INTEGRATION_META = {
 }
 
 
+def _safe_last_four(encrypted: str) -> str | None:
+    """Decrypt ``encrypted`` and return the last 4 chars, or ``None`` on failure."""
+    if not encrypted:
+        return None
+    try:
+        plain = decrypt(encrypted)
+        return plain[-4:] if len(plain) >= 4 else plain
+    except Exception:
+        return None
+
+
 def list_integrations(db: Session, user_id: str) -> list[dict]:
     rows = {
         r.integration_name: r
@@ -52,6 +63,7 @@ def list_integrations(db: Session, user_id: str) -> list[dict]:
             "key_label": meta["key_label"],
             "is_connected": bool(row and row.api_key_encrypted),
             "is_enabled": bool(row and row.is_enabled),
+            "key_last_four": _safe_last_four(row.api_key_encrypted) if row else None,
             "last_tested_at": row.last_tested_at.isoformat() if row and row.last_tested_at else None,
             "test_status": row.test_status if row else None,
             "test_message": row.test_message if row else None,

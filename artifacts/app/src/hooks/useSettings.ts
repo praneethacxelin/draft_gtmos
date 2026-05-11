@@ -8,6 +8,7 @@ export interface Integration {
   key_label: string;
   is_connected: boolean;
   is_enabled: boolean;
+  key_last_four?: string | null;
   last_tested_at?: string | null;
   test_status?: string | null;
   test_message?: string | null;

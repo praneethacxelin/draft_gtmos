@@ -7,6 +7,7 @@ from sse_starlette.sse import EventSourceResponse
 from app.db import get_session, SessionLocal, Strategy, Competitor, PatternCluster, User
 from app.auth import current_user
 from app.scoping import own_strategy
+from app.services import audit_service
 from app.agents.s1_strategy import run_s1
 from app.agents.s1_graph import stream_s1
 from app.agents.s2_signals import (
@@ -123,16 +124,25 @@ def patch_strategy(
     user: User = Depends(current_user),
 ) -> dict:
     s = own_strategy(db, strategy_id, user)
-    if body.product_name is not None:
-        s.product_name = body.product_name
-    if body.description is not None:
-        s.description = body.description
-    if body.target_market is not None:
-        s.target_market = body.target_market
-    if body.pain_points_raw is not None:
-        s.pain_points_raw = body.pain_points_raw
+    changes = body.model_dump(exclude_unset=True)
+    before = {k: getattr(s, k) for k in changes}
+    for field, val in changes.items():
+        setattr(s, field, val)
     db.commit()
     db.refresh(s)
+    for field, old_val in before.items():
+        audit_service.log_change(
+            event_type="strategy_change",
+            entity_type="strategy",
+            entity_id=s.id,
+            strategy_id=s.id,
+            strategy_name=s.product_name,
+            change_field=field,
+            change_before=old_val,
+            change_after=getattr(s, field),
+            actor="user",
+            summary=f"Strategy \"{s.product_name}\" · {field} updated",
+        )
     return _serialize(s)
 
 
@@ -144,11 +154,24 @@ def patch_icp(
     user: User = Depends(current_user),
 ) -> dict:
     s = own_strategy(db, strategy_id, user)
+    before = dict(s.icp_json or {})
     current = dict(s.icp_json or {})
     current.update(body.model_dump(exclude_unset=True))
     s.icp_json = current
     db.commit()
     db.refresh(s)
+    audit_service.log_change(
+        event_type="strategy_change",
+        entity_type="strategy",
+        entity_id=s.id,
+        strategy_id=s.id,
+        strategy_name=s.product_name,
+        change_field="icp",
+        change_before=before,
+        change_after=dict(s.icp_json or {}),
+        actor="user",
+        summary=f"Strategy \"{s.product_name}\" · ICP updated",
+    )
     return _serialize(s)
 
 
@@ -160,11 +183,24 @@ def patch_personas(
     user: User = Depends(current_user),
 ) -> dict:
     s = own_strategy(db, strategy_id, user)
+    before = dict(s.personas_json or {})
     current = dict(s.personas_json or {})
     current.update(body.model_dump(exclude_unset=True))
     s.personas_json = current
     db.commit()
     db.refresh(s)
+    audit_service.log_change(
+        event_type="strategy_change",
+        entity_type="strategy",
+        entity_id=s.id,
+        strategy_id=s.id,
+        strategy_name=s.product_name,
+        change_field="personas",
+        change_before=before,
+        change_after=dict(s.personas_json or {}),
+        actor="user",
+        summary=f"Strategy \"{s.product_name}\" · Personas updated",
+    )
     return _serialize(s)
 
 
@@ -176,11 +212,24 @@ def patch_problems(
     user: User = Depends(current_user),
 ) -> dict:
     s = own_strategy(db, strategy_id, user)
+    before = dict(s.problems_json or {})
     current = dict(s.problems_json or {})
     current["problems"] = body.problems
     s.problems_json = current
     db.commit()
     db.refresh(s)
+    audit_service.log_change(
+        event_type="strategy_change",
+        entity_type="strategy",
+        entity_id=s.id,
+        strategy_id=s.id,
+        strategy_name=s.product_name,
+        change_field="problems",
+        change_before=before,
+        change_after=dict(s.problems_json or {}),
+        actor="user",
+        summary=f"Strategy \"{s.product_name}\" · Problems updated",
+    )
     return _serialize(s)
 
 
@@ -192,11 +241,24 @@ def patch_use_cases(
     user: User = Depends(current_user),
 ) -> dict:
     s = own_strategy(db, strategy_id, user)
+    before = dict(s.use_cases_json or {})
     current = dict(s.use_cases_json or {})
     current["use_cases"] = body.use_cases
     s.use_cases_json = current
     db.commit()
     db.refresh(s)
+    audit_service.log_change(
+        event_type="strategy_change",
+        entity_type="strategy",
+        entity_id=s.id,
+        strategy_id=s.id,
+        strategy_name=s.product_name,
+        change_field="use_cases",
+        change_before=before,
+        change_after=dict(s.use_cases_json or {}),
+        actor="user",
+        summary=f"Strategy \"{s.product_name}\" · Use Cases updated",
+    )
     return _serialize(s)
 
 

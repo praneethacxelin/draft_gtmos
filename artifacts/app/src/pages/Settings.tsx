@@ -14,7 +14,7 @@ import {
   useUpdateFetchLimits,
   Integration,
 } from "@/hooks/useSettings";
-import { Plug, Check, AlertCircle, KeyRound, UserRound, Gauge } from "lucide-react";
+import { Plug, Check, AlertCircle, KeyRound, UserRound, Gauge, Wifi, WifiOff } from "lucide-react";
 
 export function Settings() {
   const { data: integrations } = useIntegrations();
@@ -155,6 +155,28 @@ function FetchLimitsCard() {
   );
 }
 
+function LiveBadge({ integration }: { integration: Integration }) {
+  if (!integration.is_connected) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
+        <WifiOff className="h-2.5 w-2.5" /> Not configured
+      </span>
+    );
+  }
+  if (integration.is_enabled) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-primary">
+        <Wifi className="h-2.5 w-2.5" /> Live
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-amber-400">
+      <WifiOff className="h-2.5 w-2.5" /> Disabled
+    </span>
+  );
+}
+
 function IntegrationCard({ integration }: { integration: Integration }) {
   const [key, setKey] = useState("");
   const [enabled, setEnabled] = useState(integration.is_enabled);
@@ -175,19 +197,19 @@ function IntegrationCard({ integration }: { integration: Integration }) {
           <div className="flex items-center gap-2">
             <KeyRound className="h-4 w-4 text-primary" />
             <div className="text-sm font-semibold">{integration.display_name}</div>
-            {integration.is_connected ? (
-              <span className="rounded bg-primary/15 px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-primary">
-                Connected
-              </span>
-            ) : (
-              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
-                Not connected
-              </span>
-            )}
+            <LiveBadge integration={integration} />
           </div>
           <div className="mt-1 max-w-md text-xs text-muted-foreground">
             {integration.description}
           </div>
+          {integration.is_connected && integration.key_last_four && (
+            <div className="mt-1.5 flex items-center gap-1.5">
+              <span className="font-mono text-[11px] text-muted-foreground tracking-widest">
+                ••••••••{integration.key_last_four}
+              </span>
+              <span className="text-[10px] text-muted-foreground/60">saved key</span>
+            </div>
+          )}
         </div>
         <Switch
           checked={enabled}
