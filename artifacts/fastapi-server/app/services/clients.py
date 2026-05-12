@@ -365,6 +365,116 @@ def instantly_create_campaign(
         )
 
 
+def instantly_add_leads(
+    api_key: str,
+    campaign_id: str,
+    leads: list[dict],
+    _strategy_id: Optional[str] = None,
+    _strategy_name: Optional[str] = None,
+) -> Optional[dict]:
+    """Add leads (contacts with emails) to an existing Instantly campaign."""
+    if not api_key or not campaign_id or not leads:
+        return None
+    url = "https://api.instantly.ai/api/v1/lead/add"
+    body = {"api_key": api_key, "campaign_id": campaign_id, "leads": leads, "skip_if_in_workspace": False}
+    curl = _make_curl("POST", url, body=body)
+    t0 = time.perf_counter()
+    status = None
+    result: Optional[dict] = None
+    error_text: Optional[str] = None
+    raw_response_preview: Optional[str] = None
+    try:
+        with httpx.Client(timeout=TIMEOUT) as c:
+            r = c.post(url, json=body)
+            status = r.status_code
+            raw_response_preview = r.text[:1000]
+            r.raise_for_status()
+            result = r.json()
+            return result
+    except Exception as e:
+        error_text = str(e)
+        log.warning("instantly_add_leads failed: %s", e)
+        return None
+    finally:
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        emails = [l.get("email", "") for l in leads[:5]]
+        summary_payload: dict = {"campaign_id": campaign_id, "lead_count": len(leads), "emails": emails}
+        if result:
+            summary_payload["added"] = result.get("total_new_leads", len(leads))
+        if error_text:
+            summary_payload["error"] = error_text[:500]
+        if raw_response_preview and status and status >= 400:
+            summary_payload["response_body"] = raw_response_preview
+        audit_service.log_api_call(
+            service="instantly",
+            method="POST",
+            url=url,
+            request_params={"campaign_id": campaign_id, "lead_count": len(leads)},
+            response_status=status,
+            latency_ms=latency_ms,
+            curl_command=curl,
+            strategy_id=_strategy_id,
+            strategy_name=_strategy_name,
+            is_live=True,
+            response_summary=summary_payload,
+            summary=f"Instantly: add {len(leads)} lead(s) to campaign {campaign_id[:12]} — {', '.join(emails[:2])}",
+        )
+
+
+def instantly_launch_campaign(
+    api_key: str,
+    campaign_id: str,
+    _strategy_id: Optional[str] = None,
+    _strategy_name: Optional[str] = None,
+) -> Optional[dict]:
+    """Activate/launch an Instantly campaign so it starts sending."""
+    if not api_key or not campaign_id:
+        return None
+    url = "https://api.instantly.ai/api/v1/campaign/launch"
+    body = {"api_key": api_key, "campaign_id": campaign_id}
+    curl = _make_curl("POST", url, body=body)
+    t0 = time.perf_counter()
+    status = None
+    result: Optional[dict] = None
+    error_text: Optional[str] = None
+    raw_response_preview: Optional[str] = None
+    try:
+        with httpx.Client(timeout=TIMEOUT) as c:
+            r = c.post(url, json=body)
+            status = r.status_code
+            raw_response_preview = r.text[:1000]
+            r.raise_for_status()
+            result = r.json()
+            return result
+    except Exception as e:
+        error_text = str(e)
+        log.warning("instantly_launch_campaign failed: %s", e)
+        return None
+    finally:
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        summary_payload: dict = {"campaign_id": campaign_id}
+        if result:
+            summary_payload["status"] = result.get("status", "launched")
+        if error_text:
+            summary_payload["error"] = error_text[:500]
+        if raw_response_preview and status and status >= 400:
+            summary_payload["response_body"] = raw_response_preview
+        audit_service.log_api_call(
+            service="instantly",
+            method="POST",
+            url=url,
+            request_params={"campaign_id": campaign_id},
+            response_status=status,
+            latency_ms=latency_ms,
+            curl_command=curl,
+            strategy_id=_strategy_id,
+            strategy_name=_strategy_name,
+            is_live=True,
+            response_summary=summary_payload,
+            summary=f"Instantly: launch campaign {campaign_id[:12]}",
+        )
+
+
 def instantly_get_events(
     api_key: str,
     campaign_id: str,

@@ -164,7 +164,7 @@ def deliverability_check(db: Session, sequence_id: str) -> dict:
     }
 
 
-def launch_sequence(db: Session, sequence_id: str) -> dict:
+def launch_sequence(db: Session, sequence_id: str, test_email: str | None = None) -> dict:
     seq = db.query(Sequence).filter(Sequence.id == sequence_id).first()
     if not seq:
         return {"error": "Sequence not found"}
@@ -176,20 +176,56 @@ def launch_sequence(db: Session, sequence_id: str) -> dict:
 
     if instantly_key:
         contact = db.query(Contact).filter(Contact.id == seq.contact_id).first()
+        account = db.query(Account).filter(Account.id == contact.account_id).first() if contact and contact.account_id else None
+
+        # Only include email steps in the Instantly sequence
+        email_steps = [s for s in steps if s.channel == "email"]
+        campaign_steps = email_steps if email_steps else steps
+
         result = clients.instantly_create_campaign(
             instantly_key,
             f"GTM-{seq.id[:8]}",
-            [{"channel": s.channel, "subject": s.subject, "body": s.body} for s in steps],
+            [{"channel": s.channel, "subject": s.subject, "body": s.body} for s in campaign_steps],
+            _strategy_id=seq.strategy_id,
+            _strategy_name=strategy.product_name if strategy else None,
         )
         seq.status = "active"
         campaign_id = (result or {}).get("id") if isinstance(result, dict) else None
         seq.instantly_campaign_id = campaign_id
+        lead_email: str | None = None
+
         if campaign_id:
             db.add(InstantlyCampaign(
                 sequence_id=seq.id,
                 instantly_campaign_id=str(campaign_id),
                 status="active",
             ))
+
+            # Determine recipient: test_email overrides contact's email for demo testing
+            lead_email = test_email or (contact.email if contact else None)
+            if lead_email:
+                name_parts = (contact.full_name if contact else "Test User").split()
+                clients.instantly_add_leads(
+                    instantly_key,
+                    campaign_id,
+                    leads=[{
+                        "email": lead_email,
+                        "first_name": name_parts[0] if name_parts else "Test",
+                        "last_name": " ".join(name_parts[1:]) if len(name_parts) > 1 else "",
+                        "company_name": account.company_name if account else "",
+                        "personalization": f"Hi {name_parts[0] if name_parts else 'there'}",
+                    }],
+                    _strategy_id=seq.strategy_id,
+                    _strategy_name=strategy.product_name if strategy else None,
+                )
+                # Activate the campaign so Instantly starts sending
+                clients.instantly_launch_campaign(
+                    instantly_key,
+                    campaign_id,
+                    _strategy_id=seq.strategy_id,
+                    _strategy_name=strategy.product_name if strategy else None,
+                )
+
             # Record initial "sent" outreach events; the hourly poller will
             # backfill opens/clicks/replies as Instantly reports them.
             for s in steps:
@@ -202,7 +238,13 @@ def launch_sequence(db: Session, sequence_id: str) -> dict:
                     raw_data_json={"instantly_campaign_id": campaign_id},
                 ))
         db.commit()
-        return {"status": "active", "instantly_pushed": True, "campaign_id": campaign_id}
+        return {
+            "status": "active",
+            "instantly_pushed": True,
+            "campaign_id": campaign_id,
+            "lead_email": lead_email,
+            "is_test_mode": bool(test_email),
+        }
     else:
         seq.status = "simulated"
         db.commit()

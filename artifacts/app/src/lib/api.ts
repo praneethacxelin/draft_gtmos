@@ -55,10 +55,16 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
 export function streamSse<T = unknown>(
   path: string,
   onStage?: (stage: string, status: "start" | "complete") => void,
+  body?: unknown,
 ): Promise<T | null> {
   return new Promise((resolve, reject) => {
     const url = apiUrl(path);
-    fetch(url, { method: "POST" })
+    fetch(url, {
+      method: "POST",
+      ...(body !== undefined
+        ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+        : {}),
+    })
       .then(async (res) => {
         if (!res.ok || !res.body) {
           const text = await res.text().catch(() => "");

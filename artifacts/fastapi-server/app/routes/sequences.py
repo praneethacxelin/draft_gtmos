@@ -2,6 +2,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException
 from app.services import audit_service
 from pydantic import BaseModel
+from typing import Optional
 from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 from app.db import get_session, SessionLocal, Sequence, SequenceStep, OutreachEvent, User
@@ -72,21 +73,27 @@ def check(
     return deliverability_check(db, sequence_id)
 
 
+class LaunchBody(BaseModel):
+    test_email: Optional[str] = None
+
+
 @router.post("/{sequence_id}/launch")
 def launch(
     sequence_id: str,
+    payload: LaunchBody | None = None,
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ):
     """Stream launch progress (Instantly push or simulated send)."""
     own_sequence(db, sequence_id, user)
+    test_email = payload.test_email if payload else None
     from app.services.rate_limit import RateLimitExceeded
 
     async def gen():
         yield {"event": "stage_start", "data": json.dumps({"stage": "launch"})}
         db2 = SessionLocal()
         try:
-            result = launch_sequence(db2, sequence_id)
+            result = launch_sequence(db2, sequence_id, test_email=test_email)
             yield {"event": "stage_complete", "data": json.dumps({"stage": "launch", "result": result})}
             yield {"event": "complete", "data": json.dumps({"stage": "launch"})}
         except RateLimitExceeded as rle:

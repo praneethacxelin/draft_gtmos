@@ -73,8 +73,12 @@ export function useDeliverabilityCheck() {
 export function useLaunchSequence() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (sequenceId: string) =>
-      streamSse(`/api/sequences/${sequenceId}/launch`),
+    mutationFn: ({ sequenceId, testEmail }: { sequenceId: string; testEmail?: string }) =>
+      streamSse(
+        `/api/sequences/${sequenceId}/launch`,
+        undefined,
+        testEmail ? { test_email: testEmail } : undefined,
+      ),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["sequence"] }),
   });
 }

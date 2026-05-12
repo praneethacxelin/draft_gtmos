@@ -22,7 +22,7 @@ import {
   useLaunchSequence,
   useUpdateSequenceStep,
 } from "@/hooks/useSequences";
-import { Mail, Linkedin, Phone, ShieldCheck, Send, Wand2, Pencil, X } from "lucide-react";
+import { Mail, Linkedin, Phone, ShieldCheck, Send, Wand2, Pencil, X, FlaskConical, Check } from "lucide-react";
 import { fmtDate } from "@/lib/format";
 import { ReasoningPanel, SourceBadge } from "@/components/ReasoningPanel";
 import { RetriggerBar, type RetriggerAction } from "@/components/RetriggerBar";
@@ -59,6 +59,34 @@ export function Outreach() {
     wait_days: 1,
   });
   const [stepDirty, setStepDirty] = useState(false);
+
+  // Test-mode email — persisted in localStorage so it survives page refreshes
+  const [testEmail, setTestEmail] = useState<string>(
+    () => localStorage.getItem("gtm_test_email") ?? "",
+  );
+  const [testEmailDraft, setTestEmailDraft] = useState("");
+  const [editingTestEmail, setEditingTestEmail] = useState(false);
+
+  function openTestEmailEdit() {
+    setTestEmailDraft(testEmail);
+    setEditingTestEmail(true);
+  }
+
+  function saveTestEmail() {
+    const val = testEmailDraft.trim();
+    setTestEmail(val);
+    if (val) {
+      localStorage.setItem("gtm_test_email", val);
+    } else {
+      localStorage.removeItem("gtm_test_email");
+    }
+    setEditingTestEmail(false);
+  }
+
+  function clearTestEmail() {
+    setTestEmail("");
+    localStorage.removeItem("gtm_test_email");
+  }
 
   function startEditStep(stepId: string) {
     const step = sequence?.steps.find((s) => s.id === stepId);
@@ -121,6 +149,69 @@ export function Outreach() {
           onDismiss={() => setStepDirty(false)}
         />
       )}
+
+      {/* Test-mode email banner */}
+      <div className="mb-1 flex flex-wrap items-center gap-3 rounded border border-amber-500/30 bg-amber-500/5 px-4 py-2.5">
+        <FlaskConical className="h-4 w-4 shrink-0 text-amber-400" />
+        <span className="text-xs font-semibold text-amber-300">Test mode email</span>
+        <span className="text-[11px] text-muted-foreground">
+          Instantly sends to this address instead of the contact's email — useful for end-to-end testing.
+        </span>
+        <div className="ml-auto flex items-center gap-2">
+          {editingTestEmail ? (
+            <>
+              <Input
+                value={testEmailDraft}
+                onChange={(e) => setTestEmailDraft(e.target.value)}
+                placeholder="you@yourcompany.com"
+                className="h-7 w-56 text-xs"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") saveTestEmail();
+                  if (e.key === "Escape") setEditingTestEmail(false);
+                }}
+              />
+              <Button size="sm" className="h-7 gap-1 text-xs" onClick={saveTestEmail}>
+                <Check className="h-3 w-3" /> Save
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 text-xs"
+                onClick={() => setEditingTestEmail(false)}
+              >
+                Cancel
+              </Button>
+            </>
+          ) : (
+            <>
+              {testEmail ? (
+                <span className="rounded bg-amber-500/15 px-2 py-0.5 font-mono text-xs text-amber-300">
+                  {testEmail}
+                </span>
+              ) : (
+                <span className="text-xs italic text-muted-foreground">not set</span>
+              )}
+              <button
+                onClick={openTestEmailEdit}
+                className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                title="Edit test email"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </button>
+              {testEmail && (
+                <button
+                  onClick={clearTestEmail}
+                  className="rounded p-1 text-muted-foreground hover:text-destructive"
+                  title="Clear test email"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
         <Card className="lg:col-span-4 border-card-border bg-card p-3">
@@ -212,11 +303,22 @@ export function Outreach() {
                 <Button
                   size="sm"
                   disabled={!sequence || launch.isPending}
-                  onClick={() => sequence && launch.mutate(sequence.id)}
+                  onClick={() =>
+                    sequence &&
+                    launch.mutate({
+                      sequenceId: sequence.id,
+                      testEmail: testEmail || undefined,
+                    })
+                  }
                   data-testid="button-launch"
+                  title={testEmail ? `Will send to ${testEmail} (test mode)` : "Launch via Instantly"}
                 >
                   <Send className="mr-2 h-4 w-4" />
-                  {launch.isPending ? "Launching…" : "Launch"}
+                  {launch.isPending
+                    ? "Launching…"
+                    : testEmail
+                      ? "Launch → test inbox"
+                      : "Launch"}
                 </Button>
               </div>
             </div>
