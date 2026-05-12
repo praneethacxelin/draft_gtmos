@@ -22,6 +22,8 @@ import {
   useRunSignals,
   useScoreLeads,
   useRunPatterns,
+  useFetchContactEmails,
+  useFetchContactPhones,
 } from "@/hooks/useStrategies";
 import { fmtRelative } from "@/lib/format";
 import {
@@ -32,6 +34,8 @@ import {
   Building2,
   Pencil,
   X,
+  Mail,
+  Phone,
 } from "lucide-react";
 import { ReasoningPanel, SourceBadge } from "@/components/ReasoningPanel";
 import { useFetchLimits } from "@/hooks/useSettings";
@@ -41,6 +45,7 @@ interface ContactDraft {
   full_name: string;
   title: string;
   email: string;
+  phone: string;
   persona_type: string;
   icp_fit_score: number;
 }
@@ -68,6 +73,8 @@ export function Prospects() {
   const runSignals = useRunSignals();
   const score = useScoreLeads();
   const patterns = useRunPatterns();
+  const fetchEmails = useFetchContactEmails();
+  const fetchPhones = useFetchContactPhones();
   const updateContact = useUpdateContact();
 
   const [editingContactId, setEditingContactId] = useState<string | null>(null);
@@ -75,6 +82,7 @@ export function Prospects() {
     full_name: "",
     title: "",
     email: "",
+    phone: "",
     persona_type: "",
     icp_fit_score: 0,
   });
@@ -87,6 +95,7 @@ export function Prospects() {
       full_name: c.full_name,
       title: c.title ?? "",
       email: c.email ?? "",
+      phone: c.phone ?? "",
       persona_type: c.persona_type ?? "",
       icp_fit_score: c.icp_fit_score,
     });
@@ -102,6 +111,7 @@ export function Prospects() {
           full_name: editDraft.full_name,
           title: editDraft.title,
           email: editDraft.email || undefined,
+          phone: editDraft.phone || undefined,
           persona_type: editDraft.persona_type || undefined,
           icp_fit_score: editDraft.icp_fit_score,
         },
@@ -241,6 +251,29 @@ export function Prospects() {
             >
               <Crosshair className="mr-2 h-4 w-4" />
               {patterns.isPending ? "Clustering…" : "Recognize patterns"}
+            </Button>
+            <div className="h-5 w-px bg-border" />
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={fetchEmails.isPending}
+              onClick={() => fetchEmails.mutate(activeId)}
+              title="Uses Apollo email credits — only fetches contacts missing an email (up to 20)"
+              data-testid="button-fetch-emails"
+            >
+              <Mail className="mr-2 h-3.5 w-3.5 text-blue-400" />
+              {fetchEmails.isPending ? "Fetching…" : "Fetch emails"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={fetchPhones.isPending}
+              onClick={() => fetchPhones.mutate(activeId)}
+              title="Uses Apollo phone credits — only fetches contacts missing a phone (up to 20)"
+              data-testid="button-fetch-phones"
+            >
+              <Phone className="mr-2 h-3.5 w-3.5 text-emerald-400" />
+              {fetchPhones.isPending ? "Fetching…" : "Fetch phones"}
             </Button>
           </div>
         }
@@ -407,6 +440,7 @@ export function Prospects() {
                   <th className="px-4 py-2">Tier</th>
                   <th className="px-4 py-2">Contact</th>
                   <th className="px-4 py-2">Company</th>
+                  <th className="px-4 py-2">Email / Phone</th>
                   <th className="px-4 py-2">Persona</th>
                   <th className="px-4 py-2">ICP fit</th>
                   <th className="px-4 py-2">Signals</th>
@@ -440,6 +474,32 @@ export function Prospects() {
                       </td>
                       <td className="px-4 py-2 text-muted-foreground">
                         {c.company_name}
+                      </td>
+                      <td className="px-4 py-2">
+                        <div className="space-y-0.5">
+                          {c.email ? (
+                            <div className="flex items-center gap-1 text-[11px] text-foreground/80">
+                              <Mail className="h-3 w-3 text-blue-400 shrink-0" />
+                              <span className="truncate max-w-[140px]">{c.email}</span>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-1 text-[11px] text-muted-foreground/50">
+                              <Mail className="h-3 w-3 shrink-0" />
+                              <span>—</span>
+                            </div>
+                          )}
+                          {c.phone ? (
+                            <div className="flex items-center gap-1 text-[11px] text-foreground/80">
+                              <Phone className="h-3 w-3 text-emerald-400 shrink-0" />
+                              <span>{c.phone}</span>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-1 text-[11px] text-muted-foreground/50">
+                              <Phone className="h-3 w-3 shrink-0" />
+                              <span>—</span>
+                            </div>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-2">
                         <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
@@ -487,10 +547,10 @@ export function Prospects() {
                     {editingContactId === c.id && (
                       <tr key={`edit-${c.id}`}>
                         <td
-                          colSpan={9}
+                          colSpan={10}
                           className="bg-muted/30 px-4 py-3"
                         >
-                          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
                             <div>
                               <Label className="text-xs">Full name</Label>
                               <Input
@@ -527,6 +587,21 @@ export function Prospects() {
                                   setEditDraft({
                                     ...editDraft,
                                     email: e.target.value,
+                                  })
+                                }
+                                className="h-8 text-xs"
+                              />
+                            </div>
+                            <div>
+                              <Label className="text-xs">Phone</Label>
+                              <Input
+                                type="tel"
+                                placeholder="+1 555 000 0000"
+                                value={editDraft.phone}
+                                onChange={(e) =>
+                                  setEditDraft({
+                                    ...editDraft,
+                                    phone: e.target.value,
                                   })
                                 }
                                 className="h-8 text-xs"

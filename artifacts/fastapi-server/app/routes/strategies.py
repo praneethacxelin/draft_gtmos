@@ -17,6 +17,8 @@ from app.agents.s2_signals import (
     run_signals,
     score_leads,
     recognize_patterns,
+    fetch_contact_emails,
+    fetch_contact_phones,
 )
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
@@ -400,6 +402,30 @@ def score_run(
     async def _run(d):
         return score_leads(d, strategy_id)
     return _sse(_run, "score")
+
+
+@router.post("/{strategy_id}/contacts/fetch-emails")
+async def contacts_fetch_emails(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+):
+    """Reveal emails for contacts missing one via Apollo /v1/people/match.
+    Each successful reveal costs an Apollo email credit."""
+    own_strategy(db, strategy_id, user)
+    return _sse(lambda d: fetch_contact_emails(d, strategy_id), "fetch_emails")
+
+
+@router.post("/{strategy_id}/contacts/fetch-phones")
+async def contacts_fetch_phones(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+):
+    """Reveal phone numbers for contacts missing one via Apollo /v1/people/match.
+    Each successful reveal costs an Apollo phone credit."""
+    own_strategy(db, strategy_id, user)
+    return _sse(lambda d: fetch_contact_phones(d, strategy_id), "fetch_phones")
 
 
 @router.post("/{strategy_id}/patterns/run")

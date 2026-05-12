@@ -6,6 +6,7 @@ export interface Contact {
   full_name: string;
   title?: string;
   email?: string;
+  phone?: string;
   linkedin_url?: string;
   seniority?: string;
   department?: string;
@@ -52,7 +53,7 @@ export function useUpdateContact() {
       data: Partial<
         Pick<
           Contact,
-          "full_name" | "title" | "email" | "persona_type" | "icp_fit_score" | "seniority"
+          "full_name" | "title" | "email" | "phone" | "persona_type" | "icp_fit_score" | "seniority"
         >
       >;
     }) =>

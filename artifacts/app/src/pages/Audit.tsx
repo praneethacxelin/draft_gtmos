@@ -60,8 +60,9 @@ function StatusBadge({ status }: { status: number | null }) {
 function ExpandedRow({ entry }: { entry: AuditEntry }) {
   const hasCurl = Boolean(entry.curl_command);
   const hasChange = entry.change_field != null;
+  const hasResponse = entry.response_summary && Object.keys(entry.response_summary).length > 0;
 
-  if (!hasCurl && !hasChange) {
+  if (!hasCurl && !hasChange && !hasResponse) {
     return (
       <div className="py-3 text-xs text-muted-foreground">No additional details.</div>
     );
@@ -72,13 +73,25 @@ function ExpandedRow({ entry }: { entry: AuditEntry }) {
       {hasCurl && (
         <div>
           <div className="mb-1 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
-            <Code2 className="h-3 w-3" /> cURL
+            <Code2 className="h-3 w-3" /> cURL Replay
           </div>
           <pre className="overflow-x-auto rounded bg-black/40 p-3 font-mono text-[11px] leading-relaxed text-green-300 whitespace-pre-wrap">
             {entry.curl_command}
           </pre>
         </div>
       )}
+
+      {hasResponse && (
+        <div>
+          <div className="mb-1 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+            <Code2 className="h-3 w-3" /> Response Output
+          </div>
+          <pre className="overflow-x-auto rounded bg-black/40 p-3 font-mono text-[11px] leading-relaxed text-sky-300 whitespace-pre-wrap">
+            {JSON.stringify(entry.response_summary, null, 2)}
+          </pre>
+        </div>
+      )}
+
       {hasChange && (
         <div>
           <div className="mb-1 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
@@ -100,16 +113,6 @@ function ExpandedRow({ entry }: { entry: AuditEntry }) {
           </div>
         </div>
       )}
-      {entry.response_summary && Object.keys(entry.response_summary).length > 0 && (
-        <div className="flex flex-wrap gap-3">
-          {Object.entries(entry.response_summary).map(([k, v]) => (
-            <div key={k} className="text-xs text-muted-foreground">
-              <span className="text-foreground/70">{k}:</span>{" "}
-              <span className="font-mono text-foreground">{String(v)}</span>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
@@ -118,7 +121,10 @@ function AuditRow({ entry }: { entry: AuditEntry }) {
   const [expanded, setExpanded] = useState(false);
   const eventMeta = EVENT_LABELS[entry.event_type] ?? { label: entry.event_type, color: "bg-muted text-muted-foreground" };
   const serviceColor = SERVICE_COLORS[entry.service ?? "internal"] ?? SERVICE_COLORS.internal;
-  const hasDetails = Boolean(entry.curl_command) || entry.change_field != null;
+  const hasDetails =
+    Boolean(entry.curl_command) ||
+    entry.change_field != null ||
+    (entry.response_summary != null && Object.keys(entry.response_summary).length > 0);
 
   return (
     <>

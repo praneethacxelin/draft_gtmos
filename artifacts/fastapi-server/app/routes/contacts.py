@@ -48,6 +48,7 @@ class ContactPatch(BaseModel):
     full_name: str | None = None
     title: str | None = None
     email: str | None = None
+    phone: str | None = None
     persona_type: str | None = None
     icp_fit_score: float | None = None
     seniority: str | None = None
@@ -89,6 +90,7 @@ def _serialize(c: Contact, a: Account | None) -> dict:
         "full_name": c.full_name,
         "title": c.title,
         "email": c.email,
+        "phone": c.phone,
         "linkedin_url": c.linkedin_url,
         "seniority": c.seniority,
         "department": c.department,

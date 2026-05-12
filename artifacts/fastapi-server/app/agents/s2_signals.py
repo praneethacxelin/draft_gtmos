@@ -184,13 +184,23 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
                 db.flush()
                 new_accounts[company] = account
                 newly_added_accounts.append(company)
+            # Apollo returns name as "name" OR as first_name + last_name
+            full_name = (
+                p.get("name")
+                or f"{p.get('first_name', '')} {p.get('last_name', '')}".strip()
+                or "Unknown"
+            )
+            # Apollo free tier returns email as None or masked; phone similarly
+            raw_phones = p.get("phone_numbers") or []
+            phone = raw_phones[0].get("raw_number") if raw_phones else None
             contact = Contact(
                 user_id=strategy.user_id,
                 account_id=account.id,
                 strategy_id=strategy_id,
-                full_name=p.get("name") or "Unknown",
+                full_name=full_name,
                 title=p.get("title"),
                 email=p.get("email"),
+                phone=phone,
                 linkedin_url=p.get("linkedin_url"),
                 seniority=p.get("seniority"),
                 department=p.get("departments", [None])[0] if p.get("departments") else None,
@@ -243,6 +253,27 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
     for c in new_contacts:
         db.add(c)
     db.commit()
+
+    # Log demo fallback when Apollo returned nothing
+    if apollo_key and apollo_results is None:
+        from app.services import audit_service
+        audit_service.log_api_call(
+            service="apollo",
+            method="internal",
+            url="ai_demo_fallback",
+            request_params={},
+            response_status=None,
+            latency_ms=0,
+            curl_command=None,
+            strategy_id=strategy_id,
+            strategy_name=strategy.product_name,
+            is_live=False,
+            response_summary={
+                "info": "Apollo people search failed — fell back to AI-generated demo contacts",
+                "contacts_added": len(new_contacts),
+            },
+            summary="Apollo fallback: people search failed → generated AI demo contacts",
+        )
 
     # Auto-trigger scoring
     score_leads(db, strategy_id)
@@ -378,6 +409,123 @@ async def run_signals(db: Session, strategy_id: str, limit: int | None = None) -
             },
             model=None if serp_key else MODEL_NAME,
         ),
+    }
+
+
+async def fetch_contact_emails(db: Session, strategy_id: str) -> dict:
+    """Reveal work emails for contacts that don't have one yet, using Apollo /v1/people/match.
+
+    Apollo charges a credit per successful reveal. We skip contacts that
+    already have an email so you only pay for genuinely missing ones.
+    Capped at 20 contacts per run to control costs.
+    """
+    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    if not strategy:
+        return {"error": "Strategy not found", "updated": 0}
+
+    apollo_key = settings_service.get_key(db, strategy.user_id, "apollo")
+    if not apollo_key:
+        return {"error": "No Apollo API key configured in Settings → Integrations", "updated": 0}
+
+    contacts = (
+        db.query(Contact)
+        .join(Account, Account.id == Contact.account_id)
+        .filter(Contact.strategy_id == strategy_id, Contact.email.is_(None))
+        .limit(20)
+        .all()
+    )
+    if not contacts:
+        return {"updated": 0, "skipped": 0, "message": "All contacts already have emails"}
+
+    accounts = {
+        a.id: a
+        for a in db.query(Account).filter(Account.strategy_id == strategy_id).all()
+    }
+
+    updated = 0
+    skipped = 0
+    for contact in contacts:
+        account = accounts.get(contact.account_id)
+        person = clients.apollo_match_person(
+            apollo_key,
+            name=contact.full_name,
+            org_name=account.company_name if account else None,
+            domain=account.domain if account else None,
+            reveal_phone=False,
+            _strategy_id=strategy_id,
+            _strategy_name=strategy.product_name,
+        )
+        if person and person.get("email"):
+            contact.email = person["email"]
+            updated += 1
+        else:
+            skipped += 1
+
+    db.commit()
+    return {
+        "updated": updated,
+        "skipped": skipped,
+        "total_processed": len(contacts),
+        "message": f"Revealed {updated} email(s); {skipped} contact(s) not found in Apollo",
+    }
+
+
+async def fetch_contact_phones(db: Session, strategy_id: str) -> dict:
+    """Reveal phone numbers for contacts that don't have one yet, using Apollo /v1/people/match.
+
+    Costs an Apollo phone credit per successful reveal. Capped at 20 per run.
+    """
+    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    if not strategy:
+        return {"error": "Strategy not found", "updated": 0}
+
+    apollo_key = settings_service.get_key(db, strategy.user_id, "apollo")
+    if not apollo_key:
+        return {"error": "No Apollo API key configured in Settings → Integrations", "updated": 0}
+
+    contacts = (
+        db.query(Contact)
+        .join(Account, Account.id == Contact.account_id)
+        .filter(Contact.strategy_id == strategy_id, Contact.phone.is_(None))
+        .limit(20)
+        .all()
+    )
+    if not contacts:
+        return {"updated": 0, "skipped": 0, "message": "All contacts already have phone numbers"}
+
+    accounts = {
+        a.id: a
+        for a in db.query(Account).filter(Account.strategy_id == strategy_id).all()
+    }
+
+    updated = 0
+    skipped = 0
+    for contact in contacts:
+        account = accounts.get(contact.account_id)
+        person = clients.apollo_match_person(
+            apollo_key,
+            name=contact.full_name,
+            org_name=account.company_name if account else None,
+            domain=account.domain if account else None,
+            reveal_phone=True,
+            _strategy_id=strategy_id,
+            _strategy_name=strategy.product_name,
+        )
+        if person:
+            phone_numbers = person.get("phone_numbers") or []
+            phone = phone_numbers[0].get("raw_number") if phone_numbers else None
+            if phone:
+                contact.phone = phone
+                updated += 1
+                continue
+        skipped += 1
+
+    db.commit()
+    return {
+        "updated": updated,
+        "skipped": skipped,
+        "total_processed": len(contacts),
+        "message": f"Revealed {updated} phone(s); {skipped} contact(s) not found in Apollo",
     }
 
 

@@ -315,6 +315,52 @@ export function useScoreLeads() {
   });
 }
 
+export function useFetchContactEmails() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      streamSse(`/api/strategies/${id}/contacts/fetch-emails`),
+    onSuccess: (result: unknown, id) => {
+      qc.invalidateQueries({ queryKey: ["contacts", id] });
+      qc.invalidateQueries({ queryKey: ["contacts"] });
+      import("sonner").then(({ toast }) => {
+        const r = result as { updated?: number; message?: string; error?: string } | null;
+        if (r?.error) {
+          toast.error(r.error);
+        } else {
+          toast.success(r?.message ?? `Email fetch complete — ${r?.updated ?? 0} updated`);
+        }
+      }).catch(() => {});
+    },
+    onError: (err: Error) => {
+      import("sonner").then(({ toast }) => toast.error(err.message)).catch(() => {});
+    },
+  });
+}
+
+export function useFetchContactPhones() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      streamSse(`/api/strategies/${id}/contacts/fetch-phones`),
+    onSuccess: (result: unknown, id) => {
+      qc.invalidateQueries({ queryKey: ["contacts", id] });
+      qc.invalidateQueries({ queryKey: ["contacts"] });
+      import("sonner").then(({ toast }) => {
+        const r = result as { updated?: number; message?: string; error?: string } | null;
+        if (r?.error) {
+          toast.error(r.error);
+        } else {
+          toast.success(r?.message ?? `Phone fetch complete — ${r?.updated ?? 0} updated`);
+        }
+      }).catch(() => {});
+    },
+    onError: (err: Error) => {
+      import("sonner").then(({ toast }) => toast.error(err.message)).catch(() => {});
+    },
+  });
+}
+
 export function useUpdateStrategy() {
   const qc = useQueryClient();
   return useMutation({
