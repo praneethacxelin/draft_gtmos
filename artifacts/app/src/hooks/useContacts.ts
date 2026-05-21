@@ -66,3 +66,16 @@ export function useUpdateContact() {
     },
   });
 }
+
+export function useRevealContactEmail() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<Contact>(`/api/contacts/${id}/reveal`, {
+        method: "POST",
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["contacts"] });
+    },
+  });
+}

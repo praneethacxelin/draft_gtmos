@@ -18,14 +18,14 @@ depends_on = None
 def upgrade() -> None:
     op.execute("TRUNCATE TABLE icp_embeddings")
     op.execute("ALTER TABLE icp_embeddings DROP COLUMN embedding")
-    op.execute("ALTER TABLE icp_embeddings ADD COLUMN embedding vector(1536) NOT NULL")
+    op.execute("ALTER TABLE icp_embeddings ADD COLUMN embedding float8[] NOT NULL DEFAULT '{}'")
 
     op.execute("ALTER TABLE pattern_clusters DROP COLUMN cluster_embedding")
-    op.execute("ALTER TABLE pattern_clusters ADD COLUMN cluster_embedding vector(1536)")
+    op.execute("ALTER TABLE pattern_clusters ADD COLUMN cluster_embedding float8[]")
 
 
 def downgrade() -> None:
     op.execute("ALTER TABLE icp_embeddings DROP COLUMN embedding")
-    op.execute("ALTER TABLE icp_embeddings ADD COLUMN embedding vector(384) NOT NULL")
+    op.execute("ALTER TABLE icp_embeddings ADD COLUMN embedding float8[] NOT NULL DEFAULT '{}'")
     op.execute("ALTER TABLE pattern_clusters DROP COLUMN cluster_embedding")
-    op.execute("ALTER TABLE pattern_clusters ADD COLUMN cluster_embedding vector(384)")
+    op.execute("ALTER TABLE pattern_clusters ADD COLUMN cluster_embedding float8[]")

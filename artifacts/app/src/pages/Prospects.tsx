@@ -15,7 +15,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { TierBadge, ScoreBar, DemoBadge } from "@/components/Pills";
 import { useActiveStrategy } from "@/hooks/useActiveStrategy";
 import { usePrioritizedAccounts } from "@/hooks/useAccounts";
-import { useContacts, useUpdateContact } from "@/hooks/useContacts";
+import { useContacts, useUpdateContact, useRevealContactEmail } from "@/hooks/useContacts";
 import { useSignals } from "@/hooks/useSignals";
 import {
   useLeadSearch,
@@ -76,6 +76,7 @@ export function Prospects() {
   const fetchEmails = useFetchContactEmails();
   const fetchPhones = useFetchContactPhones();
   const updateContact = useUpdateContact();
+  const revealEmail = useRevealContactEmail();
 
   const [editingContactId, setEditingContactId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<ContactDraft>({
@@ -477,15 +478,24 @@ export function Prospects() {
                       </td>
                       <td className="px-4 py-2">
                         <div className="space-y-0.5">
-                          {c.email ? (
+                          {c.email && c.email !== "(not revealed)" ? (
                             <div className="flex items-center gap-1 text-[11px] text-foreground/80">
                               <Mail className="h-3 w-3 text-blue-400 shrink-0" />
-                              <span className="truncate max-w-[140px]">{c.email}</span>
+                              <span className="truncate max-w-[140px]" title={c.email}>{c.email}</span>
                             </div>
                           ) : (
                             <div className="flex items-center gap-1 text-[11px] text-muted-foreground/50">
                               <Mail className="h-3 w-3 shrink-0" />
-                              <span>—</span>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-5 px-1.5 text-[10px]"
+                                disabled={revealEmail.isPending}
+                                onClick={() => revealEmail.mutate(c.id)}
+                                title="Uses 1 Apollo credit to fetch this person's email"
+                              >
+                                {revealEmail.isPending ? "Fetching..." : "Get Email"}
+                              </Button>
                             </div>
                           )}
                           {c.phone ? (

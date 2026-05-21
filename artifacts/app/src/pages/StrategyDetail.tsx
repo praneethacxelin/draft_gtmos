@@ -471,12 +471,12 @@ export function StrategyDetail() {
             <Select value={marketLimit} onValueChange={setMarketLimit}>
               <SelectTrigger className="h-8 w-36 text-xs">
                 <SelectValue
-                  placeholder={`Limit: ${fetchCaps?.limits.market_sizing ?? "default"}`}
+                  placeholder={`Limit: ${fetchCaps?.limits.market_sizing_results ?? "default"}`}
                 />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="default">
-                  Default ({fetchCaps?.limits.market_sizing ?? 1})
+                  Default ({fetchCaps?.limits.market_sizing_results ?? 1})
                 </SelectItem>
                 {[1, 3, 5].map((n) => (
                   <SelectItem key={n} value={String(n)}>
@@ -885,15 +885,24 @@ function PersonasView({
   ];
 
   function updatePersona(key: string, update: Partial<Persona>) {
-    const current =
-      (personas as Record<string, Persona | undefined>)[key] ?? {};
+    // Handle both { "champion": {...} } and { "personas": { "champion": {...} } } shapes
+    const root = (personas as any).personas ? (personas as any).personas : personas;
+    const current = (root as Record<string, Persona | undefined>)[key] ?? {};
+    
+    // If the data was wrapped, preserve the wrapper on save
+    if ((personas as any).personas) {
+      return onSave({ personas: { ...root, [key]: { ...current, ...update } } });
+    }
     return onSave({ [key]: { ...current, ...update } });
   }
+
+  // Handle both { "champion": {...} } and { "personas": { "champion": {...} } } shapes
+  const rootPersonas = (personas as any).personas ? (personas as any).personas : personas;
 
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
       {types.map(({ key, label }) => {
-        const p = (personas as Record<string, Persona | undefined>)[key];
+        const p = (rootPersonas as Record<string, Persona | undefined>)[key];
         if (!p) return null;
         return (
           <Card key={key} className="border-card-border bg-card p-5">

@@ -14,7 +14,7 @@ import {
   useUpdateFetchLimits,
   Integration,
 } from "@/hooks/useSettings";
-import { Plug, Check, AlertCircle, KeyRound, UserRound, Gauge, Wifi, WifiOff } from "lucide-react";
+import { Plug, Check, AlertCircle, KeyRound, UserRound, Gauge, Wifi, WifiOff, Eye, EyeOff } from "lucide-react";
 
 export function Settings() {
   const { data: integrations } = useIntegrations();
@@ -180,6 +180,7 @@ function LiveBadge({ integration }: { integration: Integration }) {
 function IntegrationCard({ integration }: { integration: Integration }) {
   const [key, setKey] = useState("");
   const [enabled, setEnabled] = useState(integration.is_enabled);
+  const [showKey, setShowKey] = useState(false);
   const update = useUpdateIntegration();
   const test = useTestIntegration();
 
@@ -227,15 +228,25 @@ function IntegrationCard({ integration }: { integration: Integration }) {
 
       <div className="mt-4 space-y-2">
         <Label className="text-xs">{integration.key_label}</Label>
-        <Input
-          type="password"
-          placeholder={
-            integration.is_connected ? "•••••••• (saved — type to replace)" : "Paste API key"
-          }
-          value={key}
-          onChange={(e) => setKey(e.target.value)}
-          data-testid={`input-key-${integration.name}`}
-        />
+        <div className="relative">
+          <Input
+            type={showKey ? "text" : "password"}
+            placeholder={
+              integration.is_connected ? "•••••••• (saved — type to replace)" : "Paste API key"
+            }
+            value={key}
+            onChange={(e) => setKey(e.target.value.trim())}
+            data-testid={`input-key-${integration.name}`}
+            className="pr-10"
+          />
+          <button
+            type="button"
+            className="absolute inset-y-0 right-0 flex items-center px-3 text-muted-foreground hover:text-foreground"
+            onClick={() => setShowKey(!showKey)}
+          >
+            {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+          </button>
+        </div>
       </div>
 
       <div className="mt-3 flex items-center justify-between gap-2">

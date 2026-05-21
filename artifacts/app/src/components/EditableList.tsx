@@ -11,7 +11,8 @@ interface Props {
   chipClassName?: string;
 }
 
-export function EditableList({ items, onSave, placeholder, chipClassName }: Props) {
+export function EditableList({ items: itemsProp, onSave, placeholder, chipClassName }: Props) {
+  const items = Array.isArray(itemsProp) ? itemsProp : [];
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(items.join("\n"));
   const [saving, setSaving] = useState(false);

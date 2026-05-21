@@ -10,7 +10,32 @@ from app.services.instantly_poller import simulate_engagement_timeline
 from app.provenance import stamp
 
 
-SPAM_TRIGGERS = ["free", "guarantee", "$$$", "act now", "click here", "buy now", "no risk"]
+SPAM_TRIGGERS = [
+    # Classic spam words
+    "free", "guarantee", "$$$", "act now", "click here", "buy now", "no risk",
+    "limited time", "exclusive deal", "congratulations", "you've been selected",
+    "urgent", "winner", "prize", "100%", "order now", "special offer",
+    "risk-free", "no obligation", "lowest price", "best price", "discount",
+    "double your", "earn money", "extra income", "make money", "cash bonus",
+    "incredible deal", "offer expires", "once in a lifetime", "don't miss",
+    "apply now", "call now", "click below", "direct email", "no cost",
+    "no fees", "no strings attached", "satisfaction guaranteed", "while supplies last",
+    "as seen on", "dear friend", "mass email", "bulk email", "multi-level",
+    "hidden charges", "obligation", "unsolicited", "opt in", "opt out",
+    "unsubscribe", "remove me", "cancel at any time", "no questions asked",
+    "money back", "full refund",
+]
+
+SPAM_SUBJECT_TRIGGERS = [
+    "re:", "fw:", "urgent", "act now", "limited time", "free", "winner",
+    "congratulations", "$$$", "100%", "guaranteed", "!!!",
+    "open immediately", "important notice", "action required",
+]
+
+URL_SHORTENERS = [
+    "bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly", "is.gd",
+    "buff.ly", "rebrand.ly", "cutt.ly", "short.io",
+]
 
 
 async def generate_sequence(db: Session, contact_id: str) -> dict:
@@ -120,6 +145,12 @@ async def generate_sequence(db: Session, contact_id: str) -> dict:
 
 
 def deliverability_check(db: Session, sequence_id: str) -> dict:
+    """Comprehensive email deliverability and spam analysis.
+
+    Checks email steps for spam triggers, excessive caps, punctuation abuse,
+    personalization, subject line quality, URL shorteners, and body length.
+    Returns a score 0-100 with actionable suggestions.
+    """
     steps = db.query(SequenceStep).filter(
         SequenceStep.sequence_id == sequence_id, SequenceStep.channel == "email"
     ).all()
@@ -127,41 +158,149 @@ def deliverability_check(db: Session, sequence_id: str) -> dict:
         return {"score": 100, "flagged_phrases": [], "notes": "No email steps to evaluate."}
 
     flagged: list[str] = []
+    subject_flagged: list[str] = []
+    suggestions: list[str] = []
     total_chars = 0
     link_count = 0
+    shortener_found = False
+    total_words = 0
+    caps_words = 0
+    excessive_punctuation = False
+    has_personalization = False
+
     for s in steps:
         body = (s.body or "").lower()
+        body_raw = s.body or ""
+        subject = (s.subject or "").lower()
         total_chars += len(body)
+
+        # Word count and caps analysis
+        words = body_raw.split()
+        total_words += len(words)
+        for w in words:
+            if len(w) > 2 and w.isupper():
+                caps_words += 1
+
+        # Link count
         link_count += body.count("http")
+
+        # URL shortener check
+        for shortener in URL_SHORTENERS:
+            if shortener in body:
+                shortener_found = True
+                break
+
+        # Spam trigger check (body)
         for trig in SPAM_TRIGGERS:
-            if trig in body:
+            if trig in body and trig not in flagged:
                 flagged.append(trig)
 
+        # Spam trigger check (subject)
+        for trig in SPAM_SUBJECT_TRIGGERS:
+            if trig in subject and trig not in subject_flagged:
+                subject_flagged.append(trig)
+
+        # Excessive punctuation
+        if "!!!" in body or "???" in body or "$$$" in body:
+            excessive_punctuation = True
+
+        # Personalization check (look for merge tags or contact-specific content)
+        personalization_markers = [
+            "{first_name}", "{last_name}", "{company_name}", "{company}",
+            "{name}", "{{first_name}}", "{{company}}", "hi ", "hey ",
+        ]
+        for marker in personalization_markers:
+            if marker in body:
+                has_personalization = True
+                break
+
+    # ---- Scoring ----
     score = 100
-    score -= min(len(flagged) * 8, 40)
-    if total_chars / max(len(steps), 1) > 1500:
+    avg_words = total_words / max(len(steps), 1)
+    avg_length = int(total_chars / max(len(steps), 1))
+
+    # Spam triggers in body: -5 each, max -25
+    body_penalty = min(len(flagged) * 5, 25)
+    if body_penalty:
+        score -= body_penalty
+        suggestions.append(f"Remove spam trigger words: {', '.join(flagged[:5])}")
+
+    # Spam triggers in subject: -15
+    if subject_flagged:
+        score -= 15
+        suggestions.append(f"Subject line contains spam words: {', '.join(subject_flagged[:3])}")
+
+    # Excessive caps: -10 if >30% of words are ALL CAPS
+    if total_words > 0 and (caps_words / total_words) > 0.3:
         score -= 10
-    if link_count > 4:
+        suggestions.append("Too many ALL CAPS words — reduces trust and triggers spam filters")
+
+    # Excessive punctuation: -5
+    if excessive_punctuation:
+        score -= 5
+        suggestions.append("Avoid excessive punctuation (!!!, ???, $$$)")
+
+    # Too many links: -10 if >2
+    if link_count > 2:
         score -= 10
+        suggestions.append(f"Too many links ({link_count}) — keep to 1-2 per email")
+
+    # URL shorteners: -10
+    if shortener_found:
+        score -= 10
+        suggestions.append("Avoid URL shorteners (bit.ly, etc.) — use full URLs for trust")
+
+    # Body too long: -5 if avg >300 words
+    if avg_words > 300:
+        score -= 5
+        suggestions.append(f"Emails are too long ({int(avg_words)} avg words) — aim for 50-200 words")
+
+    # Body too short: -5 if avg <30 words
+    if avg_words < 30 and avg_words > 0:
+        score -= 5
+        suggestions.append(f"Emails are too short ({int(avg_words)} avg words) — add more value")
+
+    # No personalization: -10
+    if not has_personalization:
+        score -= 10
+        suggestions.append("Add personalization (use recipient's name or company name)")
+    else:
+        # Personalization bonus: +5
+        score = min(score + 5, 100)
+
+    score = max(score, 0)
+
+    # Generate overall assessment
+    if score >= 90:
+        notes = "Excellent deliverability — your emails should land in the primary inbox."
+    elif score >= 75:
+        notes = "Good deliverability — minor improvements recommended."
+    elif score >= 50:
+        notes = "Fair deliverability — several issues should be addressed before sending."
+    else:
+        notes = "Poor deliverability — significant changes needed to avoid spam folder."
+
+    report = {
+        "score": score,
+        "flagged_phrases": list(set(flagged)),
+        "subject_flags": list(set(subject_flagged)),
+        "link_count": link_count,
+        "avg_length": avg_length,
+        "avg_words": int(avg_words),
+        "has_personalization": has_personalization,
+        "shortener_detected": shortener_found,
+        "excessive_caps": total_words > 0 and (caps_words / total_words) > 0.3,
+        "suggestions": suggestions,
+        "notes": notes,
+    }
 
     sequence = db.query(Sequence).filter(Sequence.id == sequence_id).first()
     if sequence:
         sequence.deliverability_score = score
-        sequence.deliverability_report_json = {
-            "score": score,
-            "flagged_phrases": flagged,
-            "link_count": link_count,
-            "avg_length": int(total_chars / max(len(steps), 1)),
-        }
+        sequence.deliverability_report_json = report
         db.commit()
 
-    return {
-        "score": score,
-        "flagged_phrases": list(set(flagged)),
-        "link_count": link_count,
-        "avg_length": int(total_chars / max(len(steps), 1)),
-        "notes": "Deliverability looks good." if score >= 80 else "Consider trimming language and links.",
-    }
+    return report
 
 
 def launch_sequence(db: Session, sequence_id: str, test_email: str | None = None) -> dict:

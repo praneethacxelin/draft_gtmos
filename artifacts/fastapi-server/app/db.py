@@ -23,8 +23,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, Session, relationship
-from sqlalchemy.dialects.postgresql import JSONB
-from pgvector.sqlalchemy import Vector
+from sqlalchemy.dialects.postgresql import JSONB, ARRAY as PgARRAY
 
 
 def _db_url() -> str:
@@ -115,7 +114,7 @@ class IcpEmbedding(Base):
     __tablename__ = "icp_embeddings"
     id = Column(String, primary_key=True, default=gen_id)
     strategy_id = Column(String, ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False)
-    embedding = Column(Vector(1536), nullable=False)
+    embedding = Column(PgARRAY(Float), nullable=False)
     summary = Column(Text, nullable=True)
     created_at = Column(DateTime, default=now)
 
@@ -193,7 +192,7 @@ class PatternCluster(Base):
     pattern_name = Column(String, nullable=False)
     signal_combination_json = Column(JSONB, nullable=True)
     conversion_rate = Column(Float, default=0.0)
-    cluster_embedding = Column(Vector(1536), nullable=True)
+    cluster_embedding = Column(PgARRAY(Float), nullable=True)
     created_at = Column(DateTime, default=now)
 
 

@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 import os
 import logging
 import asyncio
@@ -46,8 +49,38 @@ def _run_migrations() -> None:
         db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
     elif db_url.startswith("postgresql://"):
         db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
-    cfg.set_main_option("sqlalchemy.url", db_url)
+    # configparser treats % as interpolation; escape it so %40 etc. pass through
+    cfg.set_main_option("sqlalchemy.url", db_url.replace("%", "%%"))
     command.upgrade(cfg, "head")
+
+
+def _auto_configure_api_keys() -> None:
+    """Seed Apollo and Instantly API keys from environment variables.
+
+    Reads ``APOLLO_API_KEY`` and ``INSTANTLY_API_KEY`` from the process
+    environment and upserts them into the ``app_settings`` table for the
+    shared ``user_public`` user.  This means the user never has to
+    manually enter the keys through the Settings UI.
+    """
+    from app.db import SessionLocal
+    from app.services import settings_service
+
+    env_keys = {
+        "apollo": os.environ.get("APOLLO_API_KEY"),
+        "instantly": os.environ.get("INSTANTLY_API_KEY"),
+    }
+    db = SessionLocal()
+    try:
+        for name, key in env_keys.items():
+            if key:
+                settings_service.upsert_integration(
+                    db, "user_public", name, key, is_enabled=True,
+                )
+                log.info("Auto-configured %s API key from environment", name)
+    except Exception as exc:
+        log.warning("Failed to auto-configure API keys: %s", exc)
+    finally:
+        db.close()
 
 
 @asynccontextmanager
@@ -61,6 +94,7 @@ async def lifespan(app: FastAPI):
         traceback.print_exc(file=sys.stderr)
         sys.stderr.flush()
         raise
+    _auto_configure_api_keys()
     poller = asyncio.create_task(poll_loop())
     m3 = asyncio.create_task(m3_loop())
     log.info("Background tasks started: Instantly poller (1h), M3 tracker (6h)")

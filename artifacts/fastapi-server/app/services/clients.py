@@ -131,23 +131,39 @@ def apollo_people_search(
     _strategy_id: Optional[str] = None,
     _strategy_name: Optional[str] = None,
 ) -> Optional[list[dict]]:
+    """Search Apollo for people matching filters, then enrich via bulk_match.
+
+    Step 1: ``/api/v1/mixed_people/api_search`` — free search, returns
+    partial profiles (no credits consumed).
+    Step 2: ``/api/v1/people/bulk_match`` — enrich found IDs to reveal
+    emails (costs credits per reveal).
+
+    The old ``/v1/mixed_people/search`` endpoint was deprecated and now
+    returns 403/422 on newer API tokens.
+    """
     if not api_key:
         return None
     _rl_consume("apollo")
-    url = "https://api.apollo.io/v1/mixed_people/search"
-    body = {
-        "api_key": api_key,
+    headers = {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-cache",
+        "X-Api-Key": api_key,
+    }
+
+    # ---- Step 1: Search (0 credits) ----
+    search_url = "https://api.apollo.io/api/v1/mixed_people/api_search"
+    search_body = {
         "page": 1,
         "per_page": per_page,
         "person_titles": filters.get("titles", []),
         "organization_num_employees_ranges": filters.get("employee_ranges", []),
         "person_locations": filters.get("locations", []),
     }
-    curl = _make_curl(
-        "POST", url,
-        headers={"Content-Type": "application/json", "Cache-Control": "no-cache"},
-        body=body,
-    )
+    # Add optional industry filter
+    if filters.get("industries"):
+        search_body["organization_industries"] = filters["industries"]
+
+    curl = _make_curl("POST", search_url, headers=headers, body=search_body)
     t0 = time.perf_counter()
     status = None
     result_count = 0
@@ -156,12 +172,41 @@ def apollo_people_search(
     raw_response_preview: Optional[str] = None
     try:
         with httpx.Client(timeout=TIMEOUT) as c:
-            r = c.post(url, json=body, headers={"Content-Type": "application/json", "Cache-Control": "no-cache"})
+            r = c.post(search_url, json=search_body, headers=headers)
             status = r.status_code
             raw_response_preview = r.text[:2000]
             r.raise_for_status()
             data = r.json()
-            people = data.get("people", [])
+            search_results = data.get("people", [])
+            if not search_results:
+                result_count = 0
+                return []
+
+            # ---- Step 2: Enrich via bulk_match (costs credits) ----
+            # Extract IDs from search results for enrichment
+            person_ids = [p.get("id") for p in search_results if p.get("id")]
+            if person_ids:
+                _rl_consume("apollo")
+                match_url = "https://api.apollo.io/api/v1/people/bulk_match"
+                match_body = {
+                    "details": [{"id": pid} for pid in person_ids[:per_page]],
+                    "reveal_personal_emails": False,
+                    "reveal_phone_number": False,
+                }
+                mr = c.post(match_url, json=match_body, headers=headers)
+                if mr.status_code == 200:
+                    match_data = mr.json()
+                    # bulk_match returns enriched person objects in "matches"
+                    people = match_data.get("matches", [])
+                    # Filter out None entries (unmatched)
+                    people = [p for p in people if p is not None]
+                else:
+                    # Fallback: use the search results as-is (partial data)
+                    log.warning("Apollo bulk_match returned %d, using search results", mr.status_code)
+                    people = search_results
+            else:
+                people = search_results
+
             result_count = len(people)
             return people
     except Exception as e:
@@ -188,7 +233,7 @@ def apollo_people_search(
         audit_service.log_api_call(
             service="apollo",
             method="POST",
-            url=url,
+            url=search_url,
             request_params={
                 "titles": filters.get("titles"),
                 "employee_ranges": filters.get("employee_ranges"),
@@ -234,8 +279,12 @@ def apollo_match_person(
         return None
     _rl_consume("apollo")
     url = "https://api.apollo.io/v1/people/match"
+    headers = {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-cache",
+        "X-Api-Key": api_key,
+    }
     body: dict = {
-        "api_key": api_key,
         "name": name,
         "reveal_personal_emails": False,
         "reveal_phone_number": reveal_phone,
@@ -247,7 +296,7 @@ def apollo_match_person(
 
     curl = _make_curl(
         "POST", url,
-        headers={"Content-Type": "application/json", "Cache-Control": "no-cache"},
+        headers=headers,
         body=body,
     )
     t0 = time.perf_counter()
@@ -257,7 +306,7 @@ def apollo_match_person(
     raw_response_preview: Optional[str] = None
     try:
         with httpx.Client(timeout=TIMEOUT) as c:
-            r = c.post(url, json=body, headers={"Content-Type": "application/json", "Cache-Control": "no-cache"})
+            r = c.post(url, json=body, headers=headers)
             status = r.status_code
             raw_response_preview = r.text[:2000]
             r.raise_for_status()
@@ -310,6 +359,14 @@ def clay_enrich(api_key: str, contacts: list[dict]) -> Optional[list[dict]]:
     return contacts
 
 
+def _instantly_headers(api_key: str) -> dict:
+    """Build standard headers for Instantly v2 API calls."""
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+
 def instantly_create_campaign(
     api_key: str,
     name: str,
@@ -317,12 +374,45 @@ def instantly_create_campaign(
     _strategy_id: Optional[str] = None,
     _strategy_name: Optional[str] = None,
 ) -> Optional[dict]:
+    """Create a campaign via Instantly v2 API."""
     if not api_key:
         return None
     _rl_consume("instantly")
-    url = "https://api.instantly.ai/api/v1/campaign/create"
-    body = {"api_key": api_key, "name": name, "steps": sequence_steps}
-    curl = _make_curl("POST", url, body=body)
+    url = "https://api.instantly.ai/api/v2/campaigns"
+    headers = _instantly_headers(api_key)
+    # Instantly v2 expects a 'sequences' array containing step objects
+    # Example format: "sequences": [{"steps": [{"type": "email", "subject": "Hello", "body": "World", "delay": 0}]}]
+    instantly_sequences = []
+    if sequence_steps:
+        steps = []
+        for i, s in enumerate(sequence_steps):
+            steps.append({
+                "type": "email",
+                "delay": s.get("wait_days", 0) if i > 0 else 0,
+                "variants": [
+                    {
+                        "subject": s.get("subject", "Following up"),
+                        "body": s.get("body", "")
+                    }
+                ]
+            })
+        instantly_sequences.append({"steps": steps})
+
+    body = {
+        "name": name,
+        "sequences": instantly_sequences,
+        "campaign_schedule": {
+            "schedules": [
+                {
+                    "name": "Default",
+                    "timing": {"from": "09:00", "to": "17:00"},
+                    "timezone": "Etc/GMT+12",
+                    "days": {"0": False, "1": True, "2": True, "3": True, "4": True, "5": True, "6": False}
+                }
+            ]
+        }
+    }
+    curl = _make_curl("POST", url, headers=headers, body=body)
     t0 = time.perf_counter()
     status = None
     result: Optional[dict] = None
@@ -330,7 +420,7 @@ def instantly_create_campaign(
     raw_response_preview: Optional[str] = None
     try:
         with httpx.Client(timeout=TIMEOUT) as c:
-            r = c.post(url, json=body)
+            r = c.post(url, json=body, headers=headers)
             status = r.status_code
             raw_response_preview = r.text[:1000]
             r.raise_for_status()
@@ -372,25 +462,40 @@ def instantly_add_leads(
     _strategy_id: Optional[str] = None,
     _strategy_name: Optional[str] = None,
 ) -> Optional[dict]:
-    """Add leads (contacts with emails) to an existing Instantly campaign."""
+    """Add leads to an existing Instantly campaign via v2 API."""
     if not api_key or not campaign_id or not leads:
         return None
-    url = "https://api.instantly.ai/api/v1/lead/add"
-    body = {"api_key": api_key, "campaign_id": campaign_id, "leads": leads, "skip_if_in_workspace": False}
-    curl = _make_curl("POST", url, body=body)
+    _rl_consume("instantly")
+    url = "https://api.instantly.ai/api/v2/leads"
+    headers = _instantly_headers(api_key)
+    # v2 adds leads one at a time or in bulk; we send each lead individually
+    # but wrapped in a single call to /api/v2/leads with campaign reference
+    results = []
     t0 = time.perf_counter()
     status = None
-    result: Optional[dict] = None
     error_text: Optional[str] = None
     raw_response_preview: Optional[str] = None
     try:
         with httpx.Client(timeout=TIMEOUT) as c:
-            r = c.post(url, json=body)
-            status = r.status_code
-            raw_response_preview = r.text[:1000]
-            r.raise_for_status()
-            result = r.json()
-            return result
+            for lead in leads:
+                lead_body = {
+                    "campaign": campaign_id,
+                    "email": lead.get("email", ""),
+                    "first_name": lead.get("first_name", ""),
+                    "last_name": lead.get("last_name", ""),
+                    "company_name": lead.get("company_name", ""),
+                }
+                if lead.get("personalization"):
+                    lead_body["personalization"] = lead["personalization"]
+                r = c.post(url, json=lead_body, headers=headers)
+                status = r.status_code
+                raw_response_preview = r.text[:1000]
+                if r.status_code in (200, 201):
+                    results.append(r.json())
+                else:
+                    log.warning("instantly_add_leads lead %s returned %d: %s",
+                                lead.get("email"), r.status_code, r.text[:200])
+        return {"total_new_leads": len(results), "leads": results}
     except Exception as e:
         error_text = str(e)
         log.warning("instantly_add_leads failed: %s", e)
@@ -399,8 +504,7 @@ def instantly_add_leads(
         latency_ms = int((time.perf_counter() - t0) * 1000)
         emails = [l.get("email", "") for l in leads[:5]]
         summary_payload: dict = {"campaign_id": campaign_id, "lead_count": len(leads), "emails": emails}
-        if result:
-            summary_payload["added"] = result.get("total_new_leads", len(leads))
+        summary_payload["added"] = len(results)
         if error_text:
             summary_payload["error"] = error_text[:500]
         if raw_response_preview and status and status >= 400:
@@ -412,7 +516,7 @@ def instantly_add_leads(
             request_params={"campaign_id": campaign_id, "lead_count": len(leads)},
             response_status=status,
             latency_ms=latency_ms,
-            curl_command=curl,
+            curl_command=_make_curl("POST", url, headers=headers, body={"campaign": campaign_id, "leads_count": len(leads)}),
             strategy_id=_strategy_id,
             strategy_name=_strategy_name,
             is_live=True,
@@ -427,12 +531,13 @@ def instantly_launch_campaign(
     _strategy_id: Optional[str] = None,
     _strategy_name: Optional[str] = None,
 ) -> Optional[dict]:
-    """Activate/launch an Instantly campaign so it starts sending."""
+    """Activate/launch an Instantly campaign via v2 API so it starts sending."""
     if not api_key or not campaign_id:
         return None
-    url = "https://api.instantly.ai/api/v1/campaign/launch"
-    body = {"api_key": api_key, "campaign_id": campaign_id}
-    curl = _make_curl("POST", url, body=body)
+    _rl_consume("instantly")
+    url = f"https://api.instantly.ai/api/v2/campaigns/{campaign_id}/activate"
+    headers = _instantly_headers(api_key)
+    curl = _make_curl("POST", url, headers=headers)
     t0 = time.perf_counter()
     status = None
     result: Optional[dict] = None
@@ -440,11 +545,11 @@ def instantly_launch_campaign(
     raw_response_preview: Optional[str] = None
     try:
         with httpx.Client(timeout=TIMEOUT) as c:
-            r = c.post(url, json=body)
+            r = c.post(url, headers=headers)
             status = r.status_code
             raw_response_preview = r.text[:1000]
             r.raise_for_status()
-            result = r.json()
+            result = r.json() if r.text.strip() else {"status": "activated"}
             return result
     except Exception as e:
         error_text = str(e)
@@ -481,25 +586,28 @@ def instantly_get_events(
     _strategy_id: Optional[str] = None,
     _strategy_name: Optional[str] = None,
 ) -> Optional[list[dict]]:
-    """Fetch recent engagement events for a campaign."""
+    """Fetch recent campaign analytics/events via Instantly v2 API."""
     if not api_key or not campaign_id:
         return None
     _rl_consume("instantly")
-    url = "https://api.instantly.ai/api/v1/analytics/campaign/events"
-    params = {"api_key": api_key, "campaign_id": campaign_id, "limit": 200}
-    curl = _make_curl("GET", url, params=params)
-    sanitized = _sanitize_params(params)
+    url = f"https://api.instantly.ai/api/v2/campaigns/{campaign_id}/analytics"
+    headers = _instantly_headers(api_key)
+    params = {"limit": 200}
+    curl = _make_curl("GET", url, params=params, headers=headers)
     t0 = time.perf_counter()
     status = None
     event_count = 0
     error_text: Optional[str] = None
     try:
         with httpx.Client(timeout=TIMEOUT) as c:
-            r = c.get(url, params=params)
+            r = c.get(url, params=params, headers=headers)
             status = r.status_code
             r.raise_for_status()
             data = r.json()
+            # v2 analytics may return events in different shapes
             events = data.get("events", []) if isinstance(data, dict) else []
+            if not events and isinstance(data, list):
+                events = data
             event_count = len(events)
             return events
     except Exception as e:
@@ -515,7 +623,7 @@ def instantly_get_events(
             service="instantly",
             method="GET",
             url=url,
-            request_params=sanitized,
+            request_params={"campaign_id": campaign_id, "limit": 200},
             response_status=status,
             latency_ms=latency_ms,
             curl_command=curl,

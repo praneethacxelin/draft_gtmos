@@ -100,16 +100,52 @@ async def run_competitors(db: Session, strategy_id: str) -> list[dict]:
 
 
 async def run_lead_search(db: Session, strategy_id: str, limit: int | None = None) -> dict:
-    """Discover and enrich leads. Apollo/Clay if configured, else AI demo data."""
+    """Discover and enrich leads. Apollo/Clay if configured, else AI demo data.
+
+    Caching: If this strategy already has real (non-demo) contacts in the
+    DB, skip the Apollo API call entirely and return cached data. This
+    prevents burning credits on repeated test runs. To force a re-fetch,
+    delete existing contacts first.
+    """
     strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
     if not strategy:
         return {"error": "Strategy not found"}
 
     limits = fetch_limits.get_limits(db, strategy.user_id or "user_public")
     n_leads = fetch_limits.clamp("leads_per_run", limit, limits)
+    # Hard cap to conserve credits
+    n_leads = min(n_leads, 5)
 
     apollo_key = settings_service.get_key(db, strategy.user_id, "apollo")
     clay_key = settings_service.get_key(db, strategy.user_id, "clay")
+
+    # ---- Caching: skip Apollo if we already have real contacts ----
+    if apollo_key:
+        existing_real = db.query(Contact).filter(
+            Contact.strategy_id == strategy_id,
+            Contact.is_demo == False,
+        ).count()
+        if existing_real >= 5:
+            total_contacts = db.query(Contact).filter(
+                Contact.strategy_id == strategy_id
+            ).count()
+            total_accounts = db.query(Account).filter(
+                Account.strategy_id == strategy_id
+            ).count()
+            return {
+                "accounts_added": 0,
+                "contacts_added": 0,
+                "is_demo": False,
+                "cached": True,
+                "existing_contacts": existing_real,
+                "message": f"Using {existing_real} cached Apollo contacts (total: {total_contacts} contacts, {total_accounts} accounts). Delete existing contacts to re-fetch from Apollo.",
+                "provenance": stamp(
+                    source="apollo",
+                    logic="Skipped Apollo API call — real contacts already cached in the database.",
+                    steps=["Check for existing non-demo contacts", "Found cached data, returning"],
+                    counts={"cached_contacts": existing_real, "cached_accounts": total_accounts},
+                ),
+            }
 
     icp = strategy.icp_json or {}
     titles = []
@@ -121,6 +157,7 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
 
     apollo_results = None
     if apollo_key:
+        # First attempt: strict title filter
         apollo_results = clients.apollo_people_search(
             apollo_key,
             {
@@ -129,6 +166,19 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
             },
             per_page=n_leads,
         )
+        # Fallback: if titles are too restrictive, broaden search
+        if not apollo_results:
+            apollo_results = clients.apollo_people_search(
+                apollo_key,
+                {
+                    "employee_ranges": ["51,200", "201,500", "501,1000"],
+                },
+                per_page=n_leads,
+            )
+
+    # Wipe existing AI demo contacts so they don't pollute the view when discovering new real leads
+    db.query(Contact).filter(Contact.strategy_id == strategy_id, Contact.is_demo == True).delete()
+    db.commit()
 
     # Pre-load existing accounts/contacts to avoid duplicate inserts on re-run
     existing_accounts = (
@@ -249,6 +299,37 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
                 is_demo=True,
             )
             _maybe_add_contact(contact)
+
+    # ---- Inject Inbox Tracker Lead ----
+    tracker_email = "saipraneeth2525@gmail.com"
+    if tracker_email not in existing_emails:
+        tracker_company = "Inbox Tracker Corp"
+        account = new_accounts.get(tracker_company)
+        if not account:
+            account = Account(
+                user_id=strategy.user_id,
+                strategy_id=strategy_id,
+                company_name=tracker_company,
+                domain="gmail.com",
+                industry="Testing",
+                enrichment_json={"source": "inbox_tracker"},
+            )
+            db.add(account)
+            db.flush()
+            new_accounts[tracker_company] = account
+            newly_added_accounts.append(tracker_company)
+        tracker_contact = Contact(
+            user_id=strategy.user_id,
+            account_id=account.id,
+            strategy_id=strategy_id,
+            full_name="Inbox Tracker",
+            title="Inbox Monitor",
+            email=tracker_email,
+            seniority="vp",
+            persona_type="champion",
+            is_demo=False,
+        )
+        _maybe_add_contact(tracker_contact)
 
     for c in new_contacts:
         db.add(c)

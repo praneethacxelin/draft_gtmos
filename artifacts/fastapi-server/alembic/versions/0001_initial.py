@@ -17,7 +17,6 @@ depends_on = None
 
 def upgrade() -> None:
     bind = op.get_bind()
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
     op.execute("DROP TABLE IF EXISTS competitors CASCADE")
 
     # Import lazily so Alembic env can run without app side-effects at import time.
@@ -29,4 +28,3 @@ def downgrade() -> None:
     from app.db import Base
     bind = op.get_bind()
     Base.metadata.drop_all(bind=bind)
-    op.execute("DROP EXTENSION IF EXISTS vector")
