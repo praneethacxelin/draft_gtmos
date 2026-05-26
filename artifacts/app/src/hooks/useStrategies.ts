@@ -267,9 +267,22 @@ export function useLeadSearch() {
       const { id, limit } = typeof vars === "string" ? { id: vars, limit: undefined } : vars;
       return streamSse(withLimit(`/api/strategies/${id}/leads/search`, limit));
     },
-    onSuccess: () => {
+    onSuccess: (result: unknown) => {
       qc.invalidateQueries({ queryKey: ["accounts"] });
       qc.invalidateQueries({ queryKey: ["contacts"] });
+      import("sonner").then(({ toast }) => {
+        const r = result as { accounts_added?: number; contacts_added?: number; cached?: boolean; message?: string } | null;
+        if (r?.message) {
+          toast.info(r.message);
+        } else if (r) {
+          toast.success(`Discovered ${r.contacts_added ?? 0} contacts across ${r.accounts_added ?? 0} accounts`);
+        } else {
+          toast.success("Lead discovery complete");
+        }
+      }).catch(() => {});
+    },
+    onError: (err: Error) => {
+      import("sonner").then(({ toast }) => toast.error(err.message)).catch(() => {});
     },
   });
 }

@@ -15,7 +15,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { TierBadge, ScoreBar, DemoBadge } from "@/components/Pills";
 import { useActiveStrategy } from "@/hooks/useActiveStrategy";
 import { usePrioritizedAccounts } from "@/hooks/useAccounts";
-import { useContacts, useUpdateContact, useRevealContactEmail } from "@/hooks/useContacts";
+import { useContacts, useUpdateContact, useRevealContactEmail, useRevealContactPhone } from "@/hooks/useContacts";
 import { useSignals } from "@/hooks/useSignals";
 import {
   useLeadSearch,
@@ -77,6 +77,7 @@ export function Prospects() {
   const fetchPhones = useFetchContactPhones();
   const updateContact = useUpdateContact();
   const revealEmail = useRevealContactEmail();
+  const revealPhone = useRevealContactPhone();
 
   const [editingContactId, setEditingContactId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<ContactDraft>({
@@ -498,7 +499,7 @@ export function Prospects() {
                               </Button>
                             </div>
                           )}
-                          {c.phone ? (
+                          {c.phone && c.phone !== "Not found" && !c.phone.startsWith("Maybe:") ? (
                             <div className="flex items-center gap-1 text-[11px] text-foreground/80">
                               <Phone className="h-3 w-3 text-emerald-400 shrink-0" />
                               <span>{c.phone}</span>

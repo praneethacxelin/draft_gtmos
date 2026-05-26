@@ -113,8 +113,6 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
 
     limits = fetch_limits.get_limits(db, strategy.user_id or "user_public")
     n_leads = fetch_limits.clamp("leads_per_run", limit, limits)
-    # Hard cap to conserve credits
-    n_leads = min(n_leads, 5)
 
     apollo_key = settings_service.get_key(db, strategy.user_id, "apollo")
     clay_key = settings_service.get_key(db, strategy.user_id, "clay")
@@ -125,7 +123,8 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
             Contact.strategy_id == strategy_id,
             Contact.is_demo == False,
         ).count()
-        if existing_real >= 5:
+        # Only return cache if we already have as many leads as requested
+        if existing_real >= n_leads:
             total_contacts = db.query(Contact).filter(
                 Contact.strategy_id == strategy_id
             ).count()
@@ -138,7 +137,7 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
                 "is_demo": False,
                 "cached": True,
                 "existing_contacts": existing_real,
-                "message": f"Using {existing_real} cached Apollo contacts (total: {total_contacts} contacts, {total_accounts} accounts). Delete existing contacts to re-fetch from Apollo.",
+                "message": f"Using {existing_real} cached Apollo contacts (total: {total_contacts} contacts, {total_accounts} accounts). Delete existing contacts or increase the limit to fetch more.",
                 "provenance": stamp(
                     source="apollo",
                     logic="Skipped Apollo API call — real contacts already cached in the database.",

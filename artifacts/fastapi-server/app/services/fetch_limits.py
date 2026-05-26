@@ -98,7 +98,5 @@ def clamp(name: str, requested: int | None, limits: dict[str, int]) -> int:
     base = limits.get(name, DEFAULTS.get(name, 5))
     if requested is None:
         return base
-    try:
-        return max(1, min(int(requested), int(base)))
-    except (TypeError, ValueError):
-        return base
+    # Allow the requested limit up to the absolute maximum allowed
+    return min(max(1, requested), MAXIMUMS.get(name, base))

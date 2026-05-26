@@ -71,7 +71,20 @@ export function useRevealContactEmail() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) =>
-      apiFetch<Contact>(`/api/contacts/${id}/reveal`, {
+      apiFetch<Contact>(`/api/contacts/${id}/reveal?type=email`, {
+        method: "POST",
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["contacts"] });
+    },
+  });
+}
+
+export function useRevealContactPhone() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<Contact>(`/api/contacts/${id}/reveal?type=phone`, {
         method: "POST",
       }),
     onSuccess: () => {
