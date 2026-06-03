@@ -30,8 +30,9 @@ import { RetriggerBar, type RetriggerAction } from "@/components/RetriggerBar";
 interface StepDraft {
   subject: string;
   body: string;
-  channel: string;
+  channel: "email" | "linkedin" | "call";
   wait_days: number;
+  send_at?: string;
 }
 
 export function Outreach() {
@@ -57,6 +58,7 @@ export function Outreach() {
     body: "",
     channel: "email",
     wait_days: 1,
+    send_at: undefined,
   });
   const [stepDirty, setStepDirty] = useState(false);
 
@@ -91,11 +93,22 @@ export function Outreach() {
   function startEditStep(stepId: string) {
     const step = sequence?.steps.find((s) => s.id === stepId);
     if (!step) return;
+    
+    // Convert to datetime-local format (YYYY-MM-DDThh:mm)
+    let send_at_local = undefined;
+    if (step.send_at) {
+      const dt = new Date(step.send_at);
+      if (!isNaN(dt.getTime())) {
+        send_at_local = new Date(dt.getTime() - (dt.getTimezoneOffset() * 60000)).toISOString().slice(0, 16);
+      }
+    }
+
     setEditDraft({
       subject: step.subject ?? "",
       body: step.body ?? "",
-      channel: step.channel,
+      channel: step.channel as "email" | "linkedin" | "call",
       wait_days: step.wait_days,
+      send_at: send_at_local,
     });
     setEditingStepId(stepId);
   }
@@ -103,7 +116,12 @@ export function Outreach() {
   async function saveStep() {
     if (!editingStepId) return;
     try {
-      await patchStep.mutateAsync({ id: editingStepId, data: editDraft });
+      const dataToSave = { ...editDraft };
+      // Convert datetime-local back to ISO UTC string if set
+      if (dataToSave.send_at) {
+        dataToSave.send_at = new Date(dataToSave.send_at).toISOString();
+      }
+      await patchStep.mutateAsync({ id: editingStepId, data: dataToSave });
       setEditingStepId(null);
       setStepDirty(true);
     } catch (err) {
@@ -134,6 +152,29 @@ export function Outreach() {
     );
   }
 
+  const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const presetTzs = ["UTC", "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "Europe/London", "Asia/Kolkata"];
+  const [schedule, setSchedule] = useState({
+    timezone: browserTz,
+    time_from: "09:00",
+    time_to: "17:00",
+    days: { "0": false, "1": true, "2": true, "3": true, "4": true, "5": true, "6": false }
+  });
+
+  const toggleDay = (d: string) => {
+    setSchedule(s => ({ ...s, days: { ...s.days, [d]: !s.days[d as keyof typeof s.days] } }));
+  };
+
+  const daysMap = [
+    { k: "1", label: "M" },
+    { k: "2", label: "T" },
+    { k: "3", label: "W" },
+    { k: "4", label: "T" },
+    { k: "5", label: "F" },
+    { k: "6", label: "S" },
+    { k: "0", label: "S" },
+  ];
+
   return (
     <>
       <PageHeader
@@ -150,66 +191,111 @@ export function Outreach() {
         />
       )}
 
-      {/* Test-mode email banner */}
-      <div className="mb-1 flex flex-wrap items-center gap-3 rounded border border-amber-500/30 bg-amber-500/5 px-4 py-2.5">
-        <FlaskConical className="h-4 w-4 shrink-0 text-amber-400" />
-        <span className="text-xs font-semibold text-amber-300">Test mode email</span>
-        <span className="text-[11px] text-muted-foreground">
-          Instantly sends to this address instead of the contact's email — useful for end-to-end testing.
-        </span>
-        <div className="ml-auto flex items-center gap-2">
-          {editingTestEmail ? (
-            <>
-              <Input
-                value={testEmailDraft}
-                onChange={(e) => setTestEmailDraft(e.target.value)}
-                placeholder="you@yourcompany.com"
-                className="h-7 w-56 text-xs"
-                autoFocus
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") saveTestEmail();
-                  if (e.key === "Escape") setEditingTestEmail(false);
-                }}
-              />
-              <Button size="sm" className="h-7 gap-1 text-xs" onClick={saveTestEmail}>
-                <Check className="h-3 w-3" /> Save
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 text-xs"
-                onClick={() => setEditingTestEmail(false)}
-              >
-                Cancel
-              </Button>
-            </>
-          ) : (
-            <>
-              {testEmail ? (
-                <span className="rounded bg-amber-500/15 px-2 py-0.5 font-mono text-xs text-amber-300">
-                  {testEmail}
-                </span>
-              ) : (
-                <span className="text-xs italic text-muted-foreground">not set</span>
-              )}
-              <button
-                onClick={openTestEmailEdit}
-                className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                title="Edit test email"
-              >
-                <Pencil className="h-3.5 w-3.5" />
-              </button>
-              {testEmail && (
-                <button
-                  onClick={clearTestEmail}
-                  className="rounded p-1 text-muted-foreground hover:text-destructive"
-                  title="Clear test email"
-                >
-                  <X className="h-3.5 w-3.5" />
+      {/* Campaign Settings banner */}
+      <div className="mb-4 rounded border border-border bg-card p-4 space-y-4">
+        <div className="flex items-center gap-2">
+          <FlaskConical className="h-4 w-4 shrink-0 text-amber-400" />
+          <span className="text-sm font-semibold">Launch Settings</span>
+        </div>
+        
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
+          <div className="space-y-2">
+            <Label className="text-xs text-muted-foreground">Test Email (Optional)</Label>
+            {editingTestEmail ? (
+              <div className="flex items-center gap-2">
+                <Input
+                  value={testEmailDraft}
+                  onChange={(e) => setTestEmailDraft(e.target.value)}
+                  placeholder="you@yourcompany.com"
+                  className="h-8 text-xs"
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") saveTestEmail();
+                    if (e.key === "Escape") setEditingTestEmail(false);
+                  }}
+                />
+                <Button size="sm" className="h-8 px-2" onClick={saveTestEmail}>
+                  <Check className="h-4 w-4" />
+                </Button>
+                <Button size="sm" variant="ghost" className="h-8 px-2" onClick={() => setEditingTestEmail(false)}>
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 h-8">
+                {testEmail ? (
+                  <span className="rounded bg-amber-500/15 px-2 py-1 font-mono text-xs text-amber-500">
+                    {testEmail}
+                  </span>
+                ) : (
+                  <span className="text-xs italic text-muted-foreground">Live sending mode</span>
+                )}
+                <button onClick={openTestEmailEdit} className="text-muted-foreground hover:text-foreground">
+                  <Pencil className="h-3.5 w-3.5" />
                 </button>
-              )}
-            </>
-          )}
+                {testEmail && (
+                  <button onClick={clearTestEmail} className="text-muted-foreground hover:text-destructive">
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs text-muted-foreground">Timezone</Label>
+            <Select value={schedule.timezone} onValueChange={(v) => setSchedule(s => ({ ...s, timezone: v }))}>
+              <SelectTrigger className="h-8 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {presetTzs.map(tz => (
+                  <SelectItem key={tz} value={tz}>{tz}</SelectItem>
+                ))}
+                {!presetTzs.includes(browserTz) && (
+                  <SelectItem value={browserTz}>{browserTz} (Local)</SelectItem>
+                )}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs text-muted-foreground">Sending Window</Label>
+            <div className="flex items-center gap-2">
+              <Input 
+                type="time" 
+                value={schedule.time_from} 
+                onChange={(e) => setSchedule(s => ({ ...s, time_from: e.target.value }))}
+                className="h-8 text-xs w-[100px]" 
+              />
+              <span className="text-muted-foreground text-xs">to</span>
+              <Input 
+                type="time" 
+                value={schedule.time_to} 
+                onChange={(e) => setSchedule(s => ({ ...s, time_to: e.target.value }))}
+                className="h-8 text-xs w-[100px]" 
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-xs text-muted-foreground">Active Days</Label>
+            <div className="flex items-center gap-1">
+              {daysMap.map(d => (
+                <button
+                  key={d.k}
+                  onClick={() => toggleDay(d.k)}
+                  className={`h-8 w-8 rounded text-xs font-medium transition-colors ${
+                    schedule.days[d.k as keyof typeof schedule.days]
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted text-muted-foreground hover:bg-muted/80"
+                  }`}
+                >
+                  {d.label}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -308,6 +394,7 @@ export function Outreach() {
                     launch.mutate({
                       sequenceId: sequence.id,
                       testEmail: testEmail || undefined,
+                      schedule: schedule,
                     })
                   }
                   data-testid="button-launch"
@@ -440,13 +527,13 @@ export function Outreach() {
 
                   {editingStepId === s.id ? (
                     <div className="space-y-3 border-t border-border pt-3">
-                      <div className="grid grid-cols-2 gap-3">
+                      <div className="grid grid-cols-3 gap-3">
                         <div>
                           <Label className="text-xs">Channel</Label>
                           <Select
                             value={editDraft.channel}
                             onValueChange={(v) =>
-                              setEditDraft({ ...editDraft, channel: v })
+                              setEditDraft({ ...editDraft, channel: v as "email" | "linkedin" | "call" })
                             }
                           >
                             <SelectTrigger className="h-8 text-xs">
@@ -473,6 +560,11 @@ export function Outreach() {
                             }
                             className="h-8 text-xs"
                           />
+                        </div>
+                        <div className="col-span-1 flex items-end">
+                          <div className="rounded-md bg-muted/50 border border-border px-3 py-1.5 text-[10px] text-muted-foreground leading-snug">
+                            ⏰ Sending window is set at campaign level via Instantly.ai (e.g. 9am–5pm weekdays). Individual step timing uses the delay above.
+                          </div>
                         </div>
                       </div>
                       {editDraft.channel !== "call" && (

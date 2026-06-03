@@ -5,7 +5,7 @@ from typing import AsyncIterator
 from sqlalchemy.orm import Session
 from app.db import Strategy, Account, Contact, Signal, Competitor, PatternCluster, IcpEmbedding, LeadScore
 from app.llm import chat_json, deterministic_embedding, MODEL_NAME
-from app.services import settings_service, clients, fetch_limits
+from app.services import settings_service, clients, fetch_limits, audit_service
 from app.provenance import stamp
 
 
@@ -20,24 +20,44 @@ async def run_market_sizing(db: Session, strategy_id: str, limit: int | None = N
     serp_key = settings_service.get_key(db, strategy.user_id, "serpapi")
     serp_context = ""
     serp_count = 0
+    serp_query = None
+    serp_sources = []  # Store source references for the UI
     if serp_key and strategy.naics_json:
         first_segment = (strategy.naics_json.get("segments") or [{}])[0]
         seg_name = first_segment.get("name", strategy.target_market or "market")
-        results = clients.serpapi_search(serp_key, f"{seg_name} TAM market size 2025", num=n_results)
+        serp_query = f"{seg_name} TAM market size 2026"
+        results = clients.serpapi_search(
+            serp_key, 
+            serp_query, 
+            num=n_results, 
+            _strategy_id=strategy_id, 
+            _strategy_name=strategy.product_name
+        )
         if results:
             serp_count = len(results)
+            serp_sources = [
+                {
+                    "title": r.get("title", ""),
+                    "link": r.get("link", ""),
+                    "snippet": r.get("snippet", ""),
+                    "verified": r.get("verified", False),
+                }
+                for r in results
+            ]
             serp_context = " Recent search snippets: " + " | ".join(
                 f"{r['title']}: {r.get('snippet', '')}" for r in results
             )
 
-    sizing = await chat_json(
+    sizing_prompt = (
         f"Estimate TAM/SAM/SOM for product '{strategy.product_name}' targeting "
         f"{strategy.target_market or 'businesses'}.{serp_context} Return JSON with "
         "keys: tam {value_usd, label}, sam {value_usd, label}, som {value_usd, label}, "
         "methodology, confidence 'low'|'medium'|'high', uses_live_data (bool)."
     )
+    sizing = await chat_json(sizing_prompt)
     if isinstance(sizing, dict):
         sizing["uses_live_data"] = bool(serp_key)
+        sizing["sources"] = serp_sources  # Attach references for UI
         sizing["_provenance"] = stamp(
             source="serpapi" if serp_key else "ai_generated",
             logic=(
@@ -57,6 +77,23 @@ async def run_market_sizing(db: Session, strategy_id: str, limit: int | None = N
         )
     strategy.tam_sam_som_json = sizing
     db.commit()
+    
+    audit_service.log_pipeline_event(
+        stage="market_sizing",
+        service="s2_signals",
+        strategy_id=strategy_id,
+        strategy_name=strategy.product_name,
+        inputs={
+            "serp_query": serp_query,
+            "serp_results_count": serp_count,
+            "target_market": strategy.target_market,
+            "product_name": strategy.product_name,
+        },
+        outputs=sizing,
+        prompt=sizing_prompt,
+        decision="Using SerpAPI snippets to ground sizing estimates" if serp_key else "Falling back to LLM-only sizing due to missing SerpAPI key",
+        summary=f"S2 → Market Sizing: Estimated TAM/SAM/SOM",
+    )
     return sizing
 
 
@@ -66,21 +103,51 @@ async def run_competitors(db: Session, strategy_id: str) -> list[dict]:
         return []
 
     serp_key = settings_service.get_key(db, strategy.user_id, "serpapi")
-    competitors = await chat_json(
-        f"For product '{strategy.product_name}': {strategy.description}. "
-        "Identify 4 likely competitors. Return JSON with key 'competitors' = array of "
+
+    # Step 1: Search SerpAPI for real competitors BEFORE asking LLM
+    competitor_context = ""
+    serp_queries = []
+    if serp_key:
+        comp_query = f"{strategy.product_name} competitors alternatives 2026"
+        serp_queries.append(comp_query)
+        comp_results = clients.serpapi_search(
+            serp_key,
+            comp_query,
+            num=5,
+            _strategy_id=strategy_id,
+            _strategy_name=strategy.product_name,
+        )
+        if comp_results:
+            competitor_context = " Recent search results about competitors: " + " | ".join(
+                f"{r.get('title', '')}: {r.get('snippet', '')}" for r in comp_results
+            )
+
+    # Step 2: Ask LLM with real search context injected
+    competitors_prompt = (
+        f"For product '{strategy.product_name}': {strategy.description}."
+        f"{competitor_context}"
+        " Identify 4 likely competitors. Return JSON with key 'competitors' = array of "
         "{name, website, positioning, features (array), pricing_info, "
         "weaknesses (array), g2_rating (1.0-5.0)}."
     )
+    competitors = await chat_json(competitors_prompt)
     items = competitors.get("competitors", []) if isinstance(competitors, dict) else []
 
-    # Replace existing
     db.query(Competitor).filter(Competitor.strategy_id == strategy_id).delete()
     out = []
+    serp_queries = []
     for c in items:
         # Optionally enrich with SerpAPI news
         if serp_key:
-            news = clients.serpapi_search(serp_key, f"{c.get('name')} latest news", num=2)
+            query = f"{c.get('name')} latest news"
+            serp_queries.append(query)
+            news = clients.serpapi_search(
+                serp_key, 
+                query, 
+                num=2, 
+                _strategy_id=strategy_id, 
+                _strategy_name=strategy.product_name
+            )
             if news:
                 c["recent_news"] = news
         comp = Competitor(
@@ -96,6 +163,21 @@ async def run_competitors(db: Session, strategy_id: str) -> list[dict]:
         db.add(comp)
         out.append(c)
     db.commit()
+
+    audit_service.log_pipeline_event(
+        stage="competitors",
+        service="s2_signals",
+        strategy_id=strategy_id,
+        strategy_name=strategy.product_name,
+        inputs={
+            "product": strategy.product_name,
+            "serp_queries": serp_queries if serp_key else None
+        },
+        outputs={"competitors": out},
+        prompt=competitors_prompt,
+        decision="Enriched AI-generated competitors with live SerpAPI news" if serp_key else "AI-generated competitors without live enrichment",
+        summary=f"S2 → Competitor Analysis: Found {len(out)} competitors",
+    )
     return out
 
 
@@ -119,30 +201,33 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
 
     # ---- Caching: skip Apollo if we already have real contacts ----
     if apollo_key:
-        existing_real = db.query(Contact).filter(
-            Contact.strategy_id == strategy_id,
-            Contact.is_demo == False,
-        ).count()
-        # Only return cache if we already have as many leads as requested
-        if existing_real >= n_leads:
-            total_contacts = db.query(Contact).filter(
-                Contact.strategy_id == strategy_id
-            ).count()
-            total_accounts = db.query(Account).filter(
-                Account.strategy_id == strategy_id
-            ).count()
+        # Check if we already have leads to save Apollo credits
+        existing_contacts = db.query(Contact).filter(Contact.strategy_id == strategy_id, Contact.is_demo == False).count()
+        if existing_contacts > 0 and (n_leads is None or existing_contacts >= n_leads):
+            # We already have enough real contacts. Do not spend Apollo credits.
+            audit_service.log_pipeline_event(
+                stage="lead_search",
+                service="s2_signals",
+                strategy_id=strategy_id,
+                strategy_name=strategy.product_name,
+                inputs={"limit": n_leads, "existing_contacts": existing_contacts},
+                outputs={"cached_contacts_used": existing_contacts},
+                decision=f"Skipped Apollo search - already have {existing_contacts} cached contacts",
+                summary="S2 → Lead Discovery: Used cached contacts"
+            )
+            total_accounts = db.query(Account).filter(Account.strategy_id == strategy_id).count()
             return {
                 "accounts_added": 0,
                 "contacts_added": 0,
                 "is_demo": False,
                 "cached": True,
-                "existing_contacts": existing_real,
-                "message": f"Using {existing_real} cached Apollo contacts (total: {total_contacts} contacts, {total_accounts} accounts). Delete existing contacts or increase the limit to fetch more.",
+                "existing_contacts": existing_contacts,
+                "message": f"Using {existing_contacts} cached Apollo contacts (total: {existing_contacts} contacts, {total_accounts} accounts). Delete existing contacts or increase the limit to fetch more.",
                 "provenance": stamp(
                     source="apollo",
                     logic="Skipped Apollo API call — real contacts already cached in the database.",
                     steps=["Check for existing non-demo contacts", "Found cached data, returning"],
-                    counts={"cached_contacts": existing_real, "cached_accounts": total_accounts},
+                    counts={"cached_contacts": existing_contacts, "cached_accounts": total_accounts},
                 ),
             }
 
@@ -348,12 +433,28 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
             strategy_id=strategy_id,
             strategy_name=strategy.product_name,
             is_live=False,
-            response_summary={
-                "info": "Apollo people search failed — fell back to AI-generated demo contacts",
-                "contacts_added": len(new_contacts),
-            },
-            summary="Apollo fallback: people search failed → generated AI demo contacts",
+            summary="S2 → Lead Discovery: Demo mode fallback triggered because Apollo returned no results or API key is missing",
         )
+
+    audit_service.log_pipeline_event(
+        stage="lead_search",
+        service="s2_signals",
+        strategy_id=strategy_id,
+        strategy_name=strategy.product_name,
+        inputs={
+            "requested_limit": n_leads,
+            "apollo_key_present": bool(apollo_key),
+            "search_titles": titles or ["VP of Sales", "Head of Marketing"],
+            "icp": icp,
+        },
+        outputs={
+            "contacts_added": len(new_contacts),
+            "accounts_added": len(newly_added_accounts),
+            "is_demo": is_demo,
+        },
+        decision="Apollo search successful" if not is_demo else "Failed over to AI generated demo leads",
+        summary=f"S2 → Lead Discovery: Found {len(new_contacts)} new leads ({'Live' if not is_demo else 'Demo'})",
+    )
 
     # Auto-trigger scoring
     score_leads(db, strategy_id)
@@ -410,6 +511,7 @@ async def run_signals(db: Session, strategy_id: str, limit: int | None = None) -
     ).delete()
 
     added = 0
+    serp_queries = []
     if serp_key:
         # Hard ceiling: at most ``n_per_account`` signals are persisted per
         # account per run, regardless of how many query types we issue. We
@@ -423,32 +525,39 @@ async def run_signals(db: Session, strategy_id: str, limit: int | None = None) -
         for acct in accounts:
             collected: list[tuple[str, dict]] = []
             for kind, query_tpl in query_kinds:
+                query = query_tpl.format(c=acct.company_name)
+                serp_queries.append(query)
                 results = clients.serpapi_search(
-                    serp_key, query_tpl.format(c=acct.company_name), num=per_query_budget
+                    serp_key, 
+                    query, 
+                    num=per_query_budget,
+                    _strategy_id=strategy_id,
+                    _strategy_name=strategy.product_name
                 )
                 for r in results or []:
                     collected.append((kind, r))
             for kind, r in collected[:n_per_account]:
+                strength = {"funding": 0.9, "hiring": 0.85, "tech": 0.75, "news": 0.6}.get(kind, 0.7)
                 db.add(Signal(
                     strategy_id=strategy_id,
                     account_id=acct.id,
                     signal_type=kind,
                     source="serpapi",
                     summary=(r.get("title") or "")[:240],
-                    strength_score=0.7,
+                    strength_score=strength,
                     raw_data_json=r,
                 ))
                 added += 1
     else:
         # AI demo signals
         company_names = [a.company_name for a in accounts]
-        demo = await chat_json(
+        signals_prompt = (
             f"Generate realistic-but-synthetic buying signals for these companies: "
             f"{', '.join(company_names[:8])}. Return JSON with key 'signals' = array of "
             "{company_name, signal_type 'funding'|'hiring'|'tech'|'news', summary, strength 0-1}. "
-            "Generate 12 signals total spread across companies.",
-            max_tokens=2000,
+            "Generate 12 signals total spread across companies."
         )
+        demo = await chat_json(signals_prompt, max_tokens=2000)
         by_name = {a.company_name: a for a in accounts}
         for s in (demo.get("signals") or []) if isinstance(demo, dict) else []:
             acct = by_name.get(s.get("company_name"))
@@ -464,6 +573,24 @@ async def run_signals(db: Session, strategy_id: str, limit: int | None = None) -
             ))
             added += 1
     db.commit()
+
+    audit_service.log_pipeline_event(
+        stage="signals",
+        service="s2_signals",
+        strategy_id=strategy_id,
+        strategy_name=strategy.product_name,
+        inputs={
+            "accounts_scanned": len(accounts),
+            "serpapi_key_present": bool(serp_key),
+            "limit_per_account": n_per_account,
+            "serp_queries": serp_queries if serp_key else None
+        },
+        outputs={"signals_added": added},
+        prompt=signals_prompt if not serp_key else None,
+        decision="Live SerpAPI search used" if serp_key else "Falling back to LLM synthetic signal generation",
+        summary=f"S2 → Signals Detected: Found {added} buying signals across {len(accounts)} accounts",
+    )
+
     score_leads(db, strategy_id)
     return {
         "signals_added": added,
@@ -616,18 +743,10 @@ def score_leads(db: Session, strategy_id: str) -> dict:
     for s in db.query(Signal).filter(Signal.strategy_id == strategy_id).all():
         signals_by_account.setdefault(s.account_id, []).append(s)
 
-    # pgvector similarity boost: compare strategy's own ICP embedding against
-    # any historical "hot" patterns we've stored.
-    strategy_embedding = (
-        db.query(IcpEmbedding).filter(IcpEmbedding.strategy_id == strategy_id).first()
-    )
-    pattern_boost = 0.0
-    if strategy_embedding is not None:
-        # Count clusters already learned for this strategy (the pattern recognition step)
-        cluster_count = db.query(PatternCluster).filter(
-            PatternCluster.strategy_id == strategy_id
-        ).count()
-        pattern_boost = min(cluster_count * 5.0, 15.0)
+    # Fetch clusters to apply account-specific pattern boost
+    clusters = db.query(PatternCluster).filter(
+        PatternCluster.strategy_id == strategy_id
+    ).all()
 
     for c in contacts:
         # Simple ICP fit heuristic: presence of title and seniority counts
@@ -643,6 +762,16 @@ def score_leads(db: Session, strategy_id: str) -> dict:
         sigs = signals_by_account.get(c.account_id, [])
         sig_score = min(sum((s.strength_score or 0) * 25 for s in sigs), 100)
         c.signal_score = sig_score
+
+        # Calculate account-specific pattern boost
+        account_signal_types = set(s.signal_type for s in sigs)
+        matched_clusters = 0
+        for cluster in clusters:
+            required_signals = set(cluster.signal_combination_json or [])
+            if required_signals and required_signals.issubset(account_signal_types):
+                matched_clusters += 1
+        
+        pattern_boost = min(matched_clusters * 8.0, 20.0)
 
         # engagement_score is updated by M3 separately
         total = (c.icp_fit_score * 0.30) + (sig_score * 0.40) + (c.engagement_score * 0.30) + pattern_boost
@@ -677,6 +806,19 @@ def score_leads(db: Session, strategy_id: str) -> dict:
         acct.tier = min(contact_tiers) if contact_tiers else 3
 
     db.commit()
+
+    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    audit_service.log_pipeline_event(
+        stage="scoring",
+        service="s2_signals",
+        strategy_id=strategy_id,
+        strategy_name=strategy.product_name if strategy else None,
+        inputs={"contacts_scored": len(contacts)},
+        outputs={"pattern_boost_applied": pattern_boost},
+        decision="Scoring heuristic: (ICP Fit * 0.30) + (Signals * 0.40) + (Engagement * 0.30) + Pattern Boost",
+        summary=f"S2 → Scoring: Evaluated {len(contacts)} leads",
+    )
+
     return {"scored": len(contacts)}
 
 
@@ -684,6 +826,17 @@ def recognize_patterns(db: Session, strategy_id: str) -> dict:
     """Cluster signals into named patterns and store as pattern_clusters."""
     signals = db.query(Signal).filter(Signal.strategy_id == strategy_id).all()
     if not signals:
+        strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+        audit_service.log_pipeline_event(
+            stage="patterns",
+            service="s2_signals",
+            strategy_id=strategy_id,
+            strategy_name=strategy.product_name if strategy else None,
+            inputs={"signals_found": 0},
+            outputs={"clusters": 0},
+            decision="No signals found — run 'Run Signals' first to gather buying signals from SerpAPI",
+            summary="S2 → Pattern Recognition: Skipped (no signals)",
+        )
         return {"clusters": 0}
 
     # Group by account, look for co-occurrence
@@ -694,12 +847,13 @@ def recognize_patterns(db: Session, strategy_id: str) -> dict:
 
     # Count combos
     from collections import Counter
-    combos = Counter(tuple(sorted(types)) for types in by_account.values() if len(types) >= 2)
+    combos = Counter(tuple(sorted(types)) for types in by_account.values() if len(types) >= 1)
 
     db.query(PatternCluster).filter(PatternCluster.strategy_id == strategy_id).delete()
     created = 0
+    cluster_details = []
     for combo, count in combos.most_common(5):
-        name = " + ".join(combo) + " co-occurrence"
+        name = " + ".join(combo) + (" co-occurrence" if len(combo) > 1 else " signal trend")
         embedding = deterministic_embedding(name)
         db.add(PatternCluster(
             strategy_id=strategy_id,
@@ -708,7 +862,34 @@ def recognize_patterns(db: Session, strategy_id: str) -> dict:
             conversion_rate=min(count / max(len(by_account), 1), 1.0),
             cluster_embedding=embedding,
         ))
+        cluster_details.append({
+            "pattern": name,
+            "signals": list(combo),
+            "accounts_matching": count,
+            "conversion_rate": round(min(count / max(len(by_account), 1), 1.0), 2),
+        })
         created += 1
     db.commit()
+
+    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    audit_service.log_pipeline_event(
+        stage="patterns",
+        service="s2_signals",
+        strategy_id=strategy_id,
+        strategy_name=strategy.product_name if strategy else None,
+        inputs={
+            "total_signals": len(signals),
+            "accounts_with_signals": len(by_account),
+            "unique_signal_types": list(set(s.signal_type for s in signals)),
+        },
+        outputs={
+            "clusters_created": created,
+            "clusters": cluster_details,
+        },
+        decision=f"Identified {created} signal pattern(s) across {len(by_account)} accounts, then re-scored all leads with pattern boost",
+        summary=f"S2 → Pattern Recognition: Found {created} pattern(s) across {len(by_account)} accounts",
+    )
+
     score_leads(db, strategy_id)
-    return {"clusters": created}
+    return {"clusters": created, "details": cluster_details}
+

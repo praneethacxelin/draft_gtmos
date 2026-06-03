@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.db import Strategy, IcpEmbedding
 from app.llm import chat_json, deterministic_embedding, MODEL_NAME
 from app.provenance import stamp
+from app.services import audit_service
 from app.services.rate_limit import RateLimitExceeded
 
 
@@ -87,7 +88,8 @@ def _make_stage(
 ) -> Callable[[S1State], Awaitable[S1State]]:
     async def node(state: S1State) -> S1State:
         await _emit(state, "stage_start", {"stage": stage})
-        result = await chat_json(prompt_fn(state), max_tokens=1500)
+        prompt_text = prompt_fn(state)
+        result = await chat_json(prompt_text, max_tokens=1500)
         if isinstance(result, dict) and "_error" not in result:
             logic, steps = _STAGE_LOGIC.get(
                 stage,
@@ -100,6 +102,41 @@ def _make_stage(
                 model=MODEL_NAME,
             )
         _persist(state["db"], state["strategy_id"], field, result)
+
+        # --- Audit: log every S1 stage with full prompt, inputs, and outputs ---
+        prev_stage = state.get("last_stage")
+        prev_output_key = prev_stage if prev_stage else None
+        stage_inputs = {}
+        if prev_output_key and prev_output_key in state:
+            prev_data = state[prev_output_key]
+            if isinstance(prev_data, dict):
+                stage_inputs[f"{prev_output_key}_keys"] = list(prev_data.keys())
+            else:
+                stage_inputs[prev_output_key] = str(prev_data)[:500]
+        elif stage == "icp":
+            strategy = state["db"].query(Strategy).filter(Strategy.id == state["strategy_id"]).first()
+            if strategy:
+                stage_inputs["brief"] = {
+                    "product_name": strategy.product_name,
+                    "description": strategy.description,
+                    "target_market": strategy.target_market,
+                    "pain_points_raw": strategy.pain_points_raw,
+                }
+            else:
+                stage_inputs["brief"] = state.get("brief", "")
+
+        audit_service.log_pipeline_event(
+            stage=stage,
+            service="s1_strategy",
+            strategy_id=state["strategy_id"],
+            strategy_name=state["db"].query(Strategy).filter(Strategy.id == state["strategy_id"]).first().product_name if state.get("strategy_id") else None,
+            inputs=stage_inputs,
+            outputs=result,
+            prompt=prompt_text,
+            decision=_STAGE_LOGIC.get(stage, ("", []))[0] if stage in _STAGE_LOGIC else None,
+            summary=f"S1 → {stage.replace('_', ' ').title()}: Generated from {'brief' if stage == 'icp' else (prev_stage or 'prior stage')}",
+        )
+
         await _emit(state, "stage_complete", {"stage": stage, "result": result})
         return {**state, stage: result, "last_stage": stage}
     return node
@@ -177,6 +214,18 @@ async def _embed_node(state: S1State) -> S1State:
     if strat:
         strat.status = "error" if failed else "ready"
     db.commit()
+
+    # --- Audit: log pipeline completion ---
+    audit_service.log_pipeline_event(
+        stage="complete",
+        service="s1_strategy",
+        strategy_id=strategy_id,
+        strategy_name=strat.product_name if strat else None,
+        inputs={"stages_completed": [k for k in stage_keys if k not in failed], "stages_failed": failed},
+        outputs={"status": "error" if failed else "ready", "embedding_dims": len(embedding)},
+        summary=f"S1 → Complete: {'Error in ' + ', '.join(failed) if failed else 'All 6 stages finished, ICP embedded'}",
+    )
+
     if failed:
         await _emit(state, "error", {"failed_stages": failed})
     return state
@@ -219,15 +268,36 @@ async def stream_s1(db: Session, strategy_id: str) -> AsyncIterator[dict]:
     strategy.status = "generating"
     db.commit()
 
+    brief_text = (
+        f"Product: {strategy.product_name}\n"
+        f"Description: {strategy.description}\n"
+        f"Target Market: {strategy.target_market or 'unspecified'}\n"
+        f"Pain Points: {strategy.pain_points_raw or 'unspecified'}"
+    )
+
+    # --- Audit: log the user's raw input that kicks off the pipeline ---
+    audit_service.log_pipeline_event(
+        stage="user_input",
+        service="s1_strategy",
+        strategy_id=strategy_id,
+        strategy_name=strategy.product_name,
+        inputs={
+            "brief": {
+                "product_name": strategy.product_name,
+                "description": strategy.description,
+                "target_market": strategy.target_market,
+                "pain_points_raw": strategy.pain_points_raw,
+            }
+        },
+        outputs={"brief_text": brief_text},
+        actor="user",
+        summary=f'S1 → User Input: "{strategy.product_name}" brief assembled',
+    )
+
     queue: asyncio.Queue = asyncio.Queue()
     initial: S1State = {
         "strategy_id": strategy_id,
-        "brief": (
-            f"Product: {strategy.product_name}\n"
-            f"Description: {strategy.description}\n"
-            f"Target Market: {strategy.target_market or 'unspecified'}\n"
-            f"Pain Points: {strategy.pain_points_raw or 'unspecified'}"
-        ),
+        "brief": brief_text,
         "db": db,
         "queue": queue,
     }

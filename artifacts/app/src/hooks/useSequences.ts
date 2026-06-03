@@ -73,11 +73,14 @@ export function useDeliverabilityCheck() {
 export function useLaunchSequence() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ sequenceId, testEmail }: { sequenceId: string; testEmail?: string }) =>
+    mutationFn: ({ sequenceId, testEmail, schedule }: { sequenceId: string; testEmail?: string; schedule?: Record<string, any> }) =>
       streamSse(
         `/api/sequences/${sequenceId}/launch`,
         undefined,
-        testEmail ? { test_email: testEmail } : undefined,
+        {
+          ...(testEmail ? { test_email: testEmail } : {}),
+          ...(schedule ? { schedule } : {})
+        }
       ),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["sequence"] }),
   });
@@ -91,7 +94,7 @@ export function useUpdateSequenceStep() {
       data,
     }: {
       id: string;
-      data: Partial<Pick<SequenceStep, "subject" | "body" | "channel" | "wait_days">>;
+      data: Partial<Pick<SequenceStep, "subject" | "body" | "channel" | "wait_days" | "send_at">>;
     }) =>
       apiFetch(`/api/sequences/steps/${id}`, {
         method: "PATCH",

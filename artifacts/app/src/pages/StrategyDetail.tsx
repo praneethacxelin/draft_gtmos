@@ -21,8 +21,6 @@ import {
   useMarketSizing,
   useRunCompetitors,
   useCompetitors,
-  usePatterns,
-  useRunPatterns,
   useScoreLeads,
   useUpdateStrategy,
   useUpdateStrategySection,
@@ -62,8 +60,8 @@ const S1_STAGES = [
   { key: "problems", label: "Problems" },
   { key: "naics", label: "NAICS" },
   { key: "stakeholders", label: "Stakeholders" },
-  { key: "use-cases", label: "Use Cases" },
-  { key: "market-sizing", label: "Market Sizing" },
+  { key: "use_cases", label: "Use Cases" },
+  { key: "market_sizing", label: "Market Sizing" },
 ];
 
 export function StrategyDetail() {
@@ -77,8 +75,6 @@ export function StrategyDetail() {
   const sizing = useMarketSizing();
   const runComps = useRunCompetitors();
   const { data: competitors } = useCompetitors(id);
-  const { data: patterns } = usePatterns(id);
-  const runPatterns = useRunPatterns();
   const { data: fetchCaps } = useFetchLimits();
   const [marketLimit, setMarketLimit] = useState<string>("default");
 
@@ -335,10 +331,6 @@ export function StrategyDetail() {
             <Boxes className="mr-1.5 h-3.5 w-3.5" />
             Competitors
           </TabsTrigger>
-          <TabsTrigger value="patterns">
-            <Sparkles className="mr-1.5 h-3.5 w-3.5" />
-            Patterns
-          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="icp" className="space-y-4">
@@ -538,6 +530,50 @@ export function StrategyDetail() {
                   </div>
                 </Card>
               )}
+              {(strategy.tam_sam_som.sources ?? []).length > 0 && (
+                <details className="group">
+                  <summary className="flex cursor-pointer items-center gap-2 rounded-lg border border-card-border bg-card px-4 py-3 text-sm font-medium text-foreground transition-colors hover:bg-muted/40">
+                    <svg className="h-4 w-4 text-muted-foreground transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                    Sources & References
+                    <span className="ml-1 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-mono text-primary">
+                      {strategy.tam_sam_som.sources.length}
+                    </span>
+                  </summary>
+                  <div className="mt-2 space-y-2">
+                    {strategy.tam_sam_som.sources.map((src: { title: string; link: string; snippet: string; verified: boolean }, i: number) => (
+                      <Card key={i} className="border-card-border bg-card p-3">
+                        <div className="flex items-start gap-2">
+                          <div className="flex-1 min-w-0">
+                            <a
+                              href={src.link}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-sm font-medium text-primary hover:underline truncate block"
+                            >
+                              {src.title || src.link}
+                            </a>
+                            {src.snippet && (
+                              <div className="mt-1 text-xs text-muted-foreground line-clamp-2">
+                                {src.snippet}
+                              </div>
+                            )}
+                            <div className="mt-1 text-[10px] text-muted-foreground/60 truncate">
+                              {src.link}
+                            </div>
+                          </div>
+                          <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                            src.verified
+                              ? "bg-emerald-500/15 text-emerald-400"
+                              : "bg-amber-500/15 text-amber-400"
+                          }`}>
+                            {src.verified ? "✓ Verified" : "Unverified"}
+                          </span>
+                        </div>
+                      </Card>
+                    ))}
+                  </div>
+                </details>
+              )}
             </div>
           ) : (
             <Empty label="Market sizing not generated yet." />
@@ -612,68 +648,7 @@ export function StrategyDetail() {
           )}
         </TabsContent>
 
-        <TabsContent value="patterns" className="space-y-4">
-          <ReasoningPanel
-            fallback={{
-              source: "computed",
-              logic:
-                "Pattern clusters derived from k-means on contact signal vectors. Conversion rate estimated from qualification status.",
-              steps: [
-                "Embed each contact's signal combination",
-                "K-means cluster with k=5",
-                "Compute cluster conversion rate from qualified contacts",
-              ],
-            }}
-          />
-          <div className="mb-2">
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={runPatterns.isPending}
-              onClick={() => id && runPatterns.mutate(id)}
-              data-testid="button-run-patterns"
-            >
-              {runPatterns.isPending ? "Clustering…" : "Run pattern recognition"}
-            </Button>
-          </div>
-          {patterns && patterns.length > 0 ? (
-            <Card className="border-card-border bg-card p-0 overflow-hidden">
-              <table className="w-full text-sm">
-                <thead className="bg-muted/40">
-                  <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
-                    <th className="px-4 py-2">Pattern</th>
-                    <th className="px-4 py-2">Signals</th>
-                    <th className="px-4 py-2 text-right">Conv. rate</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {patterns.map((p) => (
-                    <tr key={p.id} className="hover-elevate">
-                      <td className="px-4 py-2 font-medium">{p.pattern_name}</td>
-                      <td className="px-4 py-2">
-                        <div className="flex flex-wrap gap-1">
-                          {(p.signal_combination ?? []).map((s, i) => (
-                            <span
-                              key={i}
-                              className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
-                            >
-                              {s}
-                            </span>
-                          ))}
-                        </div>
-                      </td>
-                      <td className="px-4 py-2 text-right font-mono tabular-nums text-primary">
-                        {(p.conversion_rate * 100).toFixed(0)}%
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </Card>
-          ) : (
-            <Empty label="No patterns detected yet." />
-          )}
-        </TabsContent>
+
       </Tabs>
     </div>
   );

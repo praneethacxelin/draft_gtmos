@@ -59,6 +59,37 @@ def _truncate(obj: Any, max_len: int = 3000) -> str:
     except Exception:
         s = str(obj)
     return s[:max_len] + ("…" if len(s) > max_len else "")
+# Authoritative domains whose data we trust for market sizing, signals, etc.
+TRUSTED_DOMAINS = {
+    # Market research & data
+    "statista.com", "grandviewresearch.com", "ibisworld.com", "mordorintelligence.com",
+    "marketsandmarkets.com", "fortunebusinessinsights.com", "precedenceresearch.com",
+    "alliedmarketresearch.com", "researchandmarkets.com", "emergenresearch.com",
+    # Analyst / advisory
+    "gartner.com", "forrester.com", "mckinsey.com", "bcg.com", "bain.com", "deloitte.com",
+    "pwc.com", "ey.com", "kpmg.com", "accenture.com",
+    # Business news
+    "bloomberg.com", "reuters.com", "cnbc.com", "ft.com", "wsj.com", "forbes.com",
+    "businessinsider.com", "techcrunch.com", "venturebeat.com", "crunchbase.com",
+    # Professional / B2B
+    "linkedin.com", "g2.com", "capterra.com", "trustradius.com",
+    # Government / authoritative
+    "census.gov", "bls.gov", "sec.gov", "europa.eu",
+    # Tech / SaaS
+    "saastr.com", "openviewpartners.com", "tomtunguz.com",
+}
+
+
+def _is_trusted_source(link: str) -> bool:
+    """Check if a URL belongs to a trusted/authoritative domain."""
+    if not link:
+        return False
+    try:
+        from urllib.parse import urlparse
+        domain = urlparse(link).netloc.lower().lstrip("www.")
+        return any(domain == td or domain.endswith("." + td) for td in TRUSTED_DOMAINS)
+    except Exception:
+        return False
 
 
 def serpapi_search(
@@ -86,12 +117,19 @@ def serpapi_search(
             status = r.status_code
             r.raise_for_status()
             data = r.json()
-            for item in (data.get("organic_results") or [])[:num]:
+            for item in (data.get("organic_results") or [])[:num * 2]:  # fetch extra for filtering
+                link = item.get("link", "")
+                verified = _is_trusted_source(link)
                 results.append({
                     "title": item.get("title"),
-                    "link": item.get("link"),
+                    "link": link,
                     "snippet": item.get("snippet"),
+                    "verified": verified,
                 })
+            # Prioritize trusted sources: put verified first, then unverified
+            trusted = [r for r in results if r.get("verified")]
+            untrusted = [r for r in results if not r.get("verified")]
+            results = (trusted + untrusted)[:num]
             result_count = len(results)
             return results
     except Exception as e:
@@ -373,6 +411,7 @@ def instantly_create_campaign(
     sequence_steps: list[dict],
     _strategy_id: Optional[str] = None,
     _strategy_name: Optional[str] = None,
+    schedule: Optional[dict] = None,
 ) -> Optional[dict]:
     """Create a campaign via Instantly v2 API."""
     if not api_key:
@@ -389,6 +428,7 @@ def instantly_create_campaign(
             steps.append({
                 "type": "email",
                 "delay": s.get("wait_days", 0) if i > 0 else 0,
+                "delay_unit": "days",
                 "variants": [
                     {
                         "subject": s.get("subject", "Following up"),
@@ -398,18 +438,27 @@ def instantly_create_campaign(
             })
         instantly_sequences.append({"steps": steps})
 
+    # Default schedule: 24/7 UTC
+    camp_schedule = {
+        "name": "Default 24/7",
+        "timing": {"from": "00:00", "to": "23:59"},
+        "timezone": "UTC",
+        "days": {"0": True, "1": True, "2": True, "3": True, "4": True, "5": True, "6": True}
+    }
+
+    if schedule:
+        camp_schedule = {
+            "name": "Custom UI Schedule",
+            "timing": {"from": schedule.get("time_from", "09:00"), "to": schedule.get("time_to", "17:00")},
+            "timezone": schedule.get("timezone", "UTC"),
+            "days": schedule.get("days", camp_schedule["days"])
+        }
+
     body = {
         "name": name,
         "sequences": instantly_sequences,
         "campaign_schedule": {
-            "schedules": [
-                {
-                    "name": "Default",
-                    "timing": {"from": "09:00", "to": "17:00"},
-                    "timezone": "Etc/GMT+12",
-                    "days": {"0": False, "1": True, "2": True, "3": True, "4": True, "5": True, "6": False}
-                }
-            ]
+            "schedules": [camp_schedule]
         }
     }
     curl = _make_curl("POST", url, headers=headers, body=body)

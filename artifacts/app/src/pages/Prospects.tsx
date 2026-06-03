@@ -51,7 +51,7 @@ interface ContactDraft {
 }
 
 const PERSONA_OPTIONS = [
-  { value: "", label: "— none —" },
+  { value: "_none", label: "— none —" },
   { value: "champion", label: "Champion" },
   { value: "economic_buyer", label: "Economic buyer" },
   { value: "blocker", label: "Blocker" },
@@ -621,11 +621,11 @@ export function Prospects() {
                             <div>
                               <Label className="text-xs">Persona type</Label>
                               <Select
-                                value={editDraft.persona_type}
+                                value={editDraft.persona_type || "_none"}
                                 onValueChange={(v) =>
                                   setEditDraft({
                                     ...editDraft,
-                                    persona_type: v,
+                                    persona_type: v === "_none" ? "" : v,
                                   })
                                 }
                               >

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from app.db import Strategy, Contact, Sequence, SequenceStep, Account, InstantlyCampaign, OutreachEvent
 from app.llm import chat_json, chat_text, MODEL_NAME
-from app.services import settings_service, clients
+from app.services import settings_service, clients, audit_service
 from app.services.instantly_poller import simulate_engagement_timeline
 from app.provenance import stamp
 
@@ -75,9 +75,26 @@ async def generate_sequence(db: Session, contact_id: str) -> dict:
             {"step": 4, "channel": "email", "wait_days": 5},
         ]
 
+    # Log the channel plan decision
+    audit_service.log_pipeline_event(
+        stage="channel_plan",
+        service="s3_outreach",
+        strategy_id=contact.strategy_id,
+        strategy_name=strategy.product_name if strategy else None,
+        inputs={
+            "contact_name": contact.full_name,
+            "contact_title": contact.title,
+            "seniority": seniority,
+            "persona_type": contact.persona_type,
+        },
+        outputs={"channel_plan": channel_plan, "email_first": email_first},
+        decision=f"Seniority='{seniority}' → {'email-first' if email_first else 'linkedin-first'} sequence. VP/Director/C-suite get email first; others get LinkedIn first.",
+        summary=f"S3 → Channel Plan: {'Email' if email_first else 'LinkedIn'}-first for {contact.full_name} (seniority={seniority})",
+    )
+
     # Personalize messages
     plan_str = ", ".join(f"step {s['step']} via {s['channel']}" for s in channel_plan)
-    msgs = await chat_json(
+    msg_prompt = (
         f"Write personalized outreach messages for {contact.full_name}, {contact.title} at "
         f"{account.company_name if account else 'the company'}. "
         f"Product: {strategy.product_name if strategy else ''}. "
@@ -85,8 +102,24 @@ async def generate_sequence(db: Session, contact_id: str) -> dict:
         f"Sequence: {plan_str}. Return JSON with key 'messages' = array of "
         "{step, subject, body}. Subjects under 60 chars. Bodies 4-6 sentences, "
         "specific and not salesy. For LinkedIn steps, body should be a short DM (2-3 sentences). "
-        "For call steps, body should be a 3-bullet talking-points outline.",
-        max_tokens=2000,
+        "For call steps, body should be a 3-bullet talking-points outline."
+    )
+    msgs = await chat_json(msg_prompt, max_tokens=2000)
+
+    audit_service.log_pipeline_event(
+        stage="message_generation",
+        service="s3_outreach",
+        strategy_id=contact.strategy_id,
+        strategy_name=strategy.product_name if strategy else None,
+        inputs={
+            "contact": contact.full_name,
+            "company": account.company_name if account else None,
+            "persona_block_len": len(persona_block),
+            "use_cases_len": len(use_cases),
+        },
+        outputs=msgs,
+        prompt=msg_prompt,
+        summary=f"S3 → Message Draft: AI wrote {len(msgs.get('messages', [])) if isinstance(msgs, dict) else '?'} personalized steps",
     )
 
     # Persist
@@ -303,7 +336,7 @@ def deliverability_check(db: Session, sequence_id: str) -> dict:
     return report
 
 
-def launch_sequence(db: Session, sequence_id: str, test_email: str | None = None) -> dict:
+def launch_sequence(db: Session, sequence_id: str, test_email: str | None = None, schedule: dict | None = None) -> dict:
     seq = db.query(Sequence).filter(Sequence.id == sequence_id).first()
     if not seq:
         return {"error": "Sequence not found"}
@@ -324,9 +357,10 @@ def launch_sequence(db: Session, sequence_id: str, test_email: str | None = None
         result = clients.instantly_create_campaign(
             instantly_key,
             f"GTM-{seq.id[:8]}",
-            [{"channel": s.channel, "subject": s.subject, "body": s.body} for s in campaign_steps],
+            [{"channel": s.channel, "subject": s.subject, "body": s.body, "wait_days": s.wait_days} for s in campaign_steps],
             _strategy_id=seq.strategy_id,
             _strategy_name=strategy.product_name if strategy else None,
+            schedule=schedule,
         )
         seq.status = "active"
         campaign_id = (result or {}).get("id") if isinstance(result, dict) else None

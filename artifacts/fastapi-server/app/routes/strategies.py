@@ -60,6 +60,20 @@ def create_strategy(
     db.add(s)
     db.commit()
     db.refresh(s)
+    audit_service.log_pipeline_event(
+        stage="strategy_created",
+        service="s1_strategy",
+        strategy_id=s.id,
+        strategy_name=s.product_name,
+        inputs={
+            "product_name": body.product_name,
+            "description": body.description,
+            "target_market": body.target_market,
+            "pain_points_raw": body.pain_points_raw,
+        },
+        actor="user",
+        summary=f"Strategy Created: \"{s.product_name}\" — user entered initial brief",
+    )
     return _serialize(s)
 
 
