@@ -687,7 +687,7 @@ function LoopBackTab({ strategyId }: { strategyId: string }) {
             )}
             {(u.delta?.changes ?? []).length > 0 && (
               <div className="mt-3 space-y-1">
-                {u.delta.changes.map((c, i) => (
+                {u.delta!.changes!.map((c, i) => (
                   <div
                     key={i}
                     className="grid grid-cols-12 gap-2 rounded border border-border bg-background/60 p-2 text-xs"

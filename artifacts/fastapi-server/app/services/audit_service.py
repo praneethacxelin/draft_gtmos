@@ -93,6 +93,59 @@ def log_api_call(
         log.warning("audit log_api_call failed: %s", exc)
 
 
+def log_pipeline_event(
+    stage: str,
+    service: str,
+    strategy_id: Optional[str] = None,
+    strategy_name: Optional[str] = None,
+    inputs: Optional[dict] = None,
+    outputs: Optional[dict] = None,
+    prompt: Optional[str] = None,
+    decision: Optional[str] = None,
+    actor: str = "agent",
+    summary: Optional[str] = None,
+) -> None:
+    """Log a pipeline stage execution with full input/output data for debugging."""
+    try:
+        db = SessionLocal()
+        try:
+            request_data: dict = {}
+            if inputs:
+                request_data["inputs"] = _to_jsonb(inputs)
+            if prompt:
+                request_data["prompt"] = str(prompt)[:3000]
+            if decision:
+                request_data["decision"] = decision
+
+            response_data: dict = {}
+            if outputs:
+                # Truncate large JSON blobs to keep DB manageable
+                out_str = json.dumps(outputs, default=str)
+                if len(out_str) > 4000:
+                    response_data["output_preview"] = out_str[:4000] + "…"
+                    response_data["output_keys"] = list(outputs.keys()) if isinstance(outputs, dict) else None
+                else:
+                    response_data["output"] = outputs
+
+            entry = AuditLog(
+                event_type="pipeline_stage",
+                service=service,
+                strategy_id=strategy_id,
+                strategy_name=strategy_name,
+                request_params=request_data or None,
+                response_summary=response_data or None,
+                is_live=False,
+                actor=actor,
+                summary=summary or f"{service} → {stage}",
+            )
+            db.add(entry)
+            db.commit()
+        finally:
+            db.close()
+    except Exception as exc:
+        log.warning("audit log_pipeline_event failed: %s", exc)
+
+
 def log_change(
     event_type: str,
     entity_type: str,

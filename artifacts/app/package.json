@@ -75,6 +75,7 @@
     "zod": "catalog:"
   },
   "dependencies": {
+    "@microsoft/fetch-event-source": "^2.0.1",
     "reactflow": "^11.11.4"
   }
 }

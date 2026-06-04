@@ -75,6 +75,7 @@ def check(
 
 class LaunchBody(BaseModel):
     test_email: Optional[str] = None
+    schedule: Optional[dict] = None
 
 
 @router.post("/{sequence_id}/launch")
@@ -87,13 +88,14 @@ def launch(
     """Stream launch progress (Instantly push or simulated send)."""
     own_sequence(db, sequence_id, user)
     test_email = payload.test_email if payload else None
+    schedule = payload.schedule if payload else None
     from app.services.rate_limit import RateLimitExceeded
 
     async def gen():
         yield {"event": "stage_start", "data": json.dumps({"stage": "launch"})}
         db2 = SessionLocal()
         try:
-            result = launch_sequence(db2, sequence_id, test_email=test_email)
+            result = launch_sequence(db2, sequence_id, test_email=test_email, schedule=schedule)
             yield {"event": "stage_complete", "data": json.dumps({"stage": "launch", "result": result})}
             yield {"event": "complete", "data": json.dumps({"stage": "launch"})}
         except RateLimitExceeded as rle:

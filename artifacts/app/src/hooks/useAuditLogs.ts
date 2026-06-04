@@ -57,3 +57,28 @@ export function useAuditLogs(filters: AuditFilters = {}) {
     staleTime: Infinity,
   });
 }
+
+
+export interface StrategyAuditGroup {
+  strategy_id: string;
+  strategy_name: string;
+  events: AuditEntry[];
+  event_counts: Record<string, number>;
+}
+
+export interface AuditByStrategyPayload {
+  strategies: StrategyAuditGroup[];
+  ungrouped: AuditEntry[];
+}
+
+export function useAuditLogsByStrategy(fromTs?: string, service?: string) {
+  const params = new URLSearchParams();
+  if (fromTs) params.set("from_ts", fromTs);
+  if (service) params.set("service", service);
+  const qs = params.toString();
+  return useQuery<AuditByStrategyPayload>({
+    queryKey: ["audit-logs-by-strategy", fromTs, service],
+    queryFn: () => apiFetch(`/api/audit-logs/by-strategy${qs ? `?${qs}` : ""}`),
+    staleTime: Infinity,
+  });
+}

@@ -63,3 +63,52 @@ def list_audit_logs(
         offset=offset,
     )
     return {"logs": [_serialize(r) for r in rows], "total": total}
+
+
+@router.get("/by-strategy")
+def get_audit_logs_by_strategy(
+    from_ts: str | None = None,
+    to_ts: str | None = None,
+    service: str | None = None,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    """Return audit logs grouped by strategy for the Pipeline Flow view."""
+    from_dt = datetime.fromisoformat(from_ts) if from_ts else None
+    to_dt = datetime.fromisoformat(to_ts) if to_ts else None
+
+    q = db.query(AuditLog)
+    if from_dt:
+        q = q.filter(AuditLog.occurred_at >= from_dt)
+    if to_dt:
+        q = q.filter(AuditLog.occurred_at <= to_dt)
+    if service:
+        q = q.filter(AuditLog.service == service)
+
+    # Fetch most recent 500 logs first, keeping them newest first
+    rows = q.order_by(AuditLog.occurred_at.desc()).limit(500).all()
+
+    grouped: dict[str, dict] = {}
+    ungrouped: list[dict] = []
+
+    for row in rows:
+        serialized = _serialize(row)
+        sid = row.strategy_id
+        if sid:
+            if sid not in grouped:
+                grouped[sid] = {
+                    "strategy_id": sid,
+                    "strategy_name": row.strategy_name or "Unknown",
+                    "events": [],
+                    "event_counts": {},
+                }
+            grouped[sid]["events"].append(serialized)
+            et = row.event_type or "other"
+            grouped[sid]["event_counts"][et] = grouped[sid]["event_counts"].get(et, 0) + 1
+        else:
+            ungrouped.append(serialized)
+
+    return {
+        "strategies": list(grouped.values()),
+        "ungrouped": ungrouped,
+    }

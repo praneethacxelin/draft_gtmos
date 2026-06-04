@@ -115,7 +115,13 @@ async def lifespan(app: FastAPI):
                 pass
 
 
-app = FastAPI(title="Agentic GTM Factory API", version="0.1.0", lifespan=lifespan)
+# Trigger reload
+app = FastAPI(
+    title="GTMOS Backend",
+    description="Agentic GTM Factory API",
+    version="0.1.0",
+    lifespan=lifespan,
+)
 
 
 @app.exception_handler(RateLimitExceeded)
