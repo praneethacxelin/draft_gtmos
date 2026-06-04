@@ -23,8 +23,8 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, Session, relationship
-from sqlalchemy.dialects.postgresql import JSONB, ARRAY as PgARRAY
-
+from sqlalchemy.types import TypeDecorator
+from sqlalchemy.dialects.postgresql import JSONB as PgJSONB, ARRAY as PgARRAY
 
 def _db_url() -> str:
     url = os.environ.get("DATABASE_URL")
@@ -37,8 +37,25 @@ def _db_url() -> str:
         url = url.replace("postgresql://", "postgresql+psycopg://", 1)
     return url
 
+db_url = _db_url()
+is_sqlite = db_url.startswith("sqlite")
 
-engine = create_engine(_db_url(), pool_pre_ping=True, pool_size=5, max_overflow=10)
+if is_sqlite:
+    JSONB = JSON
+    class SqliteARRAY(TypeDecorator):
+        impl = JSON
+        cache_ok = True
+        def process_bind_param(self, value, dialect):
+            return value
+        def process_result_value(self, value, dialect):
+            return value
+    def PgARRAY(item_type):
+        return SqliteARRAY()
+    engine = create_engine(db_url, pool_pre_ping=True)
+else:
+    JSONB = PgJSONB
+    engine = create_engine(db_url, pool_pre_ping=True, pool_size=5, max_overflow=10)
+
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
 
@@ -391,9 +408,14 @@ def init_db() -> None:
     ``competitors`` table that has been renamed to ``competitor_profiles``,
     and ensure all model tables exist.
     """
-    with engine.begin() as conn:
-        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        conn.execute(text("DROP TABLE IF EXISTS competitors CASCADE"))
+    db_url_str = os.environ.get("DATABASE_URL", "")
+    if db_url_str.startswith("sqlite"):
+        with engine.begin() as conn:
+            conn.execute(text("DROP TABLE IF EXISTS competitors"))
+    else:
+        with engine.begin() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            conn.execute(text("DROP TABLE IF EXISTS competitors CASCADE"))
     Base.metadata.create_all(bind=engine)
 
 

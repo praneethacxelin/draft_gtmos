@@ -40,11 +40,17 @@ log = logging.getLogger("gtm")
 
 def _run_migrations() -> None:
     """Apply pending Alembic revisions on startup."""
+    db_url = os.environ.get("DATABASE_URL", "")
+    if db_url.startswith("sqlite"):
+        from app.db import init_db
+        init_db()
+        log.info("SQLite database initialized via init_db()")
+        return
+
     this_dir = Path(__file__).resolve().parent
     cfg_path = this_dir / "alembic.ini"
     cfg = Config(str(cfg_path))
     cfg.set_main_option("script_location", str(this_dir / "alembic"))
-    db_url = os.environ.get("DATABASE_URL", "")
     if db_url.startswith("postgres://"):
         db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
     elif db_url.startswith("postgresql://"):
