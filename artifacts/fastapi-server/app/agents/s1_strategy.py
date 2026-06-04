@@ -90,7 +90,9 @@ async def run_s1(db: Session, strategy_id: str) -> AsyncIterator[dict]:
     yield {"event": "stage_start", "data": {"stage": "personas"}}
     personas_prompt = (
         f"Given this ICP: {json.dumps(icp)[:1500]}, build a persona matrix for "
-        f"product '{strategy.product_name}'. Return JSON with keys: champion, "
+        f"product '{strategy.product_name}'. {brief}\n"
+        "The persona titles MUST align with the buyer personas and target market described above. "
+        "Return JSON with keys: champion, "
         "economic_buyer, blocker. Each persona has: title, goals (array), "
         "frustrations (array), success_metrics (array), communication_style, "
         "objections (array). Also include 'influence_edges': array of "
@@ -158,8 +160,10 @@ async def run_s1(db: Session, strategy_id: str) -> AsyncIterator[dict]:
     # 5. Buying Center Mapping
     yield {"event": "stage_start", "data": {"stage": "stakeholders"}}
     stakeholders_prompt = (
+        f"Product: {strategy.product_name}. {brief}\n"
         f"Personas: {json.dumps(personas)[:1500]}. Build a stakeholder graph for the "
-        "buying center. Return JSON with keys 'nodes' = array of {id, label, role, "
+        "buying center. The stakeholder titles MUST match the personas above. "
+        "Return JSON with keys 'nodes' = array of {id, label, role, "
         "tier 'champion'|'blocker'|'economic_buyer'|'influencer', influence 0-100} "
         "and 'edges' = array of {from, to, label}. Include 5-7 stakeholders covering "
         "the typical enterprise buying committee."
@@ -181,8 +185,9 @@ async def run_s1(db: Session, strategy_id: str) -> AsyncIterator[dict]:
     # 6. Use Case Library
     yield {"event": "stage_start", "data": {"stage": "use_cases"}}
     use_cases_prompt = (
-        f"Product: {strategy.product_name}. Segments: {json.dumps(naics)[:800]}. "
-        "Personas: {json.dumps(personas)[:800]}. Build a Use Case Library. "
+        f"Product: {strategy.product_name}. {brief}\n"
+        f"Segments: {json.dumps(naics)[:800]}. "
+        f"Personas: {json.dumps(personas)[:800]}. Build a Use Case Library. "
         "Return JSON with key 'use_cases' = array of {title, vertical, persona, "
         "scenario, value_prop, proof_point_placeholder}. 6-8 use cases total."
     )

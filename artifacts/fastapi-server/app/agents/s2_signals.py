@@ -9,6 +9,38 @@ from app.services import settings_service, clients, fetch_limits, audit_service
 from app.provenance import stamp
 
 
+# Map ICP geographies to SerpAPI gl (Google country) codes
+_GEO_MAP = {
+    "north america": "us", "united states": "us", "usa": "us", "us": "us",
+    "canada": "ca",
+    "western europe": "gb", "europe": "gb", "uk": "gb", "united kingdom": "gb",
+    "germany": "de", "france": "fr", "spain": "es", "italy": "it", "netherlands": "nl",
+    "india": "in", "asia": "in", "asia-pacific": "au", "australia": "au",
+    "japan": "jp", "south korea": "kr", "singapore": "sg",
+    "brazil": "br", "latin america": "br", "mexico": "mx",
+    "middle east": "ae", "uae": "ae", "saudi arabia": "sa",
+    "africa": "za", "south africa": "za", "nigeria": "ng",
+}
+
+
+def _extract_geo(strategy: Strategy) -> str | None:
+    """Extract a SerpAPI `gl` country code from the strategy's ICP or target_market."""
+    # Check ICP geographies first
+    icp = strategy.icp_json or {}
+    geos = icp.get("geographies", [])
+    if geos and isinstance(geos, list):
+        for g in geos:
+            code = _GEO_MAP.get(g.lower().strip())
+            if code:
+                return code
+    # Fall back to target_market text
+    tm = (strategy.target_market or "").lower()
+    for keyword, code in _GEO_MAP.items():
+        if keyword in tm:
+            return code
+    return None
+
+
 async def run_market_sizing(db: Session, strategy_id: str, limit: int | None = None) -> dict:
     strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
     if not strategy:
@@ -26,10 +58,12 @@ async def run_market_sizing(db: Session, strategy_id: str, limit: int | None = N
         first_segment = (strategy.naics_json.get("segments") or [{}])[0]
         seg_name = first_segment.get("name", strategy.target_market or "market")
         serp_query = f"{seg_name} TAM market size 2026"
+        geo = _extract_geo(strategy)
         results = clients.serpapi_search(
             serp_key, 
             serp_query, 
             num=n_results, 
+            geo=geo,
             _strategy_id=strategy_id, 
             _strategy_name=strategy.product_name
         )
@@ -103,30 +137,42 @@ async def run_competitors(db: Session, strategy_id: str) -> list[dict]:
         return []
 
     serp_key = settings_service.get_key(db, strategy.user_id, "serpapi")
+    geo = _extract_geo(strategy)
+
+    # Extract a clean product category for searching (avoid noisy product names like "PulseSignal — RevOps Intelligence Platform")
+    # Use the description to infer category, falling back to the product name
+    desc_snippet = (strategy.description or "")[:120]
+    product_category = desc_snippet if len(desc_snippet) > 20 else strategy.product_name
 
     # Step 1: Search SerpAPI for real competitors BEFORE asking LLM
     competitor_context = ""
     serp_queries = []
     if serp_key:
-        comp_query = f"{strategy.product_name} competitors alternatives 2026"
+        # Use product category + "competitors" for a focused search
+        comp_query = f"best {product_category} software competitors 2026"
         serp_queries.append(comp_query)
         comp_results = clients.serpapi_search(
             serp_key,
             comp_query,
             num=5,
+            geo=geo,
             _strategy_id=strategy_id,
             _strategy_name=strategy.product_name,
         )
         if comp_results:
-            competitor_context = " Recent search results about competitors: " + " | ".join(
+            competitor_context = " Recent search results about competitors in this space: " + " | ".join(
                 f"{r.get('title', '')}: {r.get('snippet', '')}" for r in comp_results
             )
 
-    # Step 2: Ask LLM with real search context injected
+    # Step 2: Ask LLM with real search context + full product details
     competitors_prompt = (
-        f"For product '{strategy.product_name}': {strategy.description}."
+        f"Product: '{strategy.product_name}'. "
+        f"Category: {desc_snippet}. "
+        f"Target Market: {strategy.target_market or 'unspecified'}."
         f"{competitor_context}"
-        " Identify 4 likely competitors. Return JSON with key 'competitors' = array of "
+        " Based on the product category and description above, identify 4 DIRECT competitors "
+        "that solve the SAME problem for the SAME buyer persona. Do NOT list tangentially related tools. "
+        "Return JSON with key 'competitors' = array of "
         "{name, website, positioning, features (array), pricing_info, "
         "weaknesses (array), g2_rating (1.0-5.0)}."
     )
@@ -239,24 +285,37 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
             if p and p.get("title"):
                 titles.append(p["title"])
 
+    # Extract location and industry filters from ICP
+    icp_locations = icp.get("geographies", [])
+    icp_industries = icp.get("industries", [])
+
     apollo_results = None
     if apollo_key:
-        # First attempt: strict title filter
+        # First attempt: strict title + location + industry filter
+        search_filters = {
+            "titles": titles or ["VP of Sales", "Head of Marketing"],
+            "employee_ranges": ["51,200", "201,500", "501,1000"],
+        }
+        if icp_locations:
+            search_filters["locations"] = icp_locations
+        if icp_industries:
+            search_filters["industries"] = icp_industries
+
         apollo_results = clients.apollo_people_search(
             apollo_key,
-            {
-                "titles": titles or ["VP of Sales", "Head of Marketing"],
-                "employee_ranges": ["51,200", "201,500", "501,1000"],
-            },
+            search_filters,
             per_page=n_leads,
         )
-        # Fallback: if titles are too restrictive, broaden search
+        # Fallback: if titles are too restrictive, broaden search but keep location
         if not apollo_results:
+            fallback_filters = {
+                "employee_ranges": ["51,200", "201,500", "501,1000"],
+            }
+            if icp_locations:
+                fallback_filters["locations"] = icp_locations
             apollo_results = clients.apollo_people_search(
                 apollo_key,
-                {
-                    "employee_ranges": ["51,200", "201,500", "501,1000"],
-                },
+                fallback_filters,
                 per_page=n_leads,
             )
 
@@ -512,30 +571,37 @@ async def run_signals(db: Session, strategy_id: str, limit: int | None = None) -
 
     added = 0
     serp_queries = []
+    geo = _extract_geo(strategy)
     if serp_key:
         # Hard ceiling: at most ``n_per_account`` signals are persisted per
         # account per run, regardless of how many query types we issue. We
         # split the budget across query kinds, then truncate the merged
         # result list before insert as a belt-and-braces guard.
         query_kinds = [
-            ("funding", "{c} raises funding"),
-            ("hiring", "{c} hiring VP Sales"),
+            ("funding", '"{c}" funding OR investment OR raises OR raised'),
+            ("hiring", '"{c}" hiring OR "new hire" OR "joins as"'),
         ]
         per_query_budget = max(1, n_per_account // len(query_kinds)) or 1
         for acct in accounts:
             collected: list[tuple[str, dict]] = []
+            company_lower = acct.company_name.lower()
             for kind, query_tpl in query_kinds:
                 query = query_tpl.format(c=acct.company_name)
                 serp_queries.append(query)
                 results = clients.serpapi_search(
                     serp_key, 
                     query, 
-                    num=per_query_budget,
+                    num=per_query_budget * 2,  # fetch extra for filtering
+                    geo=geo,
                     _strategy_id=strategy_id,
                     _strategy_name=strategy.product_name
                 )
                 for r in results or []:
-                    collected.append((kind, r))
+                    # Relevance filter: the result must actually mention the company name
+                    title = (r.get("title") or "").lower()
+                    snippet = (r.get("snippet") or "").lower()
+                    if company_lower in title or company_lower in snippet:
+                        collected.append((kind, r))
             for kind, r in collected[:n_per_account]:
                 strength = {"funding": 0.9, "hiring": 0.85, "tech": 0.75, "news": 0.6}.get(kind, 0.7)
                 db.add(Signal(

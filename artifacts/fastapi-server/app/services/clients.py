@@ -96,6 +96,7 @@ def serpapi_search(
     api_key: str,
     query: str,
     num: int = 5,
+    geo: Optional[str] = None,
     _strategy_id: Optional[str] = None,
     _strategy_name: Optional[str] = None,
 ) -> Optional[list[dict]]:
@@ -104,6 +105,8 @@ def serpapi_search(
     _rl_consume("serpapi")
     url = "https://serpapi.com/search.json"
     params = {"q": query, "api_key": api_key, "num": num, "engine": "google"}
+    if geo:
+        params["gl"] = geo  # Google country code, e.g. "in" for India, "us" for USA
     curl = _make_curl("GET", url, params=params)
     sanitized = _sanitize_params(params)
     t0 = time.perf_counter()
