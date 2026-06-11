@@ -6,6 +6,7 @@ export interface Contact {
   full_name: string;
   title?: string;
   email?: string;
+  email_verified?: string;
   phone?: string;
   linkedin_url?: string;
   seniority?: string;
@@ -86,6 +87,33 @@ export function useRevealContactPhone() {
     mutationFn: (id: string) =>
       apiFetch<Contact>(`/api/contacts/${id}/reveal?type=phone`, {
         method: "POST",
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["contacts"] });
+    },
+  });
+}
+
+export function useVerifyContactEmail() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<Contact>(`/api/contacts/${id}/verify`, {
+        method: "POST",
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["contacts"] });
+    },
+  });
+}
+
+export function useVerifyBulkEmails() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (contact_ids: string[]) =>
+      apiFetch<{ verified: number; invalid: number; catch_all: number; total: number }>(`/api/contacts/verify-bulk`, {
+        method: "POST",
+        body: JSON.stringify({ contact_ids }),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["contacts"] });

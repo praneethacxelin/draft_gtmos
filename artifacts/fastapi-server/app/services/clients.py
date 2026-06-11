@@ -203,6 +203,15 @@ def apollo_people_search(
     # Add optional industry filter
     if filters.get("industries"):
         search_body["organization_industries"] = filters["industries"]
+    # Add technology filter (find companies using specific tools)
+    if filters.get("technologies"):
+        search_body["currently_using_any_of_technology_uids"] = filters["technologies"]
+    # Add keyword search
+    if filters.get("keywords"):
+        search_body["q_keywords"] = filters["keywords"][0] if isinstance(filters["keywords"], list) else filters["keywords"]
+    # Add revenue range filter
+    if filters.get("revenue_ranges"):
+        search_body["organization_revenue_ranges"] = filters["revenue_ranges"]
 
     curl = _make_curl("POST", search_url, headers=headers, body=search_body)
     t0 = time.perf_counter()
@@ -632,50 +641,49 @@ def instantly_launch_campaign(
         )
 
 
-def instantly_get_events(
+def instantly_verify_email(
     api_key: str,
-    campaign_id: str,
+    email: str,
     _strategy_id: Optional[str] = None,
     _strategy_name: Optional[str] = None,
-) -> Optional[list[dict]]:
-    """Fetch recent campaign analytics/events via Instantly v2 API."""
-    if not api_key or not campaign_id:
+) -> Optional[str]:
+    """Verify an email using Instantly v2 API. Returns status (valid/invalid/catch_all/pending)."""
+    if not api_key or not email:
         return None
     _rl_consume("instantly")
-    url = f"https://api.instantly.ai/api/v2/campaigns/{campaign_id}/analytics"
+    url = "https://api.instantly.ai/api/v2/email-verification"
     headers = _instantly_headers(api_key)
-    params = {"limit": 200}
-    curl = _make_curl("GET", url, params=params, headers=headers)
+    payload = {"email": email}
+    curl = _make_curl("POST", url, body=payload, headers=headers)
     t0 = time.perf_counter()
     status = None
-    event_count = 0
+    verification_status = None
     error_text: Optional[str] = None
     try:
-        with httpx.Client(timeout=TIMEOUT) as c:
-            r = c.get(url, params=params, headers=headers)
+        with httpx.Client(timeout=15.0) as c:
+            r = c.post(url, json=payload, headers=headers)
             status = r.status_code
             r.raise_for_status()
             data = r.json()
-            # v2 analytics may return events in different shapes
-            events = data.get("events", []) if isinstance(data, dict) else []
-            if not events and isinstance(data, list):
-                events = data
-            event_count = len(events)
-            return events
+            verification_status = data.get("status")
+            return verification_status
     except Exception as e:
         error_text = str(e)
-        log.warning("instantly_get_events failed: %s", e)
-        return None
+        log.warning("instantly_verify_email failed: %s", e)
+        # Re-raise so the caller can return a proper HTTP 400 to the UI
+        raise e
     finally:
         latency_ms = int((time.perf_counter() - t0) * 1000)
-        summary_payload: dict = {"event_count": event_count}
+        summary_payload: dict = {"email": email}
+        if verification_status:
+            summary_payload["verification_status"] = verification_status
         if error_text:
             summary_payload["error"] = error_text[:500]
         audit_service.log_api_call(
             service="instantly",
-            method="GET",
+            method="POST",
             url=url,
-            request_params={"campaign_id": campaign_id, "limit": 200},
+            request_params={"email": email},
             response_status=status,
             latency_ms=latency_ms,
             curl_command=curl,
@@ -683,8 +691,89 @@ def instantly_get_events(
             strategy_name=_strategy_name,
             is_live=True,
             response_summary=summary_payload,
-            summary=f"Instantly: poll campaign {campaign_id[:12]} → {event_count} events",
+            summary=f"Instantly: verify email {email}",
         )
+
+
+def instantly_get_campaigns(api_key: str) -> Optional[list[dict]]:
+    if not api_key: return None
+    _rl_consume("instantly")
+    url = "https://api.instantly.ai/api/v2/campaigns"
+    headers = _instantly_headers(api_key)
+    try:
+        with httpx.Client(timeout=15.0) as c:
+            r = c.get(url, headers=headers)
+            r.raise_for_status()
+            return r.json().get("data", [])
+    except Exception as e:
+        log.warning("instantly_get_campaigns failed: %s", e)
+        return None
+
+def instantly_get_analytics(api_key: str, campaign_id: Optional[str] = None) -> Optional[dict]:
+    if not api_key: return None
+    _rl_consume("instantly")
+    url = "https://api.instantly.ai/api/v2/campaigns/analytics"
+    if campaign_id:
+        url += f"?campaign_id={campaign_id}"
+    headers = _instantly_headers(api_key)
+    try:
+        with httpx.Client(timeout=15.0) as c:
+            r = c.get(url, headers=headers)
+            r.raise_for_status()
+            data = r.json()
+            # Returns an array, we return the first if specific campaign or the whole list if not
+            if campaign_id and isinstance(data, list) and len(data) > 0:
+                return data[0]
+            return data if isinstance(data, dict) else {"data": data}
+    except Exception as e:
+        log.warning("instantly_get_analytics failed: %s", e)
+        return None
+
+def instantly_get_daily_analytics(api_key: str, campaign_id: str, start_date: str, end_date: str) -> Optional[list[dict]]:
+    if not api_key: return None
+    _rl_consume("instantly")
+    url = f"https://api.instantly.ai/api/v2/campaigns/analytics/daily?campaign_id={campaign_id}&start_date={start_date}&end_date={end_date}"
+    headers = _instantly_headers(api_key)
+    try:
+        with httpx.Client(timeout=15.0) as c:
+            r = c.get(url, headers=headers)
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:
+        log.warning("instantly_get_daily_analytics failed: %s", e)
+        return None
+
+def instantly_get_steps_analytics(api_key: str, campaign_id: str) -> Optional[list[dict]]:
+    if not api_key: return None
+    _rl_consume("instantly")
+    url = f"https://api.instantly.ai/api/v2/campaigns/analytics/steps?campaign_id={campaign_id}"
+    headers = _instantly_headers(api_key)
+    try:
+        with httpx.Client(timeout=15.0) as c:
+            r = c.get(url, headers=headers)
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:
+        log.warning("instantly_get_steps_analytics failed: %s", e)
+        return None
+
+def instantly_get_leads(api_key: str, campaign_id: str, status: Optional[str] = None) -> Optional[list[dict]]:
+    if not api_key: return None
+    _rl_consume("instantly")
+    url = "https://api.instantly.ai/api/v2/leads/list"
+    headers = _instantly_headers(api_key)
+    payload: dict = {"campaign_id": campaign_id, "limit": 1000}
+    if status:
+        payload["status"] = status
+    try:
+        with httpx.Client(timeout=15.0) as c:
+            r = c.post(url, json=payload, headers=headers)
+            r.raise_for_status()
+            data = r.json()
+            return data.get("data", [])
+    except Exception as e:
+        log.warning("instantly_get_leads failed: %s", e)
+        return None
 
 
 def test_connection(name: str, api_key: str) -> tuple[bool, str]:

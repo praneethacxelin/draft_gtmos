@@ -15,8 +15,10 @@ import { PageHeader } from "@/components/PageHeader";
 import { TierBadge, ScoreBar, DemoBadge } from "@/components/Pills";
 import { useActiveStrategy } from "@/hooks/useActiveStrategy";
 import { usePrioritizedAccounts } from "@/hooks/useAccounts";
-import { useContacts, useUpdateContact, useRevealContactEmail, useRevealContactPhone } from "@/hooks/useContacts";
+import { useContacts, useUpdateContact, useRevealContactEmail, useRevealContactPhone, useVerifyContactEmail, useVerifyBulkEmails } from "@/hooks/useContacts";
 import { useSignals } from "@/hooks/useSignals";
+import { useToast } from "@/hooks/use-toast";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   useLeadSearch,
   useRunSignals,
@@ -36,6 +38,10 @@ import {
   X,
   Mail,
   Phone,
+  CheckCircle2,
+  XCircle,
+  HelpCircle,
+  ShieldCheck,
 } from "lucide-react";
 import { ReasoningPanel, SourceBadge } from "@/components/ReasoningPanel";
 import { useFetchLimits } from "@/hooks/useSettings";
@@ -78,6 +84,11 @@ export function Prospects() {
   const updateContact = useUpdateContact();
   const revealEmail = useRevealContactEmail();
   const revealPhone = useRevealContactPhone();
+  const verifyEmail = useVerifyContactEmail();
+  const verifyBulk = useVerifyBulkEmails();
+  const { toast } = useToast();
+
+  const [selectedContacts, setSelectedContacts] = useState<Set<string>>(new Set());
 
   const [editingContactId, setEditingContactId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<ContactDraft>({
@@ -139,6 +150,42 @@ export function Prospects() {
       isPending: patterns.isPending,
     },
   ];
+
+  function handleSelectAll(checked: boolean) {
+    if (checked && contacts) {
+      setSelectedContacts(new Set(contacts.map(c => c.id)));
+    } else {
+      setSelectedContacts(new Set());
+    }
+  }
+
+  function handleSelect(id: string, checked: boolean) {
+    const next = new Set(selectedContacts);
+    if (checked) {
+      next.add(id);
+    } else {
+      next.delete(id);
+    }
+    setSelectedContacts(next);
+  }
+
+  async function handleVerifyBulk() {
+    if (selectedContacts.size === 0) return;
+    try {
+      const res = await verifyBulk.mutateAsync(Array.from(selectedContacts));
+      toast({
+        title: "Bulk verification complete",
+        description: `${res.verified} verified, ${res.invalid} invalid, ${res.catch_all} catch-all.`,
+      });
+      setSelectedContacts(new Set());
+    } catch (err: any) {
+      toast({
+        title: "Verification failed",
+        description: err.message || "An error occurred during verification.",
+        variant: "destructive"
+      });
+    }
+  }
 
   if (!activeId) {
     return (
@@ -276,6 +323,19 @@ export function Prospects() {
             >
               <Phone className="mr-2 h-3.5 w-3.5 text-emerald-400" />
               {fetchPhones.isPending ? "Fetching…" : "Fetch phones"}
+            </Button>
+            <div className="h-5 w-px bg-border mx-1" />
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={selectedContacts.size === 0 || verifyBulk.isPending}
+              onClick={handleVerifyBulk}
+              title="Verify emails for selected contacts using Instantly"
+              data-testid="button-verify-bulk"
+              className={selectedContacts.size > 0 ? "border-primary text-primary hover:text-primary/80" : ""}
+            >
+              <ShieldCheck className="mr-2 h-3.5 w-3.5" />
+              {verifyBulk.isPending ? "Verifying…" : `Verify selected (${selectedContacts.size})`}
             </Button>
           </div>
         }
@@ -439,6 +499,13 @@ export function Prospects() {
             <table className="w-full text-sm">
               <thead className="bg-muted/40">
                 <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
+                  <th className="px-4 py-2 w-[40px]">
+                    <Checkbox 
+                      checked={contacts && contacts.length > 0 && selectedContacts.size === contacts.length}
+                      onCheckedChange={handleSelectAll}
+                      aria-label="Select all"
+                    />
+                  </th>
                   <th className="px-4 py-2">Tier</th>
                   <th className="px-4 py-2">Contact</th>
                   <th className="px-4 py-2">Company</th>
@@ -459,6 +526,13 @@ export function Prospects() {
                       className="hover-elevate"
                       data-testid={`row-contact-${c.id}`}
                     >
+                      <td className="px-4 py-2">
+                        <Checkbox 
+                          checked={selectedContacts.has(c.id)}
+                          onCheckedChange={(checked) => handleSelect(c.id, checked as boolean)}
+                          aria-label={`Select ${c.full_name}`}
+                        />
+                      </td>
                       <td className="px-4 py-2">
                         <TierBadge tier={c.tier} />
                       </td>
@@ -483,6 +557,30 @@ export function Prospects() {
                             <div className="flex items-center gap-1 text-[11px] text-foreground/80">
                               <Mail className="h-3 w-3 text-blue-400 shrink-0" />
                               <span className="truncate max-w-[140px]" title={c.email}>{c.email}</span>
+                              {c.email_verified === "valid" ? (
+                                <CheckCircle2 className="h-3.5 w-3.5 text-green-500 shrink-0 ml-1" title="Verified (Valid)" />
+                              ) : c.email_verified === "invalid" ? (
+                                <XCircle className="h-3.5 w-3.5 text-red-500 shrink-0 ml-1" title="Invalid" />
+                              ) : c.email_verified === "catch_all" ? (
+                                <HelpCircle className="h-3.5 w-3.5 text-yellow-500 shrink-0 ml-1" title="Catch-all" />
+                              ) : (
+                                <button 
+                                  onClick={() => verifyEmail.mutate(c.id, {
+                                    onError: (err: any) => {
+                                      toast({
+                                        title: "Verification failed",
+                                        description: err.message || "An error occurred.",
+                                        variant: "destructive"
+                                      });
+                                    }
+                                  })}
+                                  disabled={verifyEmail.isPending}
+                                  className="text-muted-foreground hover:text-foreground transition-colors ml-1"
+                                  title="Verify email with Instantly"
+                                >
+                                  <CheckCircle2 className="h-3.5 w-3.5 opacity-30" />
+                                </button>
+                              )}
                             </div>
                           ) : (
                             <div className="flex items-center gap-1 text-[11px] text-muted-foreground/50">
@@ -558,7 +656,7 @@ export function Prospects() {
                     {editingContactId === c.id && (
                       <tr key={`edit-${c.id}`}>
                         <td
-                          colSpan={10}
+                          colSpan={11}
                           className="bg-muted/30 px-4 py-3"
                         >
                           <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
@@ -688,7 +786,7 @@ export function Prospects() {
                 {(!contacts || contacts.length === 0) && (
                   <tr>
                     <td
-                      colSpan={9}
+                      colSpan={11}
                       className="px-4 py-8 text-center text-sm text-muted-foreground"
                     >
                       No contacts yet. Run lead discovery to populate.

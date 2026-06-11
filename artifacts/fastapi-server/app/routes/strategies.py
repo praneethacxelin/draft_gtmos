@@ -26,7 +26,7 @@ router = APIRouter(prefix="/strategies", tags=["strategies"])
 
 class StrategyCreate(BaseModel):
     product_name: str
-    description: str
+    description: str = ""
     target_market: str | None = None
     pain_points_raw: str | None = None
 
@@ -187,6 +187,35 @@ def patch_icp(
         change_after=dict(s.icp_json or {}),
         actor="user",
         summary=f"Strategy \"{s.product_name}\" · ICP updated",
+    )
+    return _serialize(s)
+
+
+@router.patch("/{strategy_id}/discovery")
+def patch_discovery(
+    strategy_id: str,
+    body: dict,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    s = own_strategy(db, strategy_id, user)
+    before = dict(s.discovery_data or {})
+    current = dict(s.discovery_data or {})
+    current.update(body)
+    s.discovery_data = current
+    db.commit()
+    db.refresh(s)
+    audit_service.log_change(
+        event_type="strategy_change",
+        entity_type="strategy",
+        entity_id=s.id,
+        strategy_id=s.id,
+        strategy_name=s.product_name,
+        change_field="discovery_data",
+        change_before=before,
+        change_after=dict(s.discovery_data or {}),
+        actor="user",
+        summary=f"Strategy \"{s.product_name}\" · Discovery data updated",
     )
     return _serialize(s)
 
@@ -485,5 +514,6 @@ def _serialize(s: Strategy) -> dict:
         "use_cases": s.use_cases_json,
         "tam_sam_som": s.tam_sam_som_json,
         "status": s.status,
+        "discovery_data": s.discovery_data,
         "created_at": s.created_at.isoformat() if s.created_at else None,
     }

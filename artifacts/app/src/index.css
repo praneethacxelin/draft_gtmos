@@ -268,3 +268,94 @@
     inset: -1px;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/*  Discovery Wizard — MCQ Chips                                      */
+/* ------------------------------------------------------------------ */
+
+.mcq-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.4rem 0.85rem;
+  border-radius: 9999px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.25;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  user-select: none;
+  white-space: nowrap;
+}
+
+.mcq-chip:hover {
+  border-color: hsl(var(--primary) / 0.5);
+  background: hsl(var(--primary) / 0.05);
+  color: hsl(var(--foreground));
+  transform: translateY(-1px);
+}
+
+.mcq-chip--selected {
+  border-color: hsl(var(--primary));
+  background: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
+  box-shadow: 0 0 0 1px hsl(var(--primary) / 0.2),
+              0 2px 8px hsl(var(--primary) / 0.08);
+}
+
+.mcq-chip--selected:hover {
+  background: hsl(var(--primary) / 0.18);
+  border-color: hsl(var(--primary));
+}
+
+/* ------------------------------------------------------------------ */
+/*  Discovery Wizard — Stepper                                        */
+/* ------------------------------------------------------------------ */
+
+.discovery-wizard {
+  transition: box-shadow 0.3s ease;
+}
+
+.discovery-step {
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s ease;
+}
+
+.discovery-step:hover {
+  background: hsl(var(--muted) / 0.3);
+}
+
+.discovery-step--active {
+  background: hsl(var(--primary) / 0.04);
+}
+
+.discovery-step--completed .discovery-step-icon {
+  animation: check-pop 0.3s ease;
+}
+
+@keyframes check-pop {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.2); }
+  100% { transform: scale(1); }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Discovery Wizard — Question entrance                              */
+/* ------------------------------------------------------------------ */
+
+.discovery-question {
+  animation: fadeSlideIn 0.3s ease;
+}
+
+@keyframes fadeSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

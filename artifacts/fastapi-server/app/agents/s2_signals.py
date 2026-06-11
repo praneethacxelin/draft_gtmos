@@ -54,10 +54,28 @@ async def run_market_sizing(db: Session, strategy_id: str, limit: int | None = N
     serp_count = 0
     serp_query = None
     serp_sources = []  # Store source references for the UI
-    if serp_key and strategy.naics_json:
-        first_segment = (strategy.naics_json.get("segments") or [{}])[0]
-        seg_name = first_segment.get("name", strategy.target_market or "market")
-        serp_query = f"{seg_name} TAM market size 2026"
+    if serp_key:
+        # Ask LLM to generate the perfect market sizing search query
+        discovery_ctx = json.dumps(strategy.discovery_data) if strategy.discovery_data else "None"
+        query_prompt = (
+            f"Product: '{strategy.product_name}'. Description: {strategy.description[:500]}\n"
+            f"Target Market: {strategy.target_market}\n"
+            f"Additional Discovery Context: {discovery_ctx}\n"
+            "Generate 1 highly optimized Google search query to find the Total Addressable Market (TAM) "
+            "size for this specific product category. The query should be short and focused (e.g. 'AI recruitment software TAM market size 2026'). "
+            "Return JSON with key 'query'."
+        )
+        query_response = await chat_json(query_prompt)
+        serp_query = query_response.get("query") if isinstance(query_response, dict) else None
+        
+        # Fallback if LLM fails
+        if not serp_query:
+            first_segment = (strategy.naics_json.get("segments") or [{}])[0] if strategy.naics_json else {}
+            seg_name = first_segment.get("name", strategy.target_market or "market")
+            sub_vertical = first_segment.get("sub_vertical", "")
+            search_topic = f"{sub_vertical} {seg_name}".strip() if sub_vertical else seg_name
+            serp_query = f"{search_topic} TAM market size 2026"
+            
         geo = _extract_geo(strategy)
         results = clients.serpapi_search(
             serp_key, 
@@ -82,11 +100,15 @@ async def run_market_sizing(db: Session, strategy_id: str, limit: int | None = N
                 f"{r['title']}: {r.get('snippet', '')}" for r in results
             )
 
+    discovery_ctx = json.dumps(strategy.discovery_data) if strategy.discovery_data else "None"
     sizing_prompt = (
         f"Estimate TAM/SAM/SOM for product '{strategy.product_name}' targeting "
-        f"{strategy.target_market or 'businesses'}.{serp_context} Return JSON with "
-        "keys: tam {value_usd, label}, sam {value_usd, label}, som {value_usd, label}, "
-        "methodology, confidence 'low'|'medium'|'high', uses_live_data (bool)."
+        f"{strategy.target_market or 'businesses'}. Additional context: {discovery_ctx}\n"
+        f"Live search context: {serp_context}\n"
+        "Synthesize the search context to compute the most accurate TAM, SAM, and SOM figures. "
+        "Your methodology must explicitly cite the search snippets and explain the math or reasoning used to derive these numbers. "
+        "Return JSON with keys: tam {value_usd, label}, sam {value_usd, label}, som {value_usd, label}, "
+        "methodology (string explaining math and referencing sources), confidence 'low'|'medium'|'high', uses_live_data (bool)."
     )
     sizing = await chat_json(sizing_prompt)
     if isinstance(sizing, dict):
@@ -139,17 +161,34 @@ async def run_competitors(db: Session, strategy_id: str) -> list[dict]:
     serp_key = settings_service.get_key(db, strategy.user_id, "serpapi")
     geo = _extract_geo(strategy)
 
-    # Extract a clean product category for searching (avoid noisy product names like "PulseSignal — RevOps Intelligence Platform")
-    # Use the description to infer category, falling back to the product name
-    desc_snippet = (strategy.description or "")[:120]
-    product_category = desc_snippet if len(desc_snippet) > 20 else strategy.product_name
-
     # Step 1: Search SerpAPI for real competitors BEFORE asking LLM
     competitor_context = ""
     serp_queries = []
     if serp_key:
-        # Use product category + "competitors" for a focused search
-        comp_query = f"best {product_category} software competitors 2026"
+        # Ask LLM to generate the perfect competitor search query
+        discovery_ctx = json.dumps(strategy.discovery_data) if strategy.discovery_data else "None"
+        query_prompt = (
+            f"Product: '{strategy.product_name}'. Description: {strategy.description[:500]}\n"
+            f"Target Market: {strategy.target_market}\n"
+            f"Additional Context: {discovery_ctx}\n"
+            "Generate 1 highly optimized Google search query to find direct competitors and software alternatives "
+            "for this specific product. The query should use the product's category, NOT its brand name "
+            "(e.g. 'best AI recruitment platforms competitors 2026'). "
+            "Return JSON with key 'query'."
+        )
+        query_response = await chat_json(query_prompt)
+        comp_query = query_response.get("query") if isinstance(query_response, dict) else None
+        
+        # Fallback if LLM fails
+        if not comp_query:
+            product_category = strategy.product_name
+            if strategy.naics_json:
+                first_segment = (strategy.naics_json.get("segments") or [{}])[0]
+                sub_vertical = first_segment.get("sub_vertical", "")
+                if sub_vertical:
+                    product_category = sub_vertical
+            comp_query = f"best {product_category} software competitors 2026"
+
         serp_queries.append(comp_query)
         comp_results = clients.serpapi_search(
             serp_key,
@@ -164,11 +203,13 @@ async def run_competitors(db: Session, strategy_id: str) -> list[dict]:
                 f"{r.get('title', '')}: {r.get('snippet', '')}" for r in comp_results
             )
 
-    # Step 2: Ask LLM with real search context + full product details
+    desc_snippet = strategy.description[:500] if strategy.description else "No description"
+    discovery_ctx = json.dumps(strategy.discovery_data) if strategy.discovery_data else "None"
     competitors_prompt = (
         f"Product: '{strategy.product_name}'. "
         f"Category: {desc_snippet}. "
         f"Target Market: {strategy.target_market or 'unspecified'}."
+        f"Discovery Context: {discovery_ctx}. "
         f"{competitor_context}"
         " Based on the product category and description above, identify 4 DIRECT competitors "
         "that solve the SAME problem for the SAME buyer persona. Do NOT list tangentially related tools. "
@@ -278,28 +319,87 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
             }
 
     icp = strategy.icp_json or {}
+    dd = strategy.discovery_data or {}
     titles = []
     if strategy.personas_json:
         for k in ("champion", "economic_buyer", "blocker"):
             p = strategy.personas_json.get(k) if isinstance(strategy.personas_json, dict) else None
             if p and p.get("title"):
                 titles.append(p["title"])
+    
+    # Also pull buyer titles from discovery data
+    if not titles:
+        discovery_titles = []
+        for field in ("economic_buyer", "champion"):
+            val = dd.get(field)
+            if isinstance(val, str) and val.strip() and val != "__other__":
+                discovery_titles.append(val.strip())
+        if discovery_titles:
+            titles = discovery_titles
 
-    # Extract location and industry filters from ICP
+    # Extract location filters from discovery data + ICP
     icp_locations = icp.get("geographies", [])
+    dd_geos = dd.get("target_geos", [])
+    if isinstance(dd_geos, list):
+        dd_geos = [g for g in dd_geos if g and g != "__other__"]
+    elif isinstance(dd_geos, str) and dd_geos.strip():
+        dd_geos = [dd_geos.strip()]
+    else:
+        dd_geos = []
+    all_locations = list(set(icp_locations + dd_geos)) or []
+    
+    # Extract industry filters from ICP
     icp_industries = icp.get("industries", [])
+
+    # Map discovery org_size to Apollo employee ranges
+    _ORG_SIZE_MAP = {
+        "1–10 (Startup)": "1,10",
+        "11–50 (Small)": "11,50",
+        "51–200 (Mid-Market)": "51,200",
+        "201–1,000 (Enterprise)": "201,1000",
+        "1,000+ (Large Enterprise)": "1001,5000",
+    }
+    dd_org_sizes = dd.get("org_size", [])
+    if isinstance(dd_org_sizes, list):
+        employee_ranges = [_ORG_SIZE_MAP.get(s) for s in dd_org_sizes if _ORG_SIZE_MAP.get(s)]
+    else:
+        employee_ranges = []
+    if not employee_ranges:
+        employee_ranges = ["51,200", "201,500", "501,1000"]
+
+    # Extract tech/tool keywords from discovery alternatives
+    tech_keywords = []
+    dd_alternatives = dd.get("alternatives")
+    if isinstance(dd_alternatives, str) and dd_alternatives.strip():
+        # Split comma-separated alternatives into tech keywords
+        tech_keywords = [t.strip() for t in dd_alternatives.split(",") if t.strip()]
+    icp_tech = icp.get("tech_stack_signals", [])
+    tech_keywords = list(set(tech_keywords + icp_tech))
+
+    # Extract search keywords from UVP and pain points
+    search_keywords = []
+    for field in ("uvp", "pain_points", "product_description"):
+        val = dd.get(field)
+        if isinstance(val, str) and val.strip() and len(val.strip()) > 10:
+            # Use first few significant words as keywords
+            search_keywords.append(val.strip()[:150])
+            break  # just use the best one
 
     apollo_results = None
     if apollo_key:
         # First attempt: strict title + location + industry filter
         search_filters = {
             "titles": titles or ["VP of Sales", "Head of Marketing"],
-            "employee_ranges": ["51,200", "201,500", "501,1000"],
+            "employee_ranges": employee_ranges,
         }
-        if icp_locations:
-            search_filters["locations"] = icp_locations
+        if all_locations:
+            search_filters["locations"] = all_locations
         if icp_industries:
             search_filters["industries"] = icp_industries
+        if tech_keywords:
+            search_filters["technologies"] = tech_keywords[:5]  # Apollo limit
+        if search_keywords:
+            search_filters["keywords"] = search_keywords[:1]  # One keyword phrase
 
         apollo_results = clients.apollo_people_search(
             apollo_key,
@@ -309,10 +409,10 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
         # Fallback: if titles are too restrictive, broaden search but keep location
         if not apollo_results:
             fallback_filters = {
-                "employee_ranges": ["51,200", "201,500", "501,1000"],
+                "employee_ranges": employee_ranges,
             }
-            if icp_locations:
-                fallback_filters["locations"] = icp_locations
+            if all_locations:
+                fallback_filters["locations"] = all_locations
             apollo_results = clients.apollo_people_search(
                 apollo_key,
                 fallback_filters,
@@ -582,6 +682,8 @@ async def run_signals(db: Session, strategy_id: str, limit: int | None = None) -
             ("hiring", '"{c}" hiring OR "new hire" OR "joins as"'),
         ]
         per_query_budget = max(1, n_per_account // len(query_kinds)) or 1
+        raw_signals = []
+        acct_by_id = {a.id: a for a in accounts}
         for acct in accounts:
             collected: list[tuple[str, dict]] = []
             company_lower = acct.company_name.lower()
@@ -602,14 +704,39 @@ async def run_signals(db: Session, strategy_id: str, limit: int | None = None) -
                     snippet = (r.get("snippet") or "").lower()
                     if company_lower in title or company_lower in snippet:
                         collected.append((kind, r))
+            
             for kind, r in collected[:n_per_account]:
+                raw_signals.append((acct.id, kind, r))
+                
+        if raw_signals:
+            # Bulk LLM translation: turn raw search snippets into actionable sales insights
+            signals_context = json.dumps([
+                {"idx": i, "company": acct_by_id[sid].company_name, "type": kind, "title": r.get("title", ""), "snippet": r.get("snippet", "")}
+                for i, (sid, kind, r) in enumerate(raw_signals)
+            ])
+            insights_prompt = (
+                "You are a GTM / RevOps expert. I have a list of raw search results (buying signals) for target companies. "
+                "For each signal, write a short, highly actionable summary (1-2 sentences) explaining WHY this matters for a sales rep. "
+                "Format: '[Fact] - [Why it matters / Action]'. "
+                "Example: 'Just raised $10M Series A — likely expanding their revops team and tooling budget soon.'\n\n"
+                f"Raw signals:\n{signals_context}\n\n"
+                "Return JSON with key 'summaries' = array of {idx: int, actionable_summary: string}"
+            )
+            insights_res = await chat_json(insights_prompt, max_tokens=2000)
+            insights_map = {}
+            if isinstance(insights_res, dict) and "summaries" in insights_res:
+                for s in insights_res["summaries"]:
+                    insights_map[s.get("idx")] = s.get("actionable_summary", "")
+                    
+            for i, (sid, kind, r) in enumerate(raw_signals):
                 strength = {"funding": 0.9, "hiring": 0.85, "tech": 0.75, "news": 0.6}.get(kind, 0.7)
+                summary = insights_map.get(i) or (r.get("title", "") + " - " + r.get("snippet", ""))[:240]
                 db.add(Signal(
                     strategy_id=strategy_id,
-                    account_id=acct.id,
+                    account_id=sid,
                     signal_type=kind,
                     source="serpapi",
-                    summary=(r.get("title") or "")[:240],
+                    summary=summary[:240],
                     strength_score=strength,
                     raw_data_json=r,
                 ))
@@ -621,6 +748,8 @@ async def run_signals(db: Session, strategy_id: str, limit: int | None = None) -
             f"Generate realistic-but-synthetic buying signals for these companies: "
             f"{', '.join(company_names[:8])}. Return JSON with key 'signals' = array of "
             "{company_name, signal_type 'funding'|'hiring'|'tech'|'news', summary, strength 0-1}. "
+            "For 'summary', write a highly actionable insight for a sales rep. Format: '[Fact] - [Why it matters]'. "
+            "Example: 'Just raised $10M Series A — likely expanding their revops team and tooling budget soon.'\n"
             "Generate 12 signals total spread across companies."
         )
         demo = await chat_json(signals_prompt, max_tokens=2000)

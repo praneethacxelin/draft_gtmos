@@ -177,12 +177,106 @@ def reveal_contact(
     return _serialize(c, a)
 
 
+@router.post("/{contact_id}/verify")
+def verify_contact_email(
+    contact_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    import httpx
+    from app.services import clients, settings_service
+    c = own_contact(db, contact_id, user)
+    a = db.query(Account).filter(Account.id == c.account_id).first()
+
+    if not c.email or c.email == "(not revealed)" or c.email == "Not found":
+        raise HTTPException(400, "Contact has no valid email to verify")
+
+    instantly_key = settings_service.get_key(db, user.id, "instantly")
+    if not instantly_key:
+        raise HTTPException(400, "Instantly API key not configured")
+
+    try:
+        status = clients.instantly_verify_email(
+            instantly_key,
+            email=c.email,
+            _strategy_id=c.strategy_id,
+        )
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 402:
+            raise HTTPException(402, "Instantly: Workspace does not have an active paid plan for email verification.")
+        raise HTTPException(400, f"Instantly API error: {e.response.text}")
+    except Exception as e:
+        raise HTTPException(400, f"Verification failed: {str(e)}")
+    if status:
+        c.email_verified = status
+        db.commit()
+        db.refresh(c)
+    
+    return _serialize(c, a)
+
+
+class BulkVerifyRequest(BaseModel):
+    contact_ids: list[str]
+
+
+@router.post("/verify-bulk")
+def verify_bulk_emails(
+    body: BulkVerifyRequest,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    import httpx
+    from app.services import clients, settings_service
+    instantly_key = settings_service.get_key(db, user.id, "instantly")
+    if not instantly_key:
+        raise HTTPException(400, "Instantly API key not configured")
+
+    verified_count = 0
+    invalid_count = 0
+    catch_all_count = 0
+
+    for cid in body.contact_ids:
+        c = own_contact(db, cid, user)
+        if not c.email or c.email == "(not revealed)" or c.email == "Not found":
+            continue
+            
+        try:
+            status = clients.instantly_verify_email(
+                instantly_key,
+                email=c.email,
+                _strategy_id=c.strategy_id,
+            )
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 402:
+                raise HTTPException(402, "Instantly: Workspace does not have an active paid plan for email verification.")
+            raise HTTPException(400, f"Instantly API error: {e.response.text}")
+        except Exception as e:
+            raise HTTPException(400, f"Verification failed: {str(e)}")
+        if status:
+            c.email_verified = status
+            db.commit()
+            if status == "valid":
+                verified_count += 1
+            elif status == "invalid":
+                invalid_count += 1
+            elif status == "catch_all":
+                catch_all_count += 1
+
+    return {
+        "verified": verified_count,
+        "invalid": invalid_count,
+        "catch_all": catch_all_count,
+        "total": len(body.contact_ids)
+    }
+
+
 def _serialize(c: Contact, a: Account | None) -> dict:
     return {
         "id": c.id,
         "full_name": c.full_name,
         "title": c.title,
         "email": c.email,
+        "email_verified": c.email_verified,
         "phone": c.phone,
         "linkedin_url": c.linkedin_url,
         "seniority": c.seniority,

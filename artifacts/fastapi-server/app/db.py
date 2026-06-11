@@ -106,6 +106,7 @@ class Strategy(Base):
     use_cases_json = Column(JSONB, nullable=True)
     tam_sam_som_json = Column(JSONB, nullable=True)
     status = Column(String, default="draft")  # draft / generating / ready
+    discovery_data = Column(JSONB, nullable=True)
     created_at = Column(DateTime, default=now)
     updated_at = Column(DateTime, default=now, onupdate=now)
 
@@ -169,6 +170,7 @@ class Contact(Base):
     total_score = Column(Float, default=0.0)
     tier = Column(Integer, nullable=True)
     is_demo = Column(Boolean, default=False)
+    email_verified = Column(String, nullable=True)  # valid/invalid/catch_all/pending/None
     created_at = Column(DateTime, default=now)
 
 
@@ -249,6 +251,9 @@ class InstantlyCampaign(Base):
     sequence_id = Column(String, ForeignKey("sequences.id", ondelete="CASCADE"), nullable=False)
     instantly_campaign_id = Column(String, nullable=False)
     status = Column(String, default="active")
+    analytics_json = Column(JSONB, nullable=True)
+    daily_analytics_json = Column(JSONB, nullable=True)
+    steps_analytics_json = Column(JSONB, nullable=True)
     synced_at = Column(DateTime, default=now)
 
 

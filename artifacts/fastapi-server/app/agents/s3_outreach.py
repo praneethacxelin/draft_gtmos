@@ -362,8 +362,12 @@ def launch_sequence(db: Session, sequence_id: str, test_email: str | None = None
             _strategy_name=strategy.product_name if strategy else None,
             schedule=schedule,
         )
-        seq.status = "active"
         campaign_id = (result or {}).get("id") if isinstance(result, dict) else None
+        
+        if not campaign_id:
+            raise Exception("Failed to create Instantly campaign. Your Instantly workspace might not have an active paid plan or the API key is invalid.")
+
+        seq.status = "active"
         seq.instantly_campaign_id = campaign_id
         lead_email: str | None = None
 

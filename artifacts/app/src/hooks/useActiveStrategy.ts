@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useStrategies } from "./useStrategies";
 
 const KEY = "gtm.activeStrategyId";
+const EVENT = "gtm.activeStrategyChanged";
 
 export function useActiveStrategy() {
   const { data: strategies } = useStrategies();
@@ -10,6 +11,18 @@ export function useActiveStrategy() {
     return localStorage.getItem(KEY);
   });
 
+  // Sync state across hook instances
+  useEffect(() => {
+    function handleSync(e: Event) {
+      const customEvent = e as CustomEvent<string | null>;
+      if (customEvent.detail !== activeId) {
+        setActiveIdState(customEvent.detail);
+      }
+    }
+    window.addEventListener(EVENT, handleSync);
+    return () => window.removeEventListener(EVENT, handleSync);
+  }, [activeId]);
+
   // Default to first ready strategy if none chosen
   useEffect(() => {
     if (!strategies || activeId) return;
@@ -17,6 +30,7 @@ export function useActiveStrategy() {
     if (ready) {
       setActiveIdState(ready.id);
       localStorage.setItem(KEY, ready.id);
+      window.dispatchEvent(new CustomEvent(EVENT, { detail: ready.id }));
     }
   }, [strategies, activeId]);
 
@@ -26,15 +40,25 @@ export function useActiveStrategy() {
     if (!strategies.find((s) => s.id === activeId)) {
       const fallback = strategies[0]?.id ?? null;
       setActiveIdState(fallback);
-      if (fallback) localStorage.setItem(KEY, fallback);
-      else localStorage.removeItem(KEY);
+      if (fallback) {
+        localStorage.setItem(KEY, fallback);
+        window.dispatchEvent(new CustomEvent(EVENT, { detail: fallback }));
+      } else {
+        localStorage.removeItem(KEY);
+        window.dispatchEvent(new CustomEvent(EVENT, { detail: null }));
+      }
     }
   }, [strategies, activeId]);
 
   const setActiveId = useCallback((id: string | null) => {
     setActiveIdState(id);
-    if (id) localStorage.setItem(KEY, id);
-    else localStorage.removeItem(KEY);
+    if (id) {
+      localStorage.setItem(KEY, id);
+      window.dispatchEvent(new CustomEvent(EVENT, { detail: id }));
+    } else {
+      localStorage.removeItem(KEY);
+      window.dispatchEvent(new CustomEvent(EVENT, { detail: null }));
+    }
   }, []);
 
   const active = strategies?.find((s) => s.id === activeId) ?? null;

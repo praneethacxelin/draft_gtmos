@@ -40,12 +40,53 @@ async def run_s1(db: Session, strategy_id: str) -> AsyncIterator[dict]:
     strategy.status = "generating"
     db.commit()
 
-    brief = (
-        f"Product: {strategy.product_name}\n"
-        f"Description: {strategy.description}\n"
-        f"Target Market: {strategy.target_market or 'unspecified'}\n"
-        f"Pain Points: {strategy.pain_points_raw or 'unspecified'}"
-    )
+    # Build a rich brief from discovery_data + legacy fields
+    dd = strategy.discovery_data or {}
+    
+    def _dd(key, fallback="unspecified"):
+        """Get a discovery data value, handling arrays and strings."""
+        val = dd.get(key)
+        if val is None:
+            return fallback
+        if isinstance(val, list):
+            clean = [v for v in val if v and v != "__other__"]
+            return ", ".join(clean) if clean else fallback
+        if isinstance(val, str) and val.strip() and val != "__other__":
+            return val.strip()
+        return fallback
+    
+    # Product description: prefer discovery, fallback to legacy field
+    product_desc = _dd("product_description", strategy.description or "unspecified")
+    target_market = _dd("target_geos", strategy.target_market or "unspecified")
+    pain_points = _dd("pain_points", strategy.pain_points_raw or "unspecified")
+    
+    brief_parts = [
+        f"Product: {strategy.product_name}",
+        f"Description: {product_desc}",
+        f"Company Type: {_dd('company_type')}",
+        f"Target Market / Geographies: {target_market}",
+        f"Target Org Size: {_dd('org_size')}",
+        f"Pain Points: {pain_points}",
+        f"Perfect Customer: {_dd('perfect_customer')}",
+        f"Economic Buyer: {_dd('economic_buyer')}",
+        f"Champion: {_dd('champion')}",
+        f"Deal Blockers: {_dd('deal_blockers')}",
+        f"Buying Signals: {_dd('buying_signals')}",
+        f"Purchase Triggers: {_dd('triggers')}",
+        f"Alternative Tools: {_dd('alternatives')}",
+        f"Unique Value Proposition: {_dd('uvp')}",
+        f"Sales Cycle: {_dd('sales_cycle')}",
+    ]
+    brief = "\n".join(brief_parts)
+
+    # Also update the legacy fields if they're empty but discovery has data
+    if not strategy.description and dd.get("product_description"):
+        strategy.description = _dd("product_description", "")
+    if not strategy.target_market and dd.get("target_geos"):
+        strategy.target_market = _dd("target_geos", "")
+    if not strategy.pain_points_raw and dd.get("pain_points"):
+        strategy.pain_points_raw = _dd("pain_points", "")
+    db.commit()
 
     # Log the user's raw input that kicks off the entire pipeline
     audit_service.log_pipeline_event(
@@ -55,12 +96,13 @@ async def run_s1(db: Session, strategy_id: str) -> AsyncIterator[dict]:
         strategy_name=strategy.product_name,
         inputs={
             "product_name": strategy.product_name,
-            "description": strategy.description,
-            "target_market": strategy.target_market,
-            "pain_points_raw": strategy.pain_points_raw,
+            "description": product_desc,
+            "target_market": target_market,
+            "pain_points_raw": pain_points,
+            "discovery_data": dd,
         },
         outputs={"brief_text": brief},
-        summary=f"S1 → User Input: \"{strategy.product_name}\" brief assembled",
+        summary=f"S1 → User Input: \"{strategy.product_name}\" brief assembled from discovery data",
     )
 
     # 1. ICP Modeling
@@ -138,8 +180,9 @@ async def run_s1(db: Session, strategy_id: str) -> AsyncIterator[dict]:
     # 4. Industry Segmentation (NAICS)
     yield {"event": "stage_start", "data": {"stage": "naics"}}
     naics_prompt = (
-        f"For product '{strategy.product_name}' targeting {strategy.target_market or 'businesses'}, "
-        "produce NAICS industry segmentation. Return JSON with key 'segments' = array of "
+        f"Product: '{strategy.product_name}'. {brief}\n"
+        f"Target Market: {strategy.target_market or 'businesses'}. "
+        "Produce NAICS industry segmentation. Return JSON with key 'segments' = array of "
         "{naics_code, name, sub_vertical, opportunity_score 0-100, est_company_count, rationale}. "
         "Provide 5-7 segments."
     )
