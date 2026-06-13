@@ -1,7 +1,9 @@
 """SQLAlchemy models + DB session for the GTM Factory.
 
-All tables created with `init_db()` on startup. Uses pgvector for ICP
-embeddings to support similarity-based pattern recognition.
+All tables created with `init_db()` on startup. ICP/pattern embeddings are
+stored as JSON lists; the queryable vector store is ChromaDB
+(``app/services/vector_store.py``) so the stack stays portable to Windows
+without compiling the pgvector native extension.
 """
 import os
 import uuid
@@ -23,7 +25,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, Session, relationship
-from sqlalchemy.dialects.postgresql import JSONB, ARRAY as PgARRAY
+from sqlalchemy.dialects.postgresql import JSONB
 
 
 def _db_url() -> str:
@@ -107,6 +109,8 @@ class Strategy(Base):
     tam_sam_som_json = Column(JSONB, nullable=True)
     status = Column(String, default="draft")  # draft / generating / ready
     discovery_data = Column(JSONB, nullable=True)
+    last_signal_scan = Column(DateTime, nullable=True)
+    daily_signal_summary = Column(JSONB, nullable=True)
     created_at = Column(DateTime, default=now)
     updated_at = Column(DateTime, default=now, onupdate=now)
 
@@ -115,7 +119,10 @@ class IcpEmbedding(Base):
     __tablename__ = "icp_embeddings"
     id = Column(String, primary_key=True, default=gen_id)
     strategy_id = Column(String, ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False)
-    embedding = Column(PgARRAY(Float), nullable=False)
+    # Stored as a JSON list of floats. ChromaDB is the queryable vector store
+    # (see app/services/vector_store.py); this column keeps a portable copy
+    # and avoids the pgvector native extension (hard to compile on Windows).
+    embedding = Column(JSONB, nullable=False)
     summary = Column(Text, nullable=True)
     created_at = Column(DateTime, default=now)
 
@@ -194,7 +201,7 @@ class PatternCluster(Base):
     pattern_name = Column(String, nullable=False)
     signal_combination_json = Column(JSONB, nullable=True)
     conversion_rate = Column(Float, default=0.0)
-    cluster_embedding = Column(PgARRAY(Float), nullable=True)
+    cluster_embedding = Column(JSONB, nullable=True)  # JSON list of floats (see vector_store.py)
     created_at = Column(DateTime, default=now)
 
 
@@ -388,16 +395,20 @@ class AuditLog(Base):
 
 
 def init_db() -> None:
-    """Enable pgvector, run light migrations, create new tables.
+    """Run light migrations and create new tables.
 
     Heavy schema migrations live under ``alembic/`` (see ``alembic upgrade
     head``). The startup hook here only does the additive work needed for
-    the seeded demo to come up cleanly: enable pgvector, drop the legacy
-    ``competitors`` table that has been renamed to ``competitor_profiles``,
-    and ensure all model tables exist.
+    the seeded demo to come up cleanly: drop the legacy ``competitors``
+    table that has been renamed to ``competitor_profiles`` and ensure all
+    model tables exist.
+
+    Note: the pgvector native extension is intentionally NOT enabled here.
+    Embeddings are stored as JSON lists and the queryable vector store is
+    ChromaDB (``app/services/vector_store.py``), which keeps the stack
+    portable to Windows where compiling pgvector is painful.
     """
     with engine.begin() as conn:
-        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         conn.execute(text("DROP TABLE IF EXISTS competitors CASCADE"))
     Base.metadata.create_all(bind=engine)
 

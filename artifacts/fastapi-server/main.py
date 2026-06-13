@@ -33,6 +33,7 @@ from app.routes import (
 )
 from app.services.instantly_poller import poll_loop
 from app.services.m3_tracking import m3_loop
+from app.services.signal_cron import signal_cron_loop
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("gtm")
@@ -97,11 +98,12 @@ async def lifespan(app: FastAPI):
     _auto_configure_api_keys()
     poller = asyncio.create_task(poll_loop())
     m3 = asyncio.create_task(m3_loop())
-    log.info("Background tasks started: Instantly poller (1h), M3 tracker (6h)")
+    signals = asyncio.create_task(signal_cron_loop())
+    log.info("Background tasks started: Instantly poller (1h), M3 tracker (6h), Signal cron (24h)")
     try:
         yield
     finally:
-        for t in (poller, m3):
+        for t in (poller, m3, signals):
             t.cancel()
             try:
                 await t

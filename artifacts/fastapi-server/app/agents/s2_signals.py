@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.db import Strategy, Account, Contact, Signal, Competitor, PatternCluster, IcpEmbedding, LeadScore
 from app.llm import chat_json, deterministic_embedding, MODEL_NAME
 from app.services import settings_service, clients, fetch_limits, audit_service
+from app.services.vector_store import store as vector_store
 from app.provenance import stamp
 
 
@@ -21,6 +22,58 @@ _GEO_MAP = {
     "middle east": "ae", "uae": "ae", "saudi arabia": "sa",
     "africa": "za", "south africa": "za", "nigeria": "ng",
 }
+
+
+# Apollo's ``person_locations`` only matches real countries/cities — broad
+# region names ("Asia-Pacific", "North America", "EMEA") silently match nothing
+# and produce random global results. Expand regions into concrete countries.
+_REGION_TO_COUNTRIES = {
+    "north america": ["United States", "Canada"],
+    "na": ["United States", "Canada"],
+    "usa": ["United States"],
+    "us": ["United States"],
+    "united states": ["United States"],
+    "asia-pacific": ["India", "Singapore", "Australia", "Japan", "Philippines"],
+    "asia pacific": ["India", "Singapore", "Australia", "Japan", "Philippines"],
+    "apac": ["India", "Singapore", "Australia", "Japan", "Philippines"],
+    "asia": ["India", "Singapore", "Japan"],
+    "europe": ["United Kingdom", "Germany", "France", "Netherlands"],
+    "western europe": ["United Kingdom", "Germany", "France", "Netherlands"],
+    "emea": ["United Kingdom", "Germany", "France", "United Arab Emirates"],
+    "latam": ["Brazil", "Mexico"],
+    "latin america": ["Brazil", "Mexico"],
+    "middle east": ["United Arab Emirates", "Saudi Arabia"],
+    "anz": ["Australia", "New Zealand"],
+}
+
+
+def _normalize_apollo_locations(raw_locations: list) -> list[str]:
+    """Convert geography labels into Apollo-valid country names.
+
+    Region buzzwords (e.g. "Asia-Pacific") are expanded into their member
+    countries; concrete countries/cities pass through unchanged. Deduped while
+    preserving order so the most relevant geos stay first.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(name: str):
+        key = name.strip().lower()
+        if not key or key in seen:
+            return
+        seen.add(key)
+        out.append(name.strip())
+
+    for loc in raw_locations or []:
+        if not isinstance(loc, str) or not loc.strip() or loc == "__other__":
+            continue
+        expanded = _REGION_TO_COUNTRIES.get(loc.strip().lower())
+        if expanded:
+            for country in expanded:
+                _add(country)
+        else:
+            _add(loc)
+    return out
 
 
 def _extract_geo(strategy: Strategy) -> str | None:
@@ -39,6 +92,97 @@ def _extract_geo(strategy: Strategy) -> str | None:
         if keyword in tm:
             return code
     return None
+
+
+def _account_profile_text(acct, contact=None) -> str:
+    """Natural-language profile of an account for semantic ICP matching."""
+    if acct is None:
+        return ""
+    parts = [f"Company {acct.company_name}."]
+    if acct.industry:
+        parts.append(f"Industry: {acct.industry}.")
+    if acct.employee_count:
+        parts.append(f"Headcount: {acct.employee_count} employees.")
+    if acct.revenue_range:
+        parts.append(f"Revenue: {acct.revenue_range}.")
+    tech = acct.tech_stack_json
+    if isinstance(tech, list) and tech:
+        parts.append("Tech stack: " + ", ".join(map(str, tech[:12])) + ".")
+    if contact is not None and contact.title:
+        parts.append(f"Key contact title: {contact.title}.")
+    return " ".join(parts)
+
+
+def _coerce_usd(val) -> float | None:
+    """Parse a TAM/SAM/SOM value into a float number of dollars.
+
+    Handles ints/floats and messy strings like '$1.2B', '1,200,000', '4.5M'.
+    """
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    if not isinstance(val, str):
+        return None
+    s = val.strip().lower().replace("$", "").replace(",", "").replace("usd", "").strip()
+    mult = 1.0
+    if s.endswith("b") or "billion" in s:
+        mult = 1e9
+        s = s.replace("billion", "").rstrip("b").strip()
+    elif s.endswith("m") or "million" in s:
+        mult = 1e6
+        s = s.replace("million", "").rstrip("m").strip()
+    elif s.endswith("k") or "thousand" in s:
+        mult = 1e3
+        s = s.replace("thousand", "").rstrip("k").strip()
+    try:
+        return float(s) * mult
+    except ValueError:
+        return None
+
+
+def _clamp_market_sizing(sizing: dict) -> dict:
+    """Normalise value_usd to numbers and enforce TAM >= SAM >= SOM.
+
+    LLMs occasionally emit SAM > TAM or wildly inconsistent magnitudes. We
+    coerce each value to a number and clamp the hierarchy so the dashboard
+    never shows a SAM larger than its TAM.
+    """
+    if not isinstance(sizing, dict) or "_error" in sizing:
+        return sizing
+    tiers = ["tam", "sam", "som"]
+    vals: dict[str, float | None] = {}
+    for t in tiers:
+        node = sizing.get(t)
+        if isinstance(node, dict):
+            vals[t] = _coerce_usd(node.get("value_usd"))
+        else:
+            vals[t] = _coerce_usd(node)
+
+    adjusted = False
+    # Enforce monotonic decrease TAM >= SAM >= SOM when values are present.
+    if vals.get("tam") and vals.get("sam") and vals["sam"] > vals["tam"]:
+        vals["sam"] = vals["tam"]
+        adjusted = True
+    if vals.get("sam") and vals.get("som") and vals["som"] > vals["sam"]:
+        vals["som"] = vals["sam"]
+        adjusted = True
+    if vals.get("tam") and vals.get("som") and vals["som"] > vals["tam"]:
+        vals["som"] = vals["tam"]
+        adjusted = True
+
+    for t in tiers:
+        if vals.get(t) is not None:
+            node = sizing.get(t)
+            if isinstance(node, dict):
+                node["value_usd"] = round(vals[t])
+            else:
+                sizing[t] = {"value_usd": round(vals[t]), "label": str(node) if node else ""}
+    if adjusted:
+        sizing["_clamped"] = True
+    return sizing
+
+
 
 
 async def run_market_sizing(db: Session, strategy_id: str, limit: int | None = None) -> dict:
@@ -105,12 +249,20 @@ async def run_market_sizing(db: Session, strategy_id: str, limit: int | None = N
         f"Estimate TAM/SAM/SOM for product '{strategy.product_name}' targeting "
         f"{strategy.target_market or 'businesses'}. Additional context: {discovery_ctx}\n"
         f"Live search context: {serp_context}\n"
-        "Synthesize the search context to compute the most accurate TAM, SAM, and SOM figures. "
-        "Your methodology must explicitly cite the search snippets and explain the math or reasoning used to derive these numbers. "
+        "Compute the figures with BOTH a top-down (cite market-size snippets) and a "
+        "bottom-up (target company count x realistic annual contract value) approach, then "
+        "reconcile them into a single defensible number for each tier. "
+        "Rules you MUST follow: TAM >= SAM >= SOM (SAM is the share you can realistically "
+        "serve given geo/segment focus; SOM is the 1-3 year obtainable share). "
+        "Each value_usd MUST be a plain integer number of US dollars (no commas, no '$', no 'M'/'B' suffix). "
+        "The methodology must show the actual math and reference the search snippets used. "
         "Return JSON with keys: tam {value_usd, label}, sam {value_usd, label}, som {value_usd, label}, "
-        "methodology (string explaining math and referencing sources), confidence 'low'|'medium'|'high', uses_live_data (bool)."
+        "methodology (string explaining top-down + bottom-up math and citing sources), "
+        "assumptions (array of short strings), confidence 'low'|'medium'|'high', uses_live_data (bool)."
     )
     sizing = await chat_json(sizing_prompt)
+    sizing = _clamp_market_sizing(sizing)
+
     if isinstance(sizing, dict):
         sizing["uses_live_data"] = bool(serp_key)
         sizing["sources"] = serp_sources  # Attach references for UI
@@ -287,10 +439,20 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
     clay_key = settings_service.get_key(db, strategy.user_id, "clay")
 
     # ---- Caching: skip Apollo if we already have real contacts ----
+    # A *default* re-run (no explicit limit chosen) reuses cached contacts to
+    # save Apollo credits. But when the user deliberately picks a number from
+    # the "Leads" dropdown, treat it as an intent to fetch MORE — never block
+    # it on the cache, otherwise the button feels broken.
+    explicit_limit = limit is not None
+    existing_contacts = 0
     if apollo_key:
         # Check if we already have leads to save Apollo credits
         existing_contacts = db.query(Contact).filter(Contact.strategy_id == strategy_id, Contact.is_demo == False).count()
-        if existing_contacts > 0 and (n_leads is None or existing_contacts >= n_leads):
+        if (
+            not explicit_limit
+            and existing_contacts > 0
+            and (n_leads is None or existing_contacts >= n_leads)
+        ):
             # We already have enough real contacts. Do not spend Apollo credits.
             audit_service.log_pipeline_event(
                 stage="lead_search",
@@ -346,7 +508,10 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
         dd_geos = [dd_geos.strip()]
     else:
         dd_geos = []
-    all_locations = list(set(icp_locations + dd_geos)) or []
+    # Apollo needs concrete countries, not region buzzwords — expand them so
+    # "Asia-Pacific"/"North America" actually constrain the search instead of
+    # being ignored (which returns random global companies).
+    all_locations = _normalize_apollo_locations(list(icp_locations) + list(dd_geos))
     
     # Extract industry filters from ICP
     icp_industries = icp.get("industries", [])
@@ -386,37 +551,210 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
             break  # just use the best one
 
     apollo_results = None
+    ai_filters: dict = {}
     if apollo_key:
-        # First attempt: strict title + location + industry filter
-        search_filters = {
-            "titles": titles or ["VP of Sales", "Head of Marketing"],
-            "employee_ranges": employee_ranges,
-        }
-        if all_locations:
-            search_filters["locations"] = all_locations
-        if icp_industries:
-            search_filters["industries"] = icp_industries
-        if tech_keywords:
-            search_filters["technologies"] = tech_keywords[:5]  # Apollo limit
-        if search_keywords:
-            search_filters["keywords"] = search_keywords[:1]  # One keyword phrase
-
-        apollo_results = clients.apollo_people_search(
-            apollo_key,
-            search_filters,
-            per_page=n_leads,
+        # ---- Let the LLM design the optimal Apollo query ----
+        # The model sees the full ICP + personas + raw discovery answers and
+        # decides which Apollo facets (titles, seniorities, size, industries,
+        # technologies, keywords, locations) will surface the highest-fit
+        # decision makers. Heuristic values below act as a safety net.
+        filter_prompt = (
+            "You are a senior B2B prospecting strategist configuring an Apollo.io "
+            "people search to surface the highest-fit decision makers for a product.\n"
+            f"Product: {strategy.product_name}\n"
+            f"ICP: {json.dumps(icp)[:1200]}\n"
+            f"Personas: {json.dumps(strategy.personas_json)[:1000] if strategy.personas_json else 'none'}\n"
+            f"Discovery answers: {json.dumps(dd)[:1500] if dd else 'none'}\n"
+            f"Target countries (already normalized, use these verbatim): {all_locations}\n\n"
+            "Decide the OPTIMAL Apollo parameters. Return JSON with keys: "
+            "person_titles (array of 4-8 specific job titles of the people who OWN the "
+            "problem this product solves and would buy/champion it — be specific to the "
+            "product's domain, not generic 'VP of Sales'), "
+            "person_seniorities (subset of: owner, founder, c_suite, partner, vp, head, director, manager), "
+            "employee_ranges (array of 'min,max' strings, e.g. '51,200'), "
+            "industries (array of the buyer's OWN industry — the companies that would "
+            "USE this product, not the product's category), "
+            "technologies (array of tools these buyers likely already use), "
+            "keywords (one short search phrase), "
+            "locations (array of specific COUNTRY names only — never regions like "
+            "'Asia-Pacific' or 'North America'; use the Target countries above). "
+            "Only include a key when it sharpens precision; omit it otherwise."
         )
-        # Fallback: if titles are too restrictive, broaden search but keep location
-        if not apollo_results:
-            fallback_filters = {
-                "employee_ranges": employee_ranges,
-            }
-            if all_locations:
-                fallback_filters["locations"] = all_locations
+        ai_resp = await chat_json(filter_prompt, max_tokens=600)
+        if isinstance(ai_resp, dict) and "_error" not in ai_resp:
+            ai_filters = ai_resp
+
+        def _pick(key, fallback):
+            val = ai_filters.get(key)
+            if isinstance(val, list):
+                val = [v for v in val if v]
+            return val or fallback
+
+        # First attempt: AI-designed (with heuristic fallback) precise filter
+        search_filters = {
+            "titles": _pick("person_titles", titles or ["VP of Sales", "Head of Marketing"]),
+            "employee_ranges": _pick("employee_ranges", employee_ranges),
+        }
+        seniorities = _pick("person_seniorities", [])
+        if seniorities:
+            search_filters["seniorities"] = seniorities
+        # Normalize whatever the LLM returned for locations back to concrete
+        # countries (belt-and-suspenders in case it ignored the instruction).
+        locations = _normalize_apollo_locations(_pick("locations", all_locations))
+        if locations:
+            search_filters["locations"] = locations
+        industries = _pick("industries", icp_industries)
+        if industries:
+            search_filters["industries"] = industries
+        technologies = _pick("technologies", tech_keywords)
+        if technologies:
+            search_filters["technologies"] = technologies[:5]  # Apollo limit
+        keywords = _pick("keywords", search_keywords)
+        if keywords:
+            search_filters["keywords"] = keywords[:1] if isinstance(keywords, list) else [keywords]
+
+        # ---- Forensic audit: record exactly what the LLM decided vs the
+        # heuristic fallback, plus the final merged filter set sent to Apollo.
+        # This is the single source of truth for "why did Apollo return these
+        # leads" — inspect this event first when results look off.
+        _filter_provenance = {
+            key: ("ai" if ai_filters.get(key) else "heuristic_fallback")
+            for key in (
+                "titles", "employee_ranges", "seniorities",
+                "locations", "industries", "technologies", "keywords",
+            )
+        }
+        audit_service.log_pipeline_event(
+            stage="apollo_filter_design",
+            service="s2_signals",
+            strategy_id=strategy_id,
+            strategy_name=strategy.product_name,
+            prompt=filter_prompt,
+            inputs={
+                "llm_raw_decision": ai_filters or {"_note": "LLM returned no usable filters; using heuristics"},
+                "heuristic_fallbacks": {
+                    "titles": titles or ["VP of Sales", "Head of Marketing"],
+                    "employee_ranges": employee_ranges,
+                    "locations": all_locations,
+                    "industries": icp_industries,
+                    "technologies": tech_keywords,
+                    "keywords": search_keywords,
+                },
+            },
+            outputs={
+                "final_apollo_filters": search_filters,
+                "field_source": _filter_provenance,
+                "requested_limit": n_leads,
+            },
+            decision=(
+                "LLM designed Apollo query from ICP + personas + discovery answers"
+                if ai_filters else
+                "LLM gave no filters — fell back to heuristic ICP/discovery values"
+            ),
+            summary=(
+                f"S2 → Apollo Filter Design: {len(search_filters.get('titles', []))} titles, "
+                f"{'AI-designed' if ai_filters else 'heuristic'}"
+            ),
+        )
+
+        # Over-fetch beyond contacts we already have so that, after dedup, a
+        # re-run surfaces genuinely NEW people instead of re-pulling the same
+        # page-1 results. Capped at Apollo's per_page ceiling (100).
+        _fetch_per_page = min((existing_contacts or 0) + (n_leads or 10), 100)
+
+        # ---- Progressive relaxation ladder ----
+        # Apollo's mixed_people/api_search silently returns 0 when fragile
+        # free-text facets (q_keywords, organization_industries, technology
+        # UIDs) don't resolve to its taxonomy. ANDing all of them together is
+        # the #1 cause of "no leads". So we try the precise query first, then
+        # peel off the fragile facets one tier at a time — keeping the robust
+        # anchors (titles/seniority + locations + employee size) longest — and
+        # stop at the first tier that returns people.
+        robust_locations = search_filters.get("locations") or all_locations
+        robust_sizes = search_filters.get("employee_ranges") or employee_ranges
+        robust_titles = search_filters.get("titles") or (titles or [])
+        robust_seniorities = search_filters.get("seniorities") or [
+            "c_suite", "vp", "head", "director", "manager",
+        ]
+
+        ladder: list[tuple[str, dict]] = [
+            # Tier 0 — full precision (titles + every AI facet)
+            ("precise (all AI facets)", dict(search_filters)),
+        ]
+        # Tier 1 — drop q_keywords (people-text search is the harshest narrower)
+        t1 = {k: v for k, v in search_filters.items() if k != "keywords"}
+        ladder.append(("dropped keywords", t1))
+        # Tier 2 — also drop technologies (need Apollo UIDs, often unresolved)
+        t2 = {k: v for k, v in t1.items() if k != "technologies"}
+        ladder.append(("dropped keywords+technologies", t2))
+        # Tier 3 — also drop industries (free-text often off-taxonomy); keep
+        # titles + locations + size — all well-supported facets
+        t3 = {k: v for k, v in t2.items() if k != "industries"}
+        ladder.append(("titles + geo + size", t3))
+        # Tier 4 — broaden people: swap exact titles for seniority levels but
+        # KEEP geo + size so results never become random global noise
+        t4 = {"employee_ranges": robust_sizes, "seniorities": robust_seniorities}
+        if robust_locations:
+            t4["locations"] = robust_locations
+        ladder.append(("seniority + geo + size", t4))
+        # Tier 5 — last resort: titles + size only (geo may be over-narrow)
+        t5 = {"employee_ranges": robust_sizes}
+        if robust_titles:
+            t5["titles"] = robust_titles
+        else:
+            t5["seniorities"] = robust_seniorities
+        ladder.append(("size + titles only", t5))
+
+        apollo_results = None
+        used_tier = None
+        # De-dupe identical consecutive tiers so we don't waste API calls.
+        seen_signatures: set = set()
+        for tier_name, tier_filters in ladder:
+            # Skip empty/degenerate tiers and exact repeats.
+            cleaned = {k: v for k, v in tier_filters.items() if v}
+            sig = json.dumps(cleaned, sort_keys=True, default=str)
+            if not cleaned or sig in seen_signatures:
+                continue
+            seen_signatures.add(sig)
             apollo_results = clients.apollo_people_search(
                 apollo_key,
-                fallback_filters,
-                per_page=n_leads,
+                cleaned,
+                per_page=_fetch_per_page,
+                _strategy_id=strategy_id,
+                _strategy_name=strategy.product_name,
+            )
+            if apollo_results:
+                used_tier = tier_name
+                if tier_name != "precise (all AI facets)":
+                    audit_service.log_pipeline_event(
+                        stage="apollo_filter_relaxation",
+                        service="s2_signals",
+                        strategy_id=strategy_id,
+                        strategy_name=strategy.product_name,
+                        inputs={"precise_filters": search_filters},
+                        outputs={"winning_tier": tier_name, "winning_filters": cleaned, "count": len(apollo_results)},
+                        decision=(
+                            f"Precise Apollo query returned 0 — relaxed to '{tier_name}', "
+                            f"which surfaced {len(apollo_results)} leads while keeping geo/size anchors"
+                        ),
+                        summary=f"S2 → Apollo Relaxation: '{tier_name}' → {len(apollo_results)} leads",
+                    )
+                break
+
+        if not apollo_results:
+            audit_service.log_pipeline_event(
+                stage="apollo_filter_exhausted",
+                service="s2_signals",
+                strategy_id=strategy_id,
+                strategy_name=strategy.product_name,
+                inputs={"precise_filters": search_filters, "tiers_tried": [t[0] for t in ladder]},
+                outputs={"count": 0},
+                decision=(
+                    "Every relaxation tier returned 0 — Apollo has no people for "
+                    "these countries/sizes, or the API key lacks search access. "
+                    "Falling back to AI-generated demo leads."
+                ),
+                summary="S2 → Apollo Relaxation: exhausted all tiers, 0 leads",
             )
 
     # Wipe existing AI demo contacts so they don't pollute the view when discovering new real leads
@@ -580,7 +918,6 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
 
     # Log demo fallback when Apollo returned nothing
     if apollo_key and apollo_results is None:
-        from app.services import audit_service
         audit_service.log_api_call(
             service="apollo",
             method="internal",
@@ -604,12 +941,35 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
             "requested_limit": n_leads,
             "apollo_key_present": bool(apollo_key),
             "search_titles": titles or ["VP of Sales", "Head of Marketing"],
+            "ai_apollo_filters": ai_filters or None,
+            "final_search_filters": search_filters if apollo_key else None,
             "icp": icp,
         },
         outputs={
             "contacts_added": len(new_contacts),
             "accounts_added": len(newly_added_accounts),
             "is_demo": is_demo,
+            "demo_reason": (
+                None if not is_demo else (
+                    "No Apollo API key configured — generated synthetic demo leads"
+                    if not apollo_key else
+                    "Apollo returned no matches — fell back to synthetic demo leads"
+                )
+            ),
+            "accounts_preview": newly_added_accounts[:10],
+            "contacts_preview": [
+                {
+                    "name": c.full_name,
+                    "title": c.title,
+                    "company": new_accounts and next(
+                        (name for name, a in new_accounts.items() if a.id == c.account_id),
+                        None,
+                    ),
+                    "email": c.email or "(not revealed)",
+                    "seniority": c.seniority,
+                }
+                for c in new_contacts[:10]
+            ],
         },
         decision="Apollo search successful" if not is_demo else "Failed over to AI generated demo leads",
         summary=f"S2 → Lead Discovery: Found {len(new_contacts)} new leads ({'Live' if not is_demo else 'Demo'})",
@@ -932,8 +1292,16 @@ async def fetch_contact_phones(db: Session, strategy_id: str) -> dict:
 
 
 def score_leads(db: Session, strategy_id: str) -> dict:
-    """Composite score per contact: ICP fit + signals + engagement + pgvector boost."""
+    """Composite score per contact: ICP fit + signals + engagement + pattern boost.
+
+    ICP fit blends a fast heuristic (title/seniority) with a *semantic*
+    similarity from ChromaDB (account profile vs. the strategy's ICP), so a
+    well-matched but oddly-titled account is no longer penalised.
+    """
     contacts = db.query(Contact).filter(Contact.strategy_id == strategy_id).all()
+    accounts = {
+        a.id: a for a in db.query(Account).filter(Account.strategy_id == strategy_id).all()
+    }
     signals_by_account: dict[str, list[Signal]] = {}
     for s in db.query(Signal).filter(Signal.strategy_id == strategy_id).all():
         signals_by_account.setdefault(s.account_id, []).append(s)
@@ -942,6 +1310,20 @@ def score_leads(db: Session, strategy_id: str) -> dict:
     clusters = db.query(PatternCluster).filter(
         PatternCluster.strategy_id == strategy_id
     ).all()
+
+    # Cache semantic ICP-fit per account (one vector query per account, not
+    # per contact) so a 200-contact run stays cheap.
+    semantic_fit_cache: dict[str, float | None] = {}
+
+    def _semantic_fit(acct: "Account", contact: "Contact") -> float | None:
+        if acct is None:
+            return None
+        if acct.id in semantic_fit_cache:
+            return semantic_fit_cache[acct.id]
+        text = _account_profile_text(acct, contact)
+        sim = vector_store.icp_fit(strategy_id, text) if text else None
+        semantic_fit_cache[acct.id] = sim
+        return sim
 
     for c in contacts:
         # Simple ICP fit heuristic: presence of title and seniority counts
@@ -952,7 +1334,14 @@ def score_leads(db: Session, strategy_id: str) -> dict:
             fit += 20
         if c.persona_type == "champion":
             fit += 10
-        c.icp_fit_score = min(fit, 100)
+        heuristic_fit = min(fit, 100)
+
+        # Blend in semantic similarity when the vector store is available.
+        sim = _semantic_fit(accounts.get(c.account_id), c)
+        if sim is not None:
+            c.icp_fit_score = round(min(heuristic_fit * 0.5 + (sim * 100) * 0.5, 100), 1)
+        else:
+            c.icp_fit_score = heuristic_fit
 
         sigs = signals_by_account.get(c.account_id, [])
         sig_score = min(sum((s.strength_score or 0) * 25 for s in sigs), 100)
@@ -1045,18 +1434,22 @@ def recognize_patterns(db: Session, strategy_id: str) -> dict:
     combos = Counter(tuple(sorted(types)) for types in by_account.values() if len(types) >= 1)
 
     db.query(PatternCluster).filter(PatternCluster.strategy_id == strategy_id).delete()
+    vector_store.delete_patterns(strategy_id)
     created = 0
     cluster_details = []
     for combo, count in combos.most_common(5):
         name = " + ".join(combo) + (" co-occurrence" if len(combo) > 1 else " signal trend")
         embedding = deterministic_embedding(name)
-        db.add(PatternCluster(
+        cluster = PatternCluster(
             strategy_id=strategy_id,
             pattern_name=name,
             signal_combination_json=list(combo),
             conversion_rate=min(count / max(len(by_account), 1), 1.0),
             cluster_embedding=embedding,
-        ))
+        )
+        db.add(cluster)
+        db.flush()
+        vector_store.upsert_pattern(strategy_id, cluster.id, name)
         cluster_details.append({
             "pattern": name,
             "signals": list(combo),

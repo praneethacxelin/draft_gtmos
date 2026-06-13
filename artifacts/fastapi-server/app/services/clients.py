@@ -169,6 +169,7 @@ def apollo_people_search(
     api_key: str,
     filters: dict,
     per_page: int = 10,
+    page: int = 1,
     _strategy_id: Optional[str] = None,
     _strategy_name: Optional[str] = None,
 ) -> Optional[list[dict]]:
@@ -194,12 +195,15 @@ def apollo_people_search(
     # ---- Step 1: Search (0 credits) ----
     search_url = "https://api.apollo.io/api/v1/mixed_people/api_search"
     search_body = {
-        "page": 1,
+        "page": page,
         "per_page": per_page,
         "person_titles": filters.get("titles", []),
         "organization_num_employees_ranges": filters.get("employee_ranges", []),
         "person_locations": filters.get("locations", []),
     }
+    # Add seniority filter (AI-selected decision-maker levels)
+    if filters.get("seniorities"):
+        search_body["person_seniorities"] = filters["seniorities"]
     # Add optional industry filter
     if filters.get("industries"):
         search_body["organization_industries"] = filters["industries"]
@@ -287,7 +291,14 @@ def apollo_people_search(
             request_params={
                 "titles": filters.get("titles"),
                 "employee_ranges": filters.get("employee_ranges"),
+                "locations": filters.get("locations"),
+                "seniorities": filters.get("seniorities"),
+                "industries": filters.get("industries"),
+                "technologies": filters.get("technologies"),
+                "keywords": filters.get("keywords"),
+                "revenue_ranges": filters.get("revenue_ranges"),
                 "per_page": per_page,
+                "apollo_search_body": search_body,
             },
             response_status=status,
             latency_ms=latency_ms,
@@ -328,7 +339,7 @@ def apollo_match_person(
     if not api_key:
         return None
     _rl_consume("apollo")
-    url = "https://api.apollo.io/v1/people/match"
+    url = "https://api.apollo.io/api/v1/people/match"
     headers = {
         "Content-Type": "application/json",
         "Cache-Control": "no-cache",

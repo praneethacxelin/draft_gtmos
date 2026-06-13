@@ -203,6 +203,15 @@ def patch_discovery(
     current = dict(s.discovery_data or {})
     current.update(body)
     s.discovery_data = current
+    # Mirror key discovery answers onto the top-level columns so list views,
+    # exports, and the S1 gate stay in sync (the questionnaire is the source of
+    # truth, but `description`/`pain_points_raw` are what the UI reads).
+    product_desc = _discovery_value(current.get("product_description"))
+    if product_desc:
+        s.description = product_desc
+    pain_points = _discovery_value(current.get("pain_points"))
+    if pain_points:
+        s.pain_points_raw = pain_points
     db.commit()
     db.refresh(s)
     audit_service.log_change(
@@ -307,15 +316,66 @@ def patch_use_cases(
     return _serialize(s)
 
 
+def _discovery_value(val):
+    """Clean a discovery field into a non-empty string, or '' if blank."""
+    if val is None:
+        return ""
+    if isinstance(val, list):
+        clean = [v for v in val if v and v != "__other__"]
+        return ", ".join(clean)
+    if isinstance(val, str) and val.strip() and val != "__other__":
+        return val.strip()
+    return ""
+
+
+def discovery_core_ready(strategy) -> tuple[bool, list[str]]:
+    """Has the user supplied enough discovery to run S1 on real data?
+
+    Core fields: a product description, the pain points it solves, and at
+    least one buyer role (economic buyer or champion). Without these, S1 would
+    hallucinate from the product name alone — wasting tokens and producing
+    fake results. Falls back to the legacy ``description``/``pain_points_raw``
+    columns so older profiles still qualify.
+    """
+    dd = strategy.discovery_data or {}
+    missing = []
+    if not (_discovery_value(dd.get("product_description")) or (strategy.description or "").strip()):
+        missing.append("product description")
+    if not (_discovery_value(dd.get("pain_points")) or (strategy.pain_points_raw or "").strip()):
+        missing.append("pain points")
+    if not (_discovery_value(dd.get("economic_buyer")) or _discovery_value(dd.get("champion"))):
+        missing.append("economic buyer or champion")
+    return (len(missing) == 0, missing)
+
+
 def _s1_event_gen(strategy_id: str):
     async def event_gen():
         db2 = SessionLocal()
         try:
+            strategy = db2.query(Strategy).filter(Strategy.id == strategy_id).first()
+            if strategy is not None:
+                ready, missing = discovery_core_ready(strategy)
+                if not ready:
+                    yield {
+                        "event": "error",
+                        "data": json.dumps({
+                            "status": 422,
+                            "code": "discovery_incomplete",
+                            "missing": missing,
+                            "message": (
+                                "Fill in the discovery form first ("
+                                + ", ".join(missing)
+                                + ") so S1 runs on your real inputs instead of guessing."
+                            ),
+                        }),
+                    }
+                    return
             async for ev in stream_s1(db2, strategy_id):
                 yield {"event": ev["event"], "data": json.dumps(ev["data"])}
         finally:
             db2.close()
     return event_gen
+
 
 
 @router.post("/{strategy_id}/run")

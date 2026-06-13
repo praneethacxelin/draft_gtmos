@@ -12,3 +12,4 @@ alembic
 langgraph
 langchain-core
 pyjwt[crypto]
+chromadb

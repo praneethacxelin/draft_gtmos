@@ -81,6 +81,7 @@ export function StrategyDetail() {
   }, [id, setActiveId]);
   const [streaming, setStreaming] = useState(false);
   const [stageStatus, setStageStatus] = useState<Record<string, string>>({});
+  const [runError, setRunError] = useState<string | null>(null);
   const autoRanRef = useRef<string | null>(null);
   const sizing = useMarketSizing();
   const runComps = useRunCompetitors();
@@ -124,6 +125,7 @@ export function StrategyDetail() {
 
   async function startStream() {
     if (!id) return;
+    setRunError(null);
     setStreaming(true);
     setStageStatus({});
     const es = new EventSource(apiUrl(`/api/strategies/${id}/run`));
@@ -143,6 +145,21 @@ export function StrategyDetail() {
     });
     es.addEventListener("error", (e) => {
       console.error("SSE error", e);
+      const raw = (e as MessageEvent).data;
+      if (raw) {
+        try {
+          const d = JSON.parse(raw);
+          if (d?.message) {
+            setRunError(d.message);
+            if (d?.code === "discovery_incomplete") setActiveTab("discovery");
+            setStreaming(false);
+            es.close();
+            return;
+          }
+        } catch {
+          /* non-JSON error payload — fall through to stage marking */
+        }
+      }
       setStageStatus((prev) => {
         const update: Record<string, string> = {};
         for (const k of Object.keys(prev)) {
@@ -163,8 +180,12 @@ export function StrategyDetail() {
       strategy.status === "draft" &&
       autoRanRef.current !== strategy.id
     ) {
+      // Mark this strategy as "seen" so we never auto-run it. S1 is now an
+      // explicit, user-triggered action — we deliberately do NOT auto-run on
+      // draft because discovery is usually still empty at that point, which
+      // would make the model hallucinate from the product name alone and
+      // waste tokens on a result the user immediately re-runs.
       autoRanRef.current = strategy.id;
-      startStream();
     }
   }, [strategy]);
 
@@ -176,7 +197,6 @@ export function StrategyDetail() {
   const TOTAL_DISCOVERY_QUESTIONS = 15;
   const defaultTab = discoveryQuestionsAnswered < 4 ? "discovery" : "icp";
   const [activeTab, setActiveTab] = useState(defaultTab);
-
   if (isLoading)
     return (
       <div className="flex items-center gap-2 p-8 text-sm text-muted-foreground">
@@ -190,11 +210,32 @@ export function StrategyDetail() {
       </div>
     );
 
+  // ── S1 run gate ───────────────────────────────────────────────────────────
+  // S1 only runs once the user has supplied enough discovery to ground the
+  // model: a product description, the pain points it solves, and at least one
+  // buyer role. Otherwise the pipeline would hallucinate from the product name
+  // alone — producing fake results and wasting tokens on a run the user has to
+  // redo. This mirrors the server-side guard in routes/strategies.py.
+  const dd = (strategy.discovery_data ?? {}) as Record<string, unknown>;
+  const ddValue = (key: string): string => {
+    const v = dd[key];
+    if (typeof v === "string") return v.trim() !== "" && v !== "__other__" ? v.trim() : "";
+    if (Array.isArray(v)) return v.filter((x) => x && x !== "__other__").join(", ");
+    return "";
+  };
+  const missingCoreFields: string[] = [];
+  if (!ddValue("product_description") && !(strategy.description ?? "").trim())
+    missingCoreFields.push("product description");
+  if (!ddValue("pain_points") && !(strategy.pain_points_raw ?? "").trim())
+    missingCoreFields.push("pain points");
+  if (!ddValue("economic_buyer") && !ddValue("champion"))
+    missingCoreFields.push("economic buyer or champion");
+  const discoveryReady = missingCoreFields.length === 0;
+
   const retriggerActions: RetriggerAction[] = [
     {
       label: streaming ? "Running…" : "Re-run S1",
-      icon: <PlayCircle className="h-3 w-3" />,
-      onClick: startStream,
+      icon: <PlayCircle className="h-3 w-3" />,      onClick: startStream,
       isPending: streaming,
     },
     {
@@ -229,13 +270,43 @@ export function StrategyDetail() {
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <StatusPill status={strategy.status} />
           {!streaming && (
-            <Button onClick={startStream} data-testid="button-run-s1">
-              <PlayCircle className="mr-2 h-4 w-4" />
-              {ready ? "Re-run S1" : "Run S1"}
-            </Button>
+            <div className="flex flex-col items-start gap-1">
+              <Button
+                onClick={startStream}
+                disabled={!discoveryReady}
+                data-testid="button-run-s1"
+                title={
+                  discoveryReady
+                    ? undefined
+                    : `Fill discovery first: ${missingCoreFields.join(", ")}`
+                }
+              >
+                {ready ? (
+                  <Sparkles className="mr-2 h-4 w-4" />
+                ) : (
+                  <PlayCircle className="mr-2 h-4 w-4" />
+                )}
+                {ready ? "Re-run S1" : "Generate Strategy"}
+              </Button>
+              {!discoveryReady && (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("discovery")}
+                  className="text-left text-[11px] text-amber-500 hover:underline"
+                >
+                  Fill discovery to generate · need {missingCoreFields.join(", ")}
+                </button>
+              )}
+            </div>
           )}
           {streaming && <StreamProgress stageStatus={stageStatus} />}
         </div>
+        {runError && (
+          <div className="mt-2 flex items-start gap-2 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-500">
+            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>{runError}</span>
+          </div>
+        )}
       </div>
 
       {/* Retrigger bar */}

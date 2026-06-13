@@ -129,6 +129,7 @@ export interface Strategy {
   stakeholder_map?: StakeholderMap | null;
   use_cases?: ({ use_cases?: UseCase[] } & WithProvenance) | null;
   tam_sam_som?: TamSamSom | null;
+  discovery_data?: Record<string, unknown> | null;
   created_at?: string;
 }
 

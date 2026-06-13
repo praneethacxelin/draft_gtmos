@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.db import Strategy, IcpEmbedding
 from app.llm import chat_json, deterministic_embedding
 from app.services import audit_service
+from app.services.vector_store import store as vector_store
 
 
 def _persist(field, payload, strategy, db):
@@ -25,6 +26,41 @@ def _persist(field, payload, strategy, db):
     setattr(strategy, field, payload)
     db.commit()
     return True
+
+
+def _icp_profile_text(product_name: str, icp: dict, naics: dict, brief: str) -> str:
+    """Build a natural-language ICP profile for semantic embedding.
+
+    Plain prose embeds far better than raw JSON, so account text and ICP text
+    land in a comparable semantic space for cosine similarity.
+    """
+    icp = icp if isinstance(icp, dict) else {}
+    parts = [f"Ideal customer profile for {product_name}."]
+    inds = icp.get("industries")
+    if inds:
+        parts.append("Industries: " + ", ".join(map(str, inds)) + ".")
+    if icp.get("employee_size_range"):
+        parts.append(f"Company size: {icp['employee_size_range']} employees.")
+    if icp.get("revenue_range"):
+        parts.append(f"Revenue: {icp['revenue_range']}.")
+    geos = icp.get("geographies")
+    if geos:
+        parts.append("Geographies: " + ", ".join(map(str, geos)) + ".")
+    tech = icp.get("tech_stack_signals")
+    if tech:
+        parts.append("Tech stack signals: " + ", ".join(map(str, tech)) + ".")
+    segs = icp.get("segments")
+    if isinstance(segs, list) and segs:
+        names = [s.get("name", "") for s in segs if isinstance(s, dict)]
+        parts.append("Key segments: " + ", ".join(n for n in names if n) + ".")
+    if isinstance(naics, dict):
+        nseg = naics.get("segments")
+        if isinstance(nseg, list) and nseg:
+            names = [s.get("name", "") for s in nseg if isinstance(s, dict)]
+            parts.append("Industry verticals: " + ", ".join(n for n in names if n) + ".")
+    parts.append(brief)
+    return " ".join(p for p in parts if p)
+
 
 
 async def run_s1(db: Session, strategy_id: str) -> AsyncIterator[dict]:
@@ -59,6 +95,19 @@ async def run_s1(db: Session, strategy_id: str) -> AsyncIterator[dict]:
     product_desc = _dd("product_description", strategy.description or "unspecified")
     target_market = _dd("target_geos", strategy.target_market or "unspecified")
     pain_points = _dd("pain_points", strategy.pain_points_raw or "unspecified")
+
+    # Discovery buyer/committee answers — injected verbatim into the relevant
+    # stages as hard constraints so the AI honours the user's real input
+    # instead of inventing generic titles.
+    economic_buyer = _dd("economic_buyer")
+    champion = _dd("champion")
+    deal_blockers = _dd("deal_blockers")
+    purchase_triggers = _dd("triggers")
+
+    def _constraint_block(pairs: list[tuple[str, str]]) -> str:
+        """Render only the discovery fields the user actually filled in."""
+        lines = [f"- {label}: {val}" for label, val in pairs if val and val != "unspecified"]
+        return "\n".join(lines)
     
     brief_parts = [
         f"Product: {strategy.product_name}",
@@ -130,10 +179,24 @@ async def run_s1(db: Session, strategy_id: str) -> AsyncIterator[dict]:
 
     # 2. Persona Mapping
     yield {"event": "stage_start", "data": {"stage": "personas"}}
+    persona_constraints = _constraint_block([
+        ("Economic Buyer", economic_buyer),
+        ("Champion", champion),
+        ("Deal Blockers", deal_blockers),
+    ])
+    persona_constraint_text = (
+        "\n\nIMPORTANT — the user has specified these exact buyer roles from their "
+        "discovery call. Your persona matrix MUST use these titles/roles verbatim "
+        "(map Economic Buyer → economic_buyer, Champion → champion, Deal Blockers "
+        f"→ blocker). Do NOT invent different titles:\n{persona_constraints}\n"
+        if persona_constraints
+        else ""
+    )
     personas_prompt = (
         f"Given this ICP: {json.dumps(icp)[:1500]}, build a persona matrix for "
         f"product '{strategy.product_name}'. {brief}\n"
         "The persona titles MUST align with the buyer personas and target market described above. "
+        f"{persona_constraint_text}"
         "Return JSON with keys: champion, "
         "economic_buyer, blocker. Each persona has: title, goals (array), "
         "frustrations (array), success_metrics (array), communication_style, "
@@ -157,8 +220,20 @@ async def run_s1(db: Session, strategy_id: str) -> AsyncIterator[dict]:
 
     # 3. Problem Identification
     yield {"event": "stage_start", "data": {"stage": "problems"}}
+    problem_constraints = _constraint_block([
+        ("Real pain points (from the user)", pain_points),
+        ("Purchase triggers (from the user)", purchase_triggers),
+    ])
+    problem_constraint_text = (
+        "\nThe user has identified these specific, real pain points and triggers. "
+        "Your problem map MUST incorporate these verbatim before adding any "
+        f"inferred problems:\n{problem_constraints}\n"
+        if problem_constraints
+        else ""
+    )
     problems_prompt = (
         f"Product: {strategy.product_name}. Personas: {json.dumps(personas)[:1500]}. "
+        f"{problem_constraint_text}"
         "Build a Problem-Solution Map. Return JSON with key 'problems' = array of "
         "{persona, pain, trigger, product_angle, urgency 'low'|'medium'|'high'}."
     )
@@ -202,10 +277,23 @@ async def run_s1(db: Session, strategy_id: str) -> AsyncIterator[dict]:
 
     # 5. Buying Center Mapping
     yield {"event": "stage_start", "data": {"stage": "stakeholders"}}
+    stakeholder_constraints = _constraint_block([
+        ("Economic Buyer", economic_buyer),
+        ("Champion", champion),
+        ("Blockers", deal_blockers),
+    ])
+    stakeholder_constraint_text = (
+        "\nThe user specified these real buying-committee roles. Build the "
+        "stakeholder graph around them (Economic Buyer, Champion, and Blockers "
+        f"must each appear as nodes with matching titles):\n{stakeholder_constraints}\n"
+        if stakeholder_constraints
+        else ""
+    )
     stakeholders_prompt = (
         f"Product: {strategy.product_name}. {brief}\n"
         f"Personas: {json.dumps(personas)[:1500]}. Build a stakeholder graph for the "
         "buying center. The stakeholder titles MUST match the personas above. "
+        f"{stakeholder_constraint_text}"
         "Return JSON with keys 'nodes' = array of {id, label, role, "
         "tier 'champion'|'blocker'|'economic_buyer'|'influencer', influence 0-100} "
         "and 'edges' = array of {from, to, label}. Include 5-7 stakeholders covering "
@@ -249,13 +337,21 @@ async def run_s1(db: Session, strategy_id: str) -> AsyncIterator[dict]:
     )
     yield {"event": "stage_complete", "data": {"stage": "use_cases", "result": use_cases}}
 
-    # Embed the ICP for pgvector pattern recognition
+    # Embed the ICP for similarity-based pattern recognition + semantic
+    # lead scoring. We persist a portable JSON copy in Postgres AND index it
+    # in ChromaDB (the queryable vector store).
     summary = json.dumps({"icp": icp, "naics": naics})[:4000]
     embedding = deterministic_embedding(summary)
     db.query(IcpEmbedding).filter(IcpEmbedding.strategy_id == strategy_id).delete()
     db.add(IcpEmbedding(strategy_id=strategy_id, embedding=embedding, summary=summary[:1000]))
     strategy.status = "ready"
     db.commit()
+
+    # Index the ICP in ChromaDB using a human-readable profile so semantic
+    # similarity against real account text is meaningful.
+    icp_profile_text = _icp_profile_text(strategy.product_name, icp, naics, brief)
+    vector_store.upsert_icp(strategy_id, icp_profile_text)
+
 
     audit_service.log_pipeline_event(
         stage="complete",

@@ -59,3 +59,7 @@ __pycache__/
 *.pyo
 venv/
 .venv/
+
+# ChromaDB local vector store
+chroma_db/
+

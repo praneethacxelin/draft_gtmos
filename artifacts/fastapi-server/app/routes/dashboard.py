@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, nullslast
+from datetime import datetime, timedelta
+from typing import Optional
 from app.db import (
     get_session,
     Strategy,
@@ -12,6 +14,7 @@ from app.db import (
     User,
 )
 from app.auth import current_user
+from app.services import settings_service
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -109,3 +112,86 @@ def activity(
         })
     out.sort(key=lambda x: x["at"] or "", reverse=True)
     return out[:12]
+
+
+@router.get("/signal-pulse")
+def signal_pulse(
+    strategy_id: Optional[str] = None,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    """Today's fresh signals + biggest rank movers for the Signal Pulse card.
+
+    The daily summary is written by the background signal cron
+    (``app/services/signal_cron.py``). If no SerpAPI key is configured we
+    surface a hint instead of stale/empty data.
+    """
+    if strategy_id:
+        strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    else:
+        # Most recently scanned ready strategy, else most recent ready one.
+        strategy = (
+            db.query(Strategy)
+            .filter(Strategy.status == "ready")
+            .order_by(nullslast(Strategy.last_signal_scan.desc()))
+            .first()
+        )
+
+    if not strategy:
+        return {
+            "has_serpapi": False,
+            "last_scanned": None,
+            "new_signals": 0,
+            "top_movers": [],
+            "recent_signals": [],
+            "message": "No strategies ready yet.",
+        }
+
+    has_serpapi = bool(settings_service.get_key(db, strategy.user_id, "serpapi"))
+    summary = strategy.daily_signal_summary or {}
+
+    # Most recent live signals for this strategy (last 7 days).
+    since = datetime.utcnow() - timedelta(days=7)
+    recent_rows = (
+        db.query(Signal, Account)
+        .outerjoin(Account, Account.id == Signal.account_id)
+        .filter(
+            Signal.strategy_id == strategy.id,
+            Signal.detected_at >= since,
+            Signal.source != "m3_tracking",
+        )
+        .order_by(Signal.detected_at.desc())
+        .limit(8)
+        .all()
+    )
+    recent_signals = [
+        {
+            "signal_type": s.signal_type,
+            "summary": s.summary[:200] if s.summary else "",
+            "company": acct.company_name if acct else None,
+            "strength": s.strength_score,
+            "source": s.source,
+            "detected_at": s.detected_at.isoformat() if s.detected_at else None,
+        }
+        for s, acct in recent_rows
+    ]
+
+    message = None
+    if not has_serpapi:
+        message = "No live signals — add a SerpAPI key in Settings to enable the daily scan."
+    elif not strategy.last_signal_scan:
+        message = "First daily scan pending — run signals or wait for the next cron pass."
+
+    return {
+        "strategy_id": strategy.id,
+        "strategy_name": strategy.product_name,
+        "has_serpapi": has_serpapi,
+        "last_scanned": (
+            strategy.last_signal_scan.isoformat() if strategy.last_signal_scan else None
+        ),
+        "new_signals": summary.get("new_signals", 0),
+        "is_demo": summary.get("is_demo", False),
+        "top_movers": summary.get("top_movers", []),
+        "recent_signals": recent_signals,
+        "message": message,
+    }
