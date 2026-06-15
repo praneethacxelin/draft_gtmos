@@ -53,22 +53,14 @@ def outreach_analytics(
     if not seq_ids:
         return empty
 
-    agg = (
-        db.query(
-            OutreachEvent.event_type,
-            func.count(OutreachEvent.id).label("cnt"),
-        )
-        .filter(OutreachEvent.sequence_id.in_(seq_ids))
-        .group_by(OutreachEvent.event_type)
-        .all()
-    )
-    counts: dict[str, int] = {row.event_type: row.cnt for row in agg}
+    if not seq_ids:
+        return empty
 
-    sent = counts.get("sent", 0)
-    opened = counts.get("opened", 0)
-    clicked = counts.get("clicked", 0)
-    replied = counts.get("replied", 0)
-    bounced = counts.get("bounced", 0)
+    instantly_camps = {}
+    camps = db.query(InstantlyCampaign).filter(InstantlyCampaign.sequence_id.in_(seq_ids)).all()
+    for c in camps:
+        if c.analytics_json:
+            instantly_camps[c.sequence_id] = c.analytics_json
 
     contacts_map: dict[str, Contact] = {}
     if strategy_id:
@@ -97,6 +89,14 @@ def outreach_analytics(
             .all()
         )
         ev: dict[str, int] = {row.event_type: row.cnt for row in ev_agg}
+        if seq.id in instantly_camps:
+            a_json = instantly_camps[seq.id]
+            ev["sent"] = a_json.get("sent", ev.get("sent", 0))
+            ev["opened"] = a_json.get("opened", ev.get("opened", 0))
+            ev["clicked"] = a_json.get("clicked", ev.get("clicked", 0))
+            ev["replied"] = a_json.get("replied", ev.get("replied", 0))
+            ev["bounced"] = a_json.get("bounced", ev.get("bounced", 0))
+
         c = contacts_map.get(seq.contact_id)
         s_sent = ev.get("sent", 0)
         seq_rows.append(
@@ -117,6 +117,12 @@ def outreach_analytics(
             }
         )
     seq_rows.sort(key=lambda x: x["sent"], reverse=True)
+
+    sent = sum(r["sent"] for r in seq_rows)
+    opened = sum(r["opened"] for r in seq_rows)
+    clicked = sum(r["clicked"] for r in seq_rows)
+    replied = sum(r["replied"] for r in seq_rows)
+    bounced = sum(r["bounced"] for r in seq_rows)
 
     by_strategy_agg: dict[str, dict[str, int]] = {}
     for seq in sequences:

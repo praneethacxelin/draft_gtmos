@@ -15,6 +15,7 @@ import {
   Loader2,
   CheckCircle2,
   AlertCircle,
+  ClipboardList,
 } from "lucide-react";
 import {
   useStrategy,
@@ -35,6 +36,7 @@ import {
 } from "@/hooks/useStrategies";
 import { apiUrl } from "@/lib/api";
 import { useFetchLimits } from "@/hooks/useSettings";
+import { useActiveStrategy } from "@/hooks/useActiveStrategy";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -53,6 +55,7 @@ import { EditableField } from "@/components/EditableField";
 import { EditableTextarea } from "@/components/EditableTextarea";
 import { EditableList } from "@/components/EditableList";
 import { RetriggerBar, type RetriggerAction } from "@/components/RetriggerBar";
+import { DiscoveryWizard } from "@/components/DiscoveryWizard";
 
 const S1_STAGES = [
   { key: "icp", label: "ICP" },
@@ -69,6 +72,13 @@ export function StrategyDetail() {
   const id = params?.id;
   const { data: strategy, isLoading } = useStrategy(id);
   const qc = useQueryClient();
+  const { setActiveId } = useActiveStrategy();
+
+  useEffect(() => {
+    if (id) {
+      setActiveId(id);
+    }
+  }, [id, setActiveId]);
   const [streaming, setStreaming] = useState(false);
   const [stageStatus, setStageStatus] = useState<Record<string, string>>({});
   const autoRanRef = useRef<string | null>(null);
@@ -90,8 +100,6 @@ export function StrategyDetail() {
   async function saveField(data: {
     product_name?: string;
     description?: string;
-    target_market?: string;
-    pain_points_raw?: string;
   }) {
     if (!id) return;
     try {
@@ -160,6 +168,15 @@ export function StrategyDetail() {
     }
   }, [strategy]);
 
+  const discoveryQuestionsAnswered = strategy?.discovery_data ? Object.values(strategy.discovery_data).filter(v => {
+    if (typeof v === 'string') return v.trim() !== '' && v !== '__other__';
+    if (Array.isArray(v)) return v.filter((x: any) => x && x !== '__other__').length > 0;
+    return false;
+  }).length : 0;
+  const TOTAL_DISCOVERY_QUESTIONS = 15;
+  const defaultTab = discoveryQuestionsAnswered < 4 ? "discovery" : "icp";
+  const [activeTab, setActiveTab] = useState(defaultTab);
+
   if (isLoading)
     return (
       <div className="flex items-center gap-2 p-8 text-sm text-muted-foreground">
@@ -188,12 +205,13 @@ export function StrategyDetail() {
     },
   ];
 
+
   return (
     <div className="mx-auto max-w-7xl px-4 pb-16 pt-8">
       {/* Editable page header */}
       <div className="mb-6">
         <div className="text-[10px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
-          Stage 1 · Strategy
+          Stage 1 · Product Profile
         </div>
         <h1 className="mt-1 text-2xl font-semibold tracking-tight text-foreground">
           <EditableField
@@ -203,41 +221,9 @@ export function StrategyDetail() {
             inputClassName="w-72 text-xl"
           />
         </h1>
-        <div className="mt-1 max-w-2xl">
-          <EditableTextarea
-            value={strategy.description}
-            onSave={(v) => saveField({ description: v })}
-            textClassName="text-sm text-muted-foreground"
-            rows={2}
-            placeholder="Add a description…"
-          />
-        </div>
-        {(strategy.target_market || strategy.pain_points_raw) && (
-          <div className="mt-2 flex flex-wrap gap-5 text-sm">
-            {strategy.target_market && (
-              <div className="flex items-center gap-1.5">
-                <span className="shrink-0 text-[10px] uppercase tracking-widest text-muted-foreground">
-                  Target market:
-                </span>
-                <EditableField
-                  value={strategy.target_market}
-                  onSave={(v) => saveField({ target_market: v })}
-                  displayClassName="text-sm text-foreground"
-                />
-              </div>
-            )}
-            {strategy.pain_points_raw && (
-              <div className="flex items-center gap-1.5">
-                <span className="shrink-0 text-[10px] uppercase tracking-widest text-muted-foreground">
-                  Pain points:
-                </span>
-                <EditableField
-                  value={strategy.pain_points_raw}
-                  onSave={(v) => saveField({ pain_points_raw: v })}
-                  displayClassName="text-sm text-foreground"
-                />
-              </div>
-            )}
+        {strategy.description && (
+          <div className="mt-1 max-w-2xl text-sm text-muted-foreground">
+            {strategy.description}
           </div>
         )}
         <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -297,8 +283,12 @@ export function StrategyDetail() {
         </Card>
       </div>
 
-      <Tabs defaultValue="icp" className="space-y-4">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
         <TabsList className="flex h-auto flex-wrap gap-1">
+          <TabsTrigger value="discovery">
+            <ClipboardList className="mr-1.5 h-3.5 w-3.5" />
+            Discovery
+          </TabsTrigger>
           <TabsTrigger value="icp">
             <Target className="mr-1.5 h-3.5 w-3.5" />
             ICP
@@ -332,6 +322,23 @@ export function StrategyDetail() {
             Competitors
           </TabsTrigger>
         </TabsList>
+
+        <TabsContent value="discovery" className="space-y-4">
+          <div className="mb-4 rounded border border-primary/20 bg-primary/5 p-4 text-sm text-primary">
+            <div className="font-semibold flex items-center gap-2 mb-1">
+              <Sparkles className="w-4 h-4" />
+              Want tailored, world-class results?
+            </div>
+            <p className="text-primary/80">
+              Fill out this discovery questionnaire so the AI can generate highly accurate cold outreach campaigns, precise personas, and specific use cases for {strategy.product_name}. You can skip this and come back later, and your progress will auto-save.
+            </p>
+          </div>
+          <DiscoveryWizard 
+            strategyId={id} 
+            initialData={strategy.discovery_data} 
+            onComplete={() => setActiveTab("icp")}
+          />
+        </TabsContent>
 
         <TabsContent value="icp" className="space-y-4">
           <ReasoningPanel

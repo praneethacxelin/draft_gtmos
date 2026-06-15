@@ -1,5 +1,5 @@
 import { ReactNode } from "react";
-import { Link, useLocation } from "wouter";
+import { Link, useLocation, useRoute } from "wouter";
 import {
   LayoutDashboard,
   Compass,
@@ -27,7 +27,7 @@ import { cn } from "@/lib/utils";
 
 const NAV = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/strategy", label: "Strategy", icon: Compass },
+  { href: "/strategy", label: "Product Profile", icon: Compass },
   { href: "/prospects", label: "Prospects", icon: Users },
   { href: "/outreach", label: "Outreach", icon: Send },
   { href: "/intelligence", label: "Intelligence", icon: Activity },
@@ -38,9 +38,17 @@ const NAV = [
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const [location] = useLocation();
+  const [location, navigate] = useLocation();
   const { activeId, setActiveId, strategies } = useActiveStrategy();
   const { theme, toggle } = useTheme();
+
+  function handleProfileChange(id: string) {
+    setActiveId(id);
+    // If user is on a strategy detail page, navigate to the new profile
+    if (location.startsWith("/strategy/")) {
+      navigate(`/strategy/${id}`);
+    }
+  }
 
   return (
     <div className="flex min-h-screen w-full bg-background text-foreground">
@@ -59,11 +67,11 @@ export function AppShell({ children }: { children: ReactNode }) {
 
         <div className="px-3 pb-3">
           <div className="mb-1 px-2 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
-            Active Strategy
+            Active Profile
           </div>
           <Select
             value={activeId ?? undefined}
-            onValueChange={(v) => setActiveId(v)}
+            onValueChange={handleProfileChange}
           >
             <SelectTrigger
               className="h-9 w-full bg-card text-xs"

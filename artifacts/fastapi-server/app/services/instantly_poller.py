@@ -20,6 +20,9 @@ from app.db import (
     Sequence,
     SequenceStep,
     Strategy,
+    EngagementEvent,
+    QualificationRecord,
+    Contact,
 )
 from app.services import settings_service, clients
 
@@ -54,31 +57,64 @@ def _ingest_once() -> int:
             if not instantly_key:
                 continue
             try:
-                events = clients.instantly_get_events(instantly_key, row.instantly_campaign_id) or []
-            except Exception as exc:  # pragma: no cover - external API
+                camp_id = row.instantly_campaign_id
+                # Get overall analytics
+                analytics = clients.instantly_get_analytics(instantly_key, camp_id)
+                if analytics:
+                    row.analytics_json = analytics
+
+                # Get steps analytics
+                steps_analytics = clients.instantly_get_steps_analytics(instantly_key, camp_id)
+                if steps_analytics:
+                    row.steps_analytics_json = steps_analytics
+
+                # Get daily analytics (last 30 days)
+                end_date = datetime.utcnow().strftime("%Y-%m-%d")
+                start_date = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d")
+                daily = clients.instantly_get_daily_analytics(instantly_key, camp_id, start_date, end_date)
+                if daily:
+                    row.daily_analytics_json = daily
+
+                # Fetch leads to populate Intelligence tab
+                leads = clients.instantly_get_leads(instantly_key, camp_id) or []
+                for ld in leads:
+                    email = ld.get("email")
+                    status = ld.get("status")
+                    if not email or not status: continue
+                    # Find contact
+                    contact = db.query(Contact).filter(Contact.email == email).first()
+                    if not contact: continue
+                    
+                    # Insert EngagementEvent if interested or replied
+                    if status in ("interested", "replied", "meeting_booked"):
+                        # de-dupe
+                        exists = db.query(EngagementEvent).filter(
+                            EngagementEvent.contact_id == contact.id,
+                            EngagementEvent.channel == "email",
+                            EngagementEvent.event_type == "email_reply"
+                        ).first()
+                        if not exists:
+                            db.add(EngagementEvent(
+                                strategy_id=seq.strategy_id,
+                                contact_id=contact.id,
+                                account_id=contact.account_id,
+                                channel="email",
+                                event_type="email_reply",
+                                intent_contribution_score=10.0,
+                                metadata_json={"instantly_status": status, "lead_id": ld.get("id")}
+                            ))
+                            if status in ("interested", "meeting_booked"):
+                                # Also update Qualification
+                                q = db.query(QualificationRecord).filter(QualificationRecord.contact_id == contact.id).first()
+                                if q:
+                                    q.status = "sql" if status == "meeting_booked" else "mql"
+                                    q.reasoning = f"Instantly lead status changed to {status}"
+
+                ingested += 1
+            except Exception as exc:  # pragma: no cover
                 log.warning("instantly fetch failed for %s: %s", row.instantly_campaign_id, exc)
                 continue
-            steps = {s.step_number: s for s in db.query(SequenceStep).filter(SequenceStep.sequence_id == seq.id).all()}
-            for ev in events:
-                ev_id = str(ev.get("id") or "")
-                # de-dupe via raw_data_json["instantly_id"]
-                exists = (
-                    db.query(OutreachEvent)
-                    .filter(OutreachEvent.sequence_id == seq.id)
-                    .filter(OutreachEvent.raw_data_json["instantly_id"].astext == ev_id)
-                    .first()
-                )
-                if exists:
-                    continue
-                step = steps.get(ev.get("step")) if isinstance(ev.get("step"), int) else None
-                db.add(OutreachEvent(
-                    sequence_id=seq.id,
-                    sequence_step_id=step.id if step else None,
-                    event_type=ev.get("event_type", "sent"),
-                    occurred_at=datetime.utcnow(),
-                    raw_data_json={"instantly_id": ev_id, **ev},
-                ))
-                ingested += 1
+
             row.synced_at = datetime.utcnow()
         db.commit()
     finally:
