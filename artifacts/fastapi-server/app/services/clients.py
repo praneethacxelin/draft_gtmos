@@ -370,6 +370,14 @@ def apollo_people_search(
     # Add revenue range filter
     if filters.get("revenue_ranges"):
         search_body["organization_revenue_ranges"] = filters["revenue_ranges"]
+    # Add free-text keyword filter (q_keywords) — broadens reach to buyers
+    # whose role/company context matches even when firmographics are sparse.
+    if filters.get("keywords"):
+        kw = filters["keywords"]
+        if isinstance(kw, list):
+            kw = " ".join(str(k).strip() for k in kw if str(k).strip())
+        if kw and str(kw).strip():
+            search_body["q_keywords"] = str(kw).strip()
 
     curl = _make_curl("POST", search_url, headers=headers, body=search_body)
     t0 = time.perf_counter()
@@ -450,6 +458,7 @@ def apollo_people_search(
                 "industries": filters.get("industries"),
                 "technologies": filters.get("technologies"),
                 "revenue_ranges": filters.get("revenue_ranges"),
+                "keywords": filters.get("keywords"),
                 "per_page": per_page,
                 "apollo_search_body": search_body,
             },

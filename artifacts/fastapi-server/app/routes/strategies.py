@@ -20,6 +20,7 @@ from app.agents.s2_signals import (
     fetch_contact_emails,
     fetch_contact_phones,
 )
+from app.agents.roi_validator import validate_roi
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
 
@@ -432,6 +433,36 @@ def _sse(coro_or_value, label: str):
     return EventSourceResponse(gen())
 
 
+class RoiValidateRequest(BaseModel):
+    investment_usd: float
+    expected_revenue_usd: float
+    timeframe_months: int = 12
+    market_segment: str | None = None
+    notes: str | None = None
+
+
+@router.post("/{strategy_id}/roi/validate")
+async def roi_validate(
+    strategy_id: str,
+    body: RoiValidateRequest,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    own_strategy(db, strategy_id, user)
+    result = await validate_roi(
+        db,
+        strategy_id,
+        investment_usd=body.investment_usd,
+        expected_revenue_usd=body.expected_revenue_usd,
+        timeframe_months=body.timeframe_months,
+        market_segment=body.market_segment,
+        notes=body.notes,
+    )
+    if isinstance(result, dict) and "_error" in result:
+        raise HTTPException(status_code=502, detail=result["_error"])
+    return result
+
+
 @router.post("/{strategy_id}/market-sizing")
 async def market_sizing(
     strategy_id: str,
@@ -573,6 +604,7 @@ def _serialize(s: Strategy) -> dict:
         "stakeholder_map": s.stakeholder_map_json,
         "use_cases": s.use_cases_json,
         "tam_sam_som": s.tam_sam_som_json,
+        "roi": s.roi_json,
         "status": s.status,
         "discovery_data": s.discovery_data,
         "created_at": s.created_at.isoformat() if s.created_at else None,

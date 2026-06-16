@@ -107,6 +107,9 @@ class Strategy(Base):
     stakeholder_map_json = Column(JSONB, nullable=True)
     use_cases_json = Column(JSONB, nullable=True)
     tam_sam_som_json = Column(JSONB, nullable=True)
+    # ROI expectation validation (investment vs expected revenue) grounded in
+    # this profile's market sizing + ICP. Computed by app/agents/roi_validator.py.
+    roi_json = Column(JSONB, nullable=True)
     status = Column(String, default="draft")  # draft / generating / ready
     discovery_data = Column(JSONB, nullable=True)
     last_signal_scan = Column(DateTime, nullable=True)
@@ -391,6 +394,54 @@ class AuditLog(Base):
     change_after = Column(JSONB, nullable=True)
     actor = Column(String, nullable=True)         # user | agent
     summary = Column(Text, nullable=True)
+
+
+# ---------- Experiments (Apollo parameter search) ----------
+#
+# A profile can run multiple experiment batches. Each batch holds N
+# experiments — distinct Apollo facet combinations (location, industry,
+# employee size, revenue, titles, …) — that are run against Apollo and then
+# analysed together so the LLM can surface the best-performing parameter set
+# and the most relevant leads for the product profile.
+
+
+class ExperimentBatch(Base):
+    __tablename__ = "experiment_batches"
+    id = Column(String, primary_key=True, default=gen_id)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    strategy_id = Column(String, ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String, nullable=True)
+    n_experiments = Column(Integer, nullable=False, default=3)
+    leads_per_experiment = Column(Integer, nullable=False, default=10)
+    status = Column(String, default="draft")  # draft / seeded / running / analyzed
+    hypothesis = Column(Text, nullable=True)
+    best_experiment_id = Column(String, nullable=True)
+    analysis_json = Column(JSONB, nullable=True)  # cross-experiment summary + ranking
+    created_at = Column(DateTime, default=now)
+    updated_at = Column(DateTime, default=now, onupdate=now)
+
+
+class Experiment(Base):
+    __tablename__ = "experiments"
+    id = Column(String, primary_key=True, default=gen_id)
+    batch_id = Column(String, ForeignKey("experiment_batches.id", ondelete="CASCADE"), nullable=False, index=True)
+    strategy_id = Column(String, ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False, index=True)
+    idx = Column(Integer, nullable=False)  # 1-based position within the batch
+    name = Column(String, nullable=True)
+    hypothesis = Column(Text, nullable=True)
+    # Editable Apollo facet form: {titles, seniorities, locations, industries,
+    # employee_ranges, technologies, revenue_ranges}
+    params_json = Column(JSONB, nullable=True)
+    source = Column(String, default="ai")  # ai | user
+    status = Column(String, default="draft")  # draft / running / done / failed
+    # Run outputs
+    result_summary_json = Column(JSONB, nullable=True)  # counts, winning tier, provenance
+    leads_json = Column(JSONB, nullable=True)  # list of normalized lead dicts (NOT persisted to contacts)
+    relevancy_json = Column(JSONB, nullable=True)  # per-experiment relevancy scoring vs profile
+    score = Column(Float, nullable=True)  # composite 0-100 (relevancy x volume)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=now)
+    updated_at = Column(DateTime, default=now, onupdate=now)
 
 
 # ---------- Helpers ----------

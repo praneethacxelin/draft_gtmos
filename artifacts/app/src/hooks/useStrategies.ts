@@ -115,6 +115,60 @@ export interface TamSamSom extends WithProvenance {
   uses_live_data?: boolean;
 }
 
+export type RoiVerdict =
+  | "realistic"
+  | "too_optimistic"
+  | "too_conservative"
+  | "insufficient_data";
+
+export interface RoiCorrection {
+  field: "expected_revenue" | "investment";
+  from_usd?: number;
+  to_usd?: number;
+  reason?: string;
+}
+
+export interface RoiValidation extends WithProvenance {
+  verdict?: RoiVerdict;
+  headline?: string;
+  expected_multiple?: number;
+  benchmark?: {
+    typical_roi_multiple_low?: number;
+    typical_roi_multiple_high?: number;
+    typical_payback_months?: number;
+    avg_contract_value_usd?: number;
+    typical_win_rate_pct?: number;
+    typical_sales_cycle_months?: number;
+    note?: string;
+  };
+  realistic_revenue_low_usd?: number;
+  realistic_revenue_high_usd?: number;
+  recommended_investment_usd?: number;
+  calculator?: {
+    accounts_reachable?: number;
+    deals_expected?: number;
+    projected_pipeline_usd?: number;
+    projected_revenue_usd?: number;
+    assumptions?: string[];
+  };
+  corrections?: RoiCorrection[];
+  warnings?: string[];
+  rationale?: string;
+  inputs?: {
+    investment_usd?: number;
+    expected_revenue_usd?: number;
+    timeframe_months?: number;
+    market_segment?: string | null;
+    notes?: string | null;
+  };
+  market_context?: {
+    tam_usd?: number | null;
+    sam_usd?: number | null;
+    som_usd?: number | null;
+    methodology?: string | null;
+  };
+}
+
 export interface Strategy {
   id: string;
   product_name: string;
@@ -129,6 +183,7 @@ export interface Strategy {
   stakeholder_map?: StakeholderMap | null;
   use_cases?: ({ use_cases?: UseCase[] } & WithProvenance) | null;
   tam_sam_som?: TamSamSom | null;
+  roi?: RoiValidation | null;
   discovery_data?: Record<string, unknown> | null;
   created_at?: string;
 }
@@ -222,6 +277,27 @@ export function useCompetitors(id?: string) {
     queryKey: id ? strategyKeys.competitors(id) : ["competitors", "none"],
     queryFn: () => apiFetch(`/api/strategies/${id}/competitors`),
     enabled: !!id,
+  });
+}
+
+export interface RoiValidateInput {
+  investment_usd: number;
+  expected_revenue_usd: number;
+  timeframe_months?: number;
+  market_segment?: string | null;
+  notes?: string | null;
+}
+
+export function useValidateRoi() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: RoiValidateInput }) =>
+      apiFetch<RoiValidation>(`/api/strategies/${id}/roi/validate`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: (_, { id }) =>
+      qc.invalidateQueries({ queryKey: strategyKeys.detail(id) }),
   });
 }
 

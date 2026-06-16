@@ -30,6 +30,7 @@ from app.routes import (
     admin,
     audit,
     analytics,
+    experiments,
 )
 from app.services.instantly_poller import poll_loop
 from app.services.m3_tracking import m3_loop
@@ -155,6 +156,7 @@ def me(user: User = Depends(current_user)) -> dict:
 
 app.include_router(settings.router, prefix=api_prefix)
 app.include_router(strategies.router, prefix=api_prefix)
+app.include_router(experiments.router, prefix=api_prefix)
 app.include_router(accounts.router, prefix=api_prefix)
 app.include_router(contacts.router, prefix=api_prefix)
 app.include_router(signals.router, prefix=api_prefix)

@@ -12,6 +12,8 @@ import {
   Target,
   BarChart3,
   Boxes,
+  DollarSign,
+  FlaskConical,
   Loader2,
   CheckCircle2,
   AlertCircle,
@@ -56,6 +58,8 @@ import { EditableTextarea } from "@/components/EditableTextarea";
 import { EditableList } from "@/components/EditableList";
 import { RetriggerBar, type RetriggerAction } from "@/components/RetriggerBar";
 import { DiscoveryWizard } from "@/components/DiscoveryWizard";
+import { RoiPanel } from "@/components/RoiPanel";
+import { ExperimentsPanel } from "@/components/ExperimentsPanel";
 
 const S1_STAGES = [
   { key: "icp", label: "ICP" },
@@ -194,7 +198,7 @@ export function StrategyDetail() {
     if (Array.isArray(v)) return v.filter((x: any) => x && x !== '__other__').length > 0;
     return false;
   }).length : 0;
-  const TOTAL_DISCOVERY_QUESTIONS = 15;
+  const TOTAL_DISCOVERY_QUESTIONS = 18;
   const defaultTab = discoveryQuestionsAnswered < 4 ? "discovery" : "icp";
   const [activeTab, setActiveTab] = useState(defaultTab);
   if (isLoading)
@@ -325,7 +329,23 @@ export function StrategyDetail() {
           </div>
           <div className="mt-2 flex flex-wrap gap-3">
             {S1_STAGES.map((stage) => {
-              const status = stageStatus[stage.key];
+              // A live run streams ephemeral status into `stageStatus`. When no
+              // live status exists (e.g. after reload, or for Market Sizing which
+              // is an S2 action outside the S1 stream), fall back to whether the
+              // persisted strategy data for that stage exists so the chip still
+              // reflects reality.
+              const persistedDone: Record<string, boolean> = {
+                icp: !!strategy?.icp,
+                personas: !!strategy?.personas,
+                problems: !!strategy?.problems,
+                naics: !!strategy?.naics,
+                stakeholders: !!strategy?.stakeholder_map,
+                use_cases: !!strategy?.use_cases,
+                market_sizing: !!strategy?.tam_sam_som,
+              };
+              const status =
+                stageStatus[stage.key] ??
+                (persistedDone[stage.key] ? "done" : undefined);
               return (
                 <div
                   key={stage.key}
@@ -387,6 +407,14 @@ export function StrategyDetail() {
           <TabsTrigger value="market-sizing">
             <BarChart3 className="mr-1.5 h-3.5 w-3.5" />
             Market Sizing
+          </TabsTrigger>
+          <TabsTrigger value="roi">
+            <DollarSign className="mr-1.5 h-3.5 w-3.5" />
+            ROI
+          </TabsTrigger>
+          <TabsTrigger value="experiments">
+            <FlaskConical className="mr-1.5 h-3.5 w-3.5" />
+            Experiments
           </TabsTrigger>
           <TabsTrigger value="competitors">
             <Boxes className="mr-1.5 h-3.5 w-3.5" />
@@ -656,6 +684,14 @@ export function StrategyDetail() {
           ) : (
             <Empty label="Market sizing not generated yet." />
           )}
+        </TabsContent>
+
+        <TabsContent value="roi" className="space-y-4">
+          <RoiPanel strategyId={id!} strategy={strategy} />
+        </TabsContent>
+
+        <TabsContent value="experiments" className="space-y-4">
+          <ExperimentsPanel strategyId={id!} />
         </TabsContent>
 
         <TabsContent value="competitors" className="space-y-4">
