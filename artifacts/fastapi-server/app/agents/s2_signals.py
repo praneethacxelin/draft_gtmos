@@ -442,7 +442,7 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
         for c in db.query(Contact).filter(Contact.strategy_id == strategy_id).all()
     }
     new_contacts: list[Contact] = []
-    is_demo = apollo_results is None
+    is_demo = not apollo_results
 
     def _maybe_add_contact(contact: Contact):
         email_key = (contact.email or "").lower()
