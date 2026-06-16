@@ -9,8 +9,10 @@ exactly what was sent and reproduce it with the embedded curl command.
 """
 import json
 import logging
+import re
 import time
 from typing import Optional, Any
+from urllib.parse import urlparse
 import httpx
 
 from app.services.rate_limit import consume as _rl_consume, RateLimitExceeded
@@ -20,6 +22,37 @@ log = logging.getLogger("gtm.clients")
 TIMEOUT = httpx.Timeout(20.0, connect=5.0)
 
 _SENSITIVE_KEYS = {"api_key", "key", "secret", "token", "password", "authorization"}
+
+_TECH_UID_ALIASES = {
+    "google analytics": "google_analytics",
+    "google tag manager": "google_tag_manager",
+    "google workspace": "google_apps",
+    "g suite": "google_apps",
+    "salesforce crm": "salesforce",
+    "salesforce": "salesforce",
+    "hubspot crm": "hubspot",
+    "hubspot": "hubspot",
+    "zendesk support": "zendesk",
+    "zendesk": "zendesk",
+    "intercom": "intercom",
+    "freshdesk": "freshdesk",
+    "shopify plus": "shopify",
+    "shopify": "shopify",
+    "woocommerce": "woocommerce",
+    "magento": "magento",
+    "mailchimp": "mailchimp",
+    "marketo": "marketo",
+    "pardot": "pardot",
+    "slack": "slack",
+    "jira": "jira",
+    "atlassian": "atlassian",
+    "stripe": "stripe",
+    "quickbooks": "quickbooks",
+    "xero": "xero",
+    "workday": "workday",
+    "servicenow": "servicenow",
+}
+_TECH_UID_CACHE: dict[str, str | None] = {}
 
 
 def _mask(k: str, v: Any) -> Any:
@@ -59,6 +92,130 @@ def _truncate(obj: Any, max_len: int = 3000) -> str:
     except Exception:
         s = str(obj)
     return s[:max_len] + ("…" if len(s) > max_len else "")
+def apollo_org_domain(org: dict | None) -> Optional[str]:
+    """Extract a clean website/domain from an Apollo organization payload."""
+    if not org:
+        return None
+    raw = (
+        org.get("primary_domain")
+        or org.get("domain")
+        or org.get("website_url")
+        or org.get("website")
+    )
+    if not raw or not isinstance(raw, str):
+        return None
+    parsed = urlparse(raw.strip() if "://" in raw else f"https://{raw.strip()}")
+    host = (parsed.netloc or parsed.path).strip().lower()
+    host = host.split("/")[0].removeprefix("www.")
+    return host or None
+
+
+def _technology_uid_fallback(name: str) -> str | None:
+    clean = re.sub(r"\s+", " ", str(name or "").strip().lower())
+    if not clean or clean in {"crm", "helpdesk", "help desk", "analytics", "marketing automation"}:
+        return None
+    if clean in _TECH_UID_ALIASES:
+        return _TECH_UID_ALIASES[clean]
+    slug = re.sub(r"[^a-z0-9]+", "_", clean).strip("_")
+    return slug or None
+
+
+def _extract_technology_uid(payload: dict, wanted: str) -> str | None:
+    wanted_key = re.sub(r"[^a-z0-9]+", "", wanted.lower())
+    items = (
+        payload.get("tags")
+        or payload.get("technologies")
+        or payload.get("results")
+        or payload.get("data")
+        or []
+    )
+    if isinstance(items, dict):
+        items = items.get("items") or items.get("results") or []
+    if not isinstance(items, list):
+        return None
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("name") or item.get("label") or item.get("display_name") or "")
+        uid = item.get("uid") or item.get("id") or item.get("value")
+        label_key = re.sub(r"[^a-z0-9]+", "", label.lower())
+        if uid and (label_key == wanted_key or wanted_key in label_key or label_key in wanted_key):
+            return str(uid)
+    return None
+
+
+def apollo_resolve_technology_uids(
+    api_key: str,
+    names: list[str],
+    _strategy_id: Optional[str] = None,
+    _strategy_name: Optional[str] = None,
+) -> list[str]:
+    """Resolve technology display names into Apollo technology UIDs."""
+    if not api_key or not names:
+        return []
+    headers = {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-cache",
+        "X-Api-Key": api_key,
+    }
+    endpoints = [
+        "https://api.apollo.io/api/v1/tags/search",
+        "https://api.apollo.io/api/v1/technologies/search",
+    ]
+    resolved: list[str] = []
+    lookup_notes: list[dict] = []
+    status = None
+    t0 = time.perf_counter()
+
+    with httpx.Client(timeout=TIMEOUT) as c:
+        for raw_name in names[:8]:
+            name = str(raw_name or "").strip()
+            if not name:
+                continue
+            cache_key = name.lower()
+            uid = _TECH_UID_CACHE.get(cache_key)
+            source = "cache" if cache_key in _TECH_UID_CACHE else None
+            if cache_key not in _TECH_UID_CACHE:
+                for url in endpoints:
+                    try:
+                        _rl_consume("apollo")
+                        r = c.get(url, params={"q": name, "kind": "technology"}, headers=headers)
+                        status = r.status_code
+                        if r.status_code == 404:
+                            continue
+                        r.raise_for_status()
+                        uid = _extract_technology_uid(r.json(), name)
+                        if uid:
+                            source = url.rsplit("/", 1)[-1]
+                            break
+                    except Exception as e:
+                        log.debug("Apollo technology lookup failed for %s: %s", name, e)
+                        continue
+                if not uid:
+                    uid = _technology_uid_fallback(name)
+                    source = "slug_alias" if uid else "unresolved"
+                _TECH_UID_CACHE[cache_key] = uid
+            if uid and uid not in resolved:
+                resolved.append(uid)
+            lookup_notes.append({"input": name, "uid": uid, "source": source})
+
+    audit_service.log_api_call(
+        service="apollo",
+        method="GET",
+        url="technology_uid_resolution",
+        request_params={"technologies": names[:8]},
+        response_status=status,
+        latency_ms=int((time.perf_counter() - t0) * 1000),
+        curl_command=None,
+        strategy_id=_strategy_id,
+        strategy_name=_strategy_name,
+        is_live=True,
+        response_summary={"resolved": lookup_notes},
+        summary=f"Apollo technology UID resolution: {len(resolved)}/{len(names[:8])} resolved",
+    )
+    return resolved
+
+
 # Authoritative domains whose data we trust for market sizing, signals, etc.
 TRUSTED_DOMAINS = {
     # Market research & data
@@ -210,9 +367,6 @@ def apollo_people_search(
     # Add technology filter (find companies using specific tools)
     if filters.get("technologies"):
         search_body["currently_using_any_of_technology_uids"] = filters["technologies"]
-    # Add keyword search
-    if filters.get("keywords"):
-        search_body["q_keywords"] = filters["keywords"][0] if isinstance(filters["keywords"], list) else filters["keywords"]
     # Add revenue range filter
     if filters.get("revenue_ranges"):
         search_body["organization_revenue_ranges"] = filters["revenue_ranges"]
@@ -295,7 +449,6 @@ def apollo_people_search(
                 "seniorities": filters.get("seniorities"),
                 "industries": filters.get("industries"),
                 "technologies": filters.get("technologies"),
-                "keywords": filters.get("keywords"),
                 "revenue_ranges": filters.get("revenue_ranges"),
                 "per_page": per_page,
                 "apollo_search_body": search_body,
@@ -326,6 +479,7 @@ def apollo_match_person(
     name: str,
     org_name: Optional[str] = None,
     domain: Optional[str] = None,
+    linkedin_url: Optional[str] = None,
     reveal_phone: bool = False,
     _strategy_id: Optional[str] = None,
     _strategy_name: Optional[str] = None,
@@ -354,6 +508,12 @@ def apollo_match_person(
         body["organization_name"] = org_name
     if domain:
         body["domain"] = domain
+    if linkedin_url:
+        body["linkedin_url"] = linkedin_url
+    name_parts = [part for part in name.split(" ") if part]
+    if len(name_parts) >= 2:
+        body["first_name"] = name_parts[0]
+        body["last_name"] = name_parts[-1]
 
     curl = _make_curl(
         "POST", url,
@@ -399,7 +559,13 @@ def apollo_match_person(
             service="apollo",
             method="POST",
             url=url,
-            request_params={"name": name, "org_name": org_name or "", "reveal_phone": reveal_phone},
+            request_params={
+                "name": name,
+                "org_name": org_name or "",
+                "domain": domain or "",
+                "linkedin_url": bool(linkedin_url),
+                "reveal_phone": reveal_phone,
+            },
             response_status=status,
             latency_ms=latency_ms,
             curl_command=curl,

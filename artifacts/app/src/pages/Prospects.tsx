@@ -42,6 +42,7 @@ import {
   XCircle,
   HelpCircle,
   ShieldCheck,
+  ExternalLink,
 } from "lucide-react";
 import { ReasoningPanel, SourceBadge } from "@/components/ReasoningPanel";
 import { useFetchLimits } from "@/hooks/useSettings";
@@ -352,7 +353,9 @@ export function Prospects() {
       <ReasoningPanel
         title="How prospects are produced"
         fallback={{
-          source: "ai_generated",
+          source: (prioritized?.tier_1?.some(a => a.source !== 'ai_demo') || 
+                   prioritized?.tier_2?.some(a => a.source !== 'ai_demo') || 
+                   prioritized?.tier_3?.some(a => a.source !== 'ai_demo')) ? "apollo" : "ai_generated",
           logic:
             "Without an Apollo or SerpAPI key, accounts, contacts, and signals are AI-generated demo data. Add live keys in Settings to swap to real Apollo people-search and SerpAPI funding/hiring queries — the per-run limits below cap how many records each click pulls.",
           steps: [
@@ -392,6 +395,7 @@ export function Prospects() {
                     <thead className="bg-muted/40">
                       <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
                         <th className="px-4 py-2">Company</th>
+                        <th className="px-4 py-2">Location</th>
                         <th className="px-4 py-2">Industry</th>
                         <th className="px-4 py-2 text-right">Employees</th>
                         <th className="px-4 py-2">Revenue</th>
@@ -414,20 +418,44 @@ export function Prospects() {
                                   {a.company_name}
                                 </div>
                                 {a.domain && (
-                                  <div className="text-[11px] text-muted-foreground">
-                                    {a.domain}
-                                  </div>
+                                  <a
+                                    href={`https://${a.domain.replace(/^https?:\/\//, '')}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="inline-flex max-w-[220px] items-center gap-1 truncate text-[11px] text-sky-300 hover:text-sky-200"
+                                    title={a.domain}
+                                  >
+                                    <ExternalLink className="h-3 w-3 shrink-0" />
+                                    <span className="truncate">{a.domain}</span>
+                                  </a>
                                 )}
                               </div>
                             </div>
+                            {a.tech_stack && a.tech_stack.length > 0 && (
+                              <div className="mt-2 flex flex-wrap gap-1">
+                                {a.tech_stack.slice(0, 3).map((tech, i) => (
+                                  <span key={i} className="rounded bg-muted/60 px-1.5 py-0.5 text-[9px] text-muted-foreground">
+                                    {tech}
+                                  </span>
+                                ))}
+                                {a.tech_stack.length > 3 && (
+                                  <span className="rounded bg-muted/40 px-1.5 py-0.5 text-[9px] text-muted-foreground">
+                                    +{a.tech_stack.length - 3}
+                                  </span>
+                                )}
+                              </div>
+                            )}
                           </td>
-                          <td className="px-4 py-2 text-muted-foreground">
+                          <td className="px-4 py-2 text-muted-foreground text-[11px]">
+                            {a.location || "—"}
+                          </td>
+                          <td className="px-4 py-2 text-muted-foreground text-[11px]">
                             {a.industry || "—"}
                           </td>
                           <td className="px-4 py-2 text-right font-mono tabular-nums">
                             {a.employee_count?.toLocaleString() ?? "—"}
                           </td>
-                          <td className="px-4 py-2 text-muted-foreground">
+                          <td className="px-4 py-2 text-muted-foreground text-[11px]">
                             {a.revenue_range || "—"}
                           </td>
                           <td className="px-4 py-2 text-right font-mono tabular-nums">
@@ -450,7 +478,8 @@ export function Prospects() {
                                 <span className="font-mono text-xs tabular-nums">
                                   {a.intent_score.toFixed(0)}
                                 </span>
-                                <SourceBadge source="ai_generated" />
+                                <SourceBadge source={a.source === "ai_demo" ? "ai_generated" : "apollo"} />
+                                {a.source === "ai_demo" && <DemoBadge />}
                               </div>
                             ) : (
                               <span className="text-xs text-muted-foreground">
@@ -548,8 +577,24 @@ export function Prospects() {
                           {c.title}
                         </div>
                       </td>
-                      <td className="px-4 py-2 text-muted-foreground">
-                        {c.company_name}
+                      <td className="px-4 py-2">
+                        <div className="max-w-[220px]">
+                          <div className="truncate text-muted-foreground" title={c.company_name}>
+                            {c.company_name}
+                          </div>
+                          {c.domain && (
+                            <a
+                              href={`https://${c.domain.replace(/^https?:\/\//, '')}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex max-w-full items-center gap-1 truncate text-[11px] text-sky-300 hover:text-sky-200"
+                              title={c.domain}
+                            >
+                              <ExternalLink className="h-3 w-3 shrink-0" />
+                              <span className="truncate">{c.domain}</span>
+                            </a>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-2">
                         <div className="space-y-0.5">
@@ -582,6 +627,11 @@ export function Prospects() {
                                 </button>
                               )}
                             </div>
+                          ) : c.email === "Not found" ? (
+                            <div className="flex items-center gap-1 text-[11px] text-muted-foreground/50">
+                              <Mail className="h-3 w-3 shrink-0" />
+                              <span>Email unavailable</span>
+                            </div>
                           ) : (
                             <div className="flex items-center gap-1 text-[11px] text-muted-foreground/50">
                               <Mail className="h-3 w-3 shrink-0" />
@@ -590,7 +640,28 @@ export function Prospects() {
                                 variant="outline"
                                 className="h-5 px-1.5 text-[10px]"
                                 disabled={revealEmail.isPending}
-                                onClick={() => revealEmail.mutate(c.id)}
+                                onClick={() => revealEmail.mutate(c.id, {
+                                  onSuccess: (data) => {
+                                    if (data.email && data.email !== "Not found") {
+                                      toast({
+                                        title: "Email revealed",
+                                        description: `Successfully found email for ${c.full_name}.`,
+                                      });
+                                    } else if (data.email === "Not found") {
+                                      toast({
+                                        title: "Email not found",
+                                        description: "Apollo matched this contact but does not have their email address.",
+                                      });
+                                    }
+                                  },
+                                  onError: (err: any) => {
+                                    toast({
+                                      title: "Email fetch failed",
+                                      description: err.message || "An error occurred fetching the email.",
+                                      variant: "destructive"
+                                    });
+                                  }
+                                })}
                                 title="Uses 1 Apollo credit to fetch this person's email"
                               >
                                 {revealEmail.isPending ? "Fetching..." : "Get Email"}

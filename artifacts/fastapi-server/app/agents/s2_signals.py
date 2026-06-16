@@ -2,6 +2,7 @@
 import json
 import random
 from typing import AsyncIterator
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from app.db import Strategy, Account, Contact, Signal, Competitor, PatternCluster, IcpEmbedding, LeadScore
 from app.llm import chat_json, deterministic_embedding, MODEL_NAME
@@ -74,6 +75,111 @@ def _normalize_apollo_locations(raw_locations: list) -> list[str]:
         else:
             _add(loc)
     return out
+
+
+_APOLLO_INDUSTRY_ALIASES = {
+    "b2b saas": "computer software",
+    "saas": "computer software",
+    "software": "computer software",
+    "customer support": None,
+    "helpdesk": None,
+    "help desk": None,
+    "e-commerce": "retail",
+    "ecommerce": "retail",
+    "online retail": "retail",
+    "retail": "retail",
+    "fintech": "financial services",
+    "finance": "financial services",
+    "financial services": "financial services",
+    "banking": "banking",
+    "insurance": "insurance",
+    "healthcare": "hospital & health care",
+    "health care": "hospital & health care",
+    "medical": "hospital & health care",
+    "pharma": "pharmaceuticals",
+    "pharmaceutical": "pharmaceuticals",
+    "biotech": "biotechnology",
+    "biotechnology": "biotechnology",
+    "education": "education management",
+    "edtech": "education management",
+    "manufacturing": "manufacturing",
+    "logistics": "logistics and supply chain",
+    "supply chain": "logistics and supply chain",
+    "real estate": "real estate",
+    "construction": "construction",
+    "hospitality": "hospitality",
+    "travel": "leisure, travel & tourism",
+    "tourism": "leisure, travel & tourism",
+    "telecom": "telecommunications",
+    "telecommunications": "telecommunications",
+    "automotive": "automotive",
+    "energy": "oil & energy",
+    "legal": "legal services",
+    "law": "legal services",
+    "accounting": "accounting",
+    "marketing": "marketing and advertising",
+    "advertising": "marketing and advertising",
+    "media": "online media",
+    "government": "government administration",
+    "nonprofit": "non-profit organization management",
+    "non-profit": "non-profit organization management",
+}
+
+
+def _resolve_apollo_industries(raw_industries: list) -> tuple[list[str], list[dict]]:
+    """Map fuzzy ICP industries to Apollo-compatible organization industries."""
+    resolved: list[str] = []
+    notes: list[dict] = []
+    for raw in raw_industries or []:
+        if not isinstance(raw, str) or not raw.strip() or raw == "__other__":
+            continue
+        clean = raw.strip().lower().replace("&", "and")
+        mapped = _APOLLO_INDUSTRY_ALIASES.get(clean)
+        if clean in _APOLLO_INDUSTRY_ALIASES:
+            source = "alias"
+        else:
+            mapped = None
+            source = "unresolved"
+            for needle, value in _APOLLO_INDUSTRY_ALIASES.items():
+                if value and needle in clean:
+                    mapped = value
+                    source = "keyword_alias"
+                    break
+        if mapped and mapped not in resolved:
+            resolved.append(mapped)
+        notes.append({"input": raw, "resolved": mapped, "source": source})
+    return resolved[:5], notes
+
+
+def _update_account_from_apollo_org(account: Account, org: dict) -> None:
+    """Fill missing account firmographics from Apollo organization data."""
+    if not org:
+        return
+    domain = clients.apollo_org_domain(org)
+    if domain and not account.domain:
+        account.domain = domain
+    if org.get("industry") and not account.industry:
+        account.industry = org.get("industry")
+    if org.get("estimated_num_employees") and not account.employee_count:
+        account.employee_count = org.get("estimated_num_employees")
+    if org.get("organization_revenue_printed") and not account.revenue_range:
+        account.revenue_range = org.get("organization_revenue_printed")
+    if org.get("technologies") and not account.tech_stack_json:
+        account.tech_stack_json = org.get("technologies")
+    
+    city = org.get("headquarters_city")
+    country = org.get("headquarters_country")
+    if city and country and not account.location:
+        account.location = f"{city}, {country}"
+    elif country and not account.location:
+        account.location = country
+        
+    if org.get("founded_year") and not account.founded_year:
+        account.founded_year = org.get("founded_year")
+
+    enrichment = dict(account.enrichment_json or {})
+    enrichment.setdefault("source", "apollo")
+    account.enrichment_json = enrichment
 
 
 def _extract_geo(strategy: Strategy) -> str | None:
@@ -541,22 +647,15 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
     icp_tech = icp.get("tech_stack_signals", [])
     tech_keywords = list(set(tech_keywords + icp_tech))
 
-    # Extract search keywords from UVP and pain points
-    search_keywords = []
-    for field in ("uvp", "pain_points", "product_description"):
-        val = dd.get(field)
-        if isinstance(val, str) and val.strip() and len(val.strip()) > 10:
-            # Use first few significant words as keywords
-            search_keywords.append(val.strip()[:150])
-            break  # just use the best one
-
     apollo_results = None
     ai_filters: dict = {}
+    search_filters: dict = {}
+    filter_resolution: dict = {}
     if apollo_key:
         # ---- Let the LLM design the optimal Apollo query ----
         # The model sees the full ICP + personas + raw discovery answers and
         # decides which Apollo facets (titles, seniorities, size, industries,
-        # technologies, keywords, locations) will surface the highest-fit
+        # technologies, locations) will surface the highest-fit
         # decision makers. Heuristic values below act as a safety net.
         filter_prompt = (
             "You are a senior B2B prospecting strategist configuring an Apollo.io "
@@ -574,11 +673,10 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
             "employee_ranges (array of 'min,max' strings, e.g. '51,200'), "
             "industries (array of the buyer's OWN industry — the companies that would "
             "USE this product, not the product's category), "
-            "technologies (array of tools these buyers likely already use), "
-            "keywords (one short search phrase), "
+            "technologies (array of specific tools these buyers likely already use), "
             "locations (array of specific COUNTRY names only — never regions like "
             "'Asia-Pacific' or 'North America'; use the Target countries above). "
-            "Only include a key when it sharpens precision; omit it otherwise."
+            "Do not emit generic keywords. Only include a key when it sharpens precision; omit it otherwise."
         )
         ai_resp = await chat_json(filter_prompt, max_tokens=600)
         if isinstance(ai_resp, dict) and "_error" not in ai_resp:
@@ -590,7 +688,9 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
                 val = [v for v in val if v]
             return val or fallback
 
-        # First attempt: AI-designed (with heuristic fallback) precise filter
+        # First attempt: AI-designed (with heuristic fallback) precise filter.
+        # Do not send q_keywords: Apollo applies it to person text and it
+        # over-narrows product/problem phrases that titles already express.
         search_filters = {
             "titles": _pick("person_titles", titles or ["VP of Sales", "Head of Marketing"]),
             "employee_ranges": _pick("employee_ranges", employee_ranges),
@@ -603,15 +703,32 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
         locations = _normalize_apollo_locations(_pick("locations", all_locations))
         if locations:
             search_filters["locations"] = locations
-        industries = _pick("industries", icp_industries)
+        raw_industries = _pick("industries", icp_industries)
+        industries, industry_notes = _resolve_apollo_industries(raw_industries)
         if industries:
             search_filters["industries"] = industries
-        technologies = _pick("technologies", tech_keywords)
+        raw_technologies = _pick("technologies", tech_keywords)
+        raw_technologies_list = raw_technologies if isinstance(raw_technologies, list) else [raw_technologies]
+        technologies = clients.apollo_resolve_technology_uids(
+            apollo_key,
+            raw_technologies_list[:5],
+            _strategy_id=strategy_id,
+            _strategy_name=strategy.product_name,
+        )
         if technologies:
             search_filters["technologies"] = technologies[:5]  # Apollo limit
-        keywords = _pick("keywords", search_keywords)
-        if keywords:
-            search_filters["keywords"] = keywords[:1] if isinstance(keywords, list) else [keywords]
+        filter_resolution = {
+            "industries": industry_notes,
+            "technologies": {
+                "raw": raw_technologies_list,
+                "resolved_uids": technologies,
+            },
+            "keywords": {
+                "raw": ai_filters.get("keywords"),
+                "used": False,
+                "reason": "q_keywords searches person text and over-narrows people search",
+            },
+        }
 
         # ---- Forensic audit: record exactly what the LLM decided vs the
         # heuristic fallback, plus the final merged filter set sent to Apollo.
@@ -621,7 +738,7 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
             key: ("ai" if ai_filters.get(key) else "heuristic_fallback")
             for key in (
                 "titles", "employee_ranges", "seniorities",
-                "locations", "industries", "technologies", "keywords",
+                "locations", "industries", "technologies",
             )
         }
         audit_service.log_pipeline_event(
@@ -638,12 +755,12 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
                     "locations": all_locations,
                     "industries": icp_industries,
                     "technologies": tech_keywords,
-                    "keywords": search_keywords,
                 },
             },
             outputs={
                 "final_apollo_filters": search_filters,
                 "field_source": _filter_provenance,
+                "filter_resolution": filter_resolution,
                 "requested_limit": n_leads,
             },
             decision=(
@@ -682,15 +799,13 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
             ("precise (all AI facets)", dict(search_filters)),
         ]
         # Tier 1 — drop q_keywords (people-text search is the harshest narrower)
-        t1 = {k: v for k, v in search_filters.items() if k != "keywords"}
-        ladder.append(("dropped keywords", t1))
+        t1 = {k: v for k, v in search_filters.items() if k != "technologies"}
+        ladder.append(("dropped technologies", t1))
         # Tier 2 — also drop technologies (need Apollo UIDs, often unresolved)
-        t2 = {k: v for k, v in t1.items() if k != "technologies"}
-        ladder.append(("dropped keywords+technologies", t2))
+        t2 = {k: v for k, v in t1.items() if k != "industries"}
+        ladder.append(("titles + geo + size", t2))
         # Tier 3 — also drop industries (free-text often off-taxonomy); keep
         # titles + locations + size — all well-supported facets
-        t3 = {k: v for k, v in t2.items() if k != "industries"}
-        ladder.append(("titles + geo + size", t3))
         # Tier 4 — broaden people: swap exact titles for seniority levels but
         # KEEP geo + size so results never become random global noise
         t4 = {"employee_ranges": robust_sizes, "seniorities": robust_seniorities}
@@ -804,7 +919,7 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
                     user_id=strategy.user_id,
                     strategy_id=strategy_id,
                     company_name=company,
-                    domain=org.get("primary_domain") or org.get("website_url"),
+                    domain=clients.apollo_org_domain(org),
                     industry=org.get("industry"),
                     employee_count=org.get("estimated_num_employees"),
                     revenue_range=org.get("organization_revenue_printed"),
@@ -815,6 +930,8 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
                 db.flush()
                 new_accounts[company] = account
                 newly_added_accounts.append(company)
+            else:
+                _update_account_from_apollo_org(account, org)
             # Apollo returns name as "name" OR as first_name + last_name
             full_name = (
                 p.get("name")
@@ -841,10 +958,21 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
         # AI demo data
         demo = await chat_json(
             f"Generate {n_leads} realistic but synthetic prospects for product '{strategy.product_name}' "
-            f"targeting {strategy.target_market or 'businesses'}. ICP: {json.dumps(icp)[:1000]}. "
-            "Return JSON with key 'prospects' = array of {company_name, domain, industry, "
-            "employee_count, revenue_range, full_name, title, email, linkedin_url, seniority, "
-            "department, tech_stack (array of strings), persona_type 'champion'|'economic_buyer'|'blocker'}.",
+            f"targeting {strategy.target_market or 'businesses'}.\n"
+            f"ICP: {json.dumps(icp)[:1000]}.\n"
+            f"Discovery: {json.dumps(dd)[:800] if dd else 'none'}.\n"
+            "Each prospect MUST have COMPLETE data — do NOT leave any field empty.\n"
+            "Return JSON with key 'prospects' = array of:\n"
+            "- company_name: real-sounding company name for this vertical\n"
+            "- domain: a plausible .com domain\n"
+            "- industry: specific industry (e.g. 'Computer Software')\n"
+            "- employee_count: realistic number (50-5000 range)\n"
+            "- revenue_range: e.g. '$10M-$50M'\n"
+            "- location: city and country (e.g. 'Bangalore, India')\n"
+            "- founded_year: realistic year (e.g. 2018)\n"
+            "- tech_stack: array of 3-5 specific tools they'd use\n"
+            "- full_name, title, email, linkedin_url, seniority, department\n"
+            "- persona_type: 'champion'|'economic_buyer'|'blocker'",
             max_tokens=2500,
         )
         for p in (demo.get("prospects") or []) if isinstance(demo, dict) else []:
@@ -859,6 +987,8 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
                     industry=p.get("industry"),
                     employee_count=p.get("employee_count"),
                     revenue_range=p.get("revenue_range"),
+                    location=p.get("location"),
+                    founded_year=p.get("founded_year"),
                     tech_stack_json=p.get("tech_stack"),
                     enrichment_json={"source": "ai_demo"},
                 )
@@ -1192,7 +1322,14 @@ async def fetch_contact_emails(db: Session, strategy_id: str) -> dict:
     contacts = (
         db.query(Contact)
         .join(Account, Account.id == Contact.account_id)
-        .filter(Contact.strategy_id == strategy_id, Contact.email.is_(None))
+        .filter(
+            Contact.strategy_id == strategy_id,
+            or_(
+                Contact.email.is_(None),
+                Contact.email == "(not revealed)",
+                Contact.email == "Not found",
+            ),
+        )
         .limit(20)
         .all()
     )
@@ -1213,6 +1350,7 @@ async def fetch_contact_emails(db: Session, strategy_id: str) -> dict:
             name=contact.full_name,
             org_name=account.company_name if account else None,
             domain=account.domain if account else None,
+            linkedin_url=contact.linkedin_url,
             reveal_phone=False,
             _strategy_id=strategy_id,
             _strategy_name=strategy.product_name,
@@ -1248,7 +1386,14 @@ async def fetch_contact_phones(db: Session, strategy_id: str) -> dict:
     contacts = (
         db.query(Contact)
         .join(Account, Account.id == Contact.account_id)
-        .filter(Contact.strategy_id == strategy_id, Contact.phone.is_(None))
+        .filter(
+            Contact.strategy_id == strategy_id,
+            or_(
+                Contact.phone.is_(None),
+                Contact.phone == "Not found",
+                Contact.phone == "Maybe: please request direct dial via people/bulk_match",
+            ),
+        )
         .limit(20)
         .all()
     )
@@ -1269,6 +1414,7 @@ async def fetch_contact_phones(db: Session, strategy_id: str) -> dict:
             name=contact.full_name,
             org_name=account.company_name if account else None,
             domain=account.domain if account else None,
+            linkedin_url=contact.linkedin_url,
             reveal_phone=True,
             _strategy_id=strategy_id,
             _strategy_name=strategy.product_name,
@@ -1480,4 +1626,3 @@ def recognize_patterns(db: Session, strategy_id: str) -> dict:
 
     score_leads(db, strategy_id)
     return {"clusters": created, "details": cluster_details}
-

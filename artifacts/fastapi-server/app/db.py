@@ -151,6 +151,8 @@ class Account(Base):
     industry = Column(String, nullable=True)
     employee_count = Column(Integer, nullable=True)
     revenue_range = Column(String, nullable=True)
+    location = Column(String, nullable=True)
+    founded_year = Column(Integer, nullable=True)
     tech_stack_json = Column(JSONB, nullable=True)
     enrichment_json = Column(JSONB, nullable=True)
     tier = Column(Integer, nullable=True)  # 1/2/3
