@@ -12,15 +12,26 @@ from app.agents.s3_outreach import generate_sequence, deliverability_check, laun
 
 router = APIRouter(prefix="/sequences", tags=["sequences"])
 
+class GenerateOptions(BaseModel):
+    goal: str | None = None
+    tone: str | None = None
+    length: int | None = None
+
 
 @router.post("/generate/{contact_id}")
 async def generate(
     contact_id: str,
+    options: GenerateOptions | None = None,
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ) -> dict:
     own_contact(db, contact_id, user)
-    return await generate_sequence(db, contact_id)
+    
+    goal = options.goal if options else None
+    tone = options.tone if options else None
+    length = options.length if options else None
+    
+    return await generate_sequence(db, contact_id, goal=goal, tone=tone, length=length)
 
 
 @router.get("/by-contact/{contact_id}")

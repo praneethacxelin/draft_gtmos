@@ -38,7 +38,7 @@ URL_SHORTENERS = [
 ]
 
 
-async def generate_sequence(db: Session, contact_id: str) -> dict:
+async def generate_sequence(db: Session, contact_id: str, goal: str | None = None, tone: str | None = None, length: int | None = None) -> dict:
     contact = db.query(Contact).filter(Contact.id == contact_id).first()
     if not contact:
         return {"error": "Contact not found"}
@@ -60,20 +60,55 @@ async def generate_sequence(db: Session, contact_id: str) -> dict:
     seniority = (contact.seniority or "").lower()
     email_first = seniority in ("vp", "c_suite", "director", "head", "owner", "founder")
     channel_plan = []
-    if email_first:
-        channel_plan = [
-            {"step": 1, "channel": "email", "wait_days": 0},
-            {"step": 2, "channel": "email", "wait_days": 3},
-            {"step": 3, "channel": "linkedin", "wait_days": 4},
-            {"step": 4, "channel": "call", "wait_days": 5},
-        ]
+    
+    seq_len = length or 4
+    if seq_len == 1:
+        channel_plan = [{"step": 1, "channel": "email" if email_first else "linkedin", "wait_days": 0}]
+    elif seq_len == 3:
+        if email_first:
+            channel_plan = [
+                {"step": 1, "channel": "email", "wait_days": 0},
+                {"step": 2, "channel": "email", "wait_days": 3},
+                {"step": 3, "channel": "linkedin", "wait_days": 4},
+            ]
+        else:
+            channel_plan = [
+                {"step": 1, "channel": "linkedin", "wait_days": 0},
+                {"step": 2, "channel": "email", "wait_days": 3},
+                {"step": 3, "channel": "email", "wait_days": 4},
+            ]
+    elif seq_len == 5:
+        if email_first:
+            channel_plan = [
+                {"step": 1, "channel": "email", "wait_days": 0},
+                {"step": 2, "channel": "email", "wait_days": 3},
+                {"step": 3, "channel": "linkedin", "wait_days": 4},
+                {"step": 4, "channel": "call", "wait_days": 5},
+                {"step": 5, "channel": "email", "wait_days": 7},
+            ]
+        else:
+            channel_plan = [
+                {"step": 1, "channel": "linkedin", "wait_days": 0},
+                {"step": 2, "channel": "linkedin", "wait_days": 3},
+                {"step": 3, "channel": "email", "wait_days": 4},
+                {"step": 4, "channel": "call", "wait_days": 5},
+                {"step": 5, "channel": "email", "wait_days": 7},
+            ]
     else:
-        channel_plan = [
-            {"step": 1, "channel": "linkedin", "wait_days": 0},
-            {"step": 2, "channel": "linkedin", "wait_days": 3},
-            {"step": 3, "channel": "email", "wait_days": 4},
-            {"step": 4, "channel": "email", "wait_days": 5},
-        ]
+        if email_first:
+            channel_plan = [
+                {"step": 1, "channel": "email", "wait_days": 0},
+                {"step": 2, "channel": "email", "wait_days": 3},
+                {"step": 3, "channel": "linkedin", "wait_days": 4},
+                {"step": 4, "channel": "call", "wait_days": 5},
+            ]
+        else:
+            channel_plan = [
+                {"step": 1, "channel": "linkedin", "wait_days": 0},
+                {"step": 2, "channel": "linkedin", "wait_days": 3},
+                {"step": 3, "channel": "email", "wait_days": 4},
+                {"step": 4, "channel": "email", "wait_days": 5},
+            ]
 
     # Log the channel plan decision
     audit_service.log_pipeline_event(
@@ -94,11 +129,13 @@ async def generate_sequence(db: Session, contact_id: str) -> dict:
 
     # Personalize messages
     plan_str = ", ".join(f"step {s['step']} via {s['channel']}" for s in channel_plan)
+    goal_str = f" Goal: {goal}." if goal else ""
+    tone_str = f" Tone: {tone}." if tone else ""
     msg_prompt = (
         f"Write personalized outreach messages for {contact.full_name}, {contact.title} at "
         f"{account.company_name if account else 'the company'}. "
         f"Product: {strategy.product_name if strategy else ''}. "
-        f"Persona profile: {persona_block}. Top use cases: {use_cases}. "
+        f"Persona profile: {persona_block}. Top use cases: {use_cases}.{goal_str}{tone_str} "
         f"Sequence: {plan_str}. Return JSON with key 'messages' = array of "
         "{step, subject, body}. Subjects under 60 chars. Bodies 4-6 sentences, "
         "specific and not salesy. For LinkedIn steps, body should be a short DM (2-3 sentences). "

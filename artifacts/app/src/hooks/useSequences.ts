@@ -48,12 +48,21 @@ export function useSequenceByContact(contactId?: string) {
   });
 }
 
+export interface GenerateOptions {
+  goal?: string;
+  tone?: string;
+  length?: number;
+}
+
 export function useGenerateSequence() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (contactId: string) =>
-      apiFetch(`/api/sequences/generate/${contactId}`, { method: "POST" }),
-    onSuccess: (_, contactId) =>
+    mutationFn: ({ contactId, options }: { contactId: string, options?: GenerateOptions }) =>
+      apiFetch(`/api/sequences/generate/${contactId}`, {
+        method: "POST",
+        body: options ? JSON.stringify(options) : undefined,
+      }),
+    onSuccess: (_, { contactId }) =>
       qc.invalidateQueries({ queryKey: ["sequence", "contact", contactId] }),
   });
 }

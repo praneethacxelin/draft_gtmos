@@ -22,6 +22,10 @@ export interface Contact {
   company_name?: string;
   industry?: string;
   domain?: string;
+  location?: string;
+  pain_point?: string;
+  recent_signal?: string;
+  icebreaker?: string;
 }
 
 export function useContacts(strategyId?: string, tier?: number) {
