@@ -20,18 +20,19 @@ import { useSignals } from "@/hooks/useSignals";
 import { useToast } from "@/hooks/use-toast";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
-  useLeadSearch,
   useDiscoverExperimentLeads,
+  useDiscoverAccounts,
+  useGetContacts,
   useCampaignPlan,
   useRunSignals,
   useScoreLeads,
   useRunPatterns,
   useFetchContactEmails,
   useFetchContactPhones,
+  type ApolloFacets,
 } from "@/hooks/useStrategies";
 import { fmtRelative } from "@/lib/format";
 import {
-  Search,
   Radar,
   Sparkles,
   Crosshair,
@@ -51,6 +52,7 @@ import {
   Target,
 } from "lucide-react";
 import { ReasoningPanel, SourceBadge } from "@/components/ReasoningPanel";
+import { ApolloFilterGate } from "@/components/ApolloFilterGate";
 import { useFetchLimits } from "@/hooks/useSettings";
 import { RetriggerBar, type RetriggerAction } from "@/components/RetriggerBar";
 
@@ -216,13 +218,15 @@ export function Prospects() {
   const tier = tierFilter === "all" ? undefined : Number(tierFilter);
   const { data: caps } = useFetchLimits();
   const [leadLimit, setLeadLimit] = useState<string>("default");
+  const [gateOpen, setGateOpen] = useState(false);
   const [signalLimit, setSignalLimit] = useState<string>("default");
 
   const { data: prioritized } = usePrioritizedAccounts(activeId ?? undefined);
   const { data: contacts } = useContacts(activeId ?? undefined, tier);
   const { data: signals } = useSignals(activeId ?? undefined);
 
-  const leadSearch = useLeadSearch();
+  const discoverAccounts = useDiscoverAccounts();
+  const getContacts = useGetContacts();
   const runSignals = useRunSignals();
   const score = useScoreLeads();
   const patterns = useRunPatterns();
@@ -346,6 +350,26 @@ export function Prospects() {
 
   return (
     <>
+      <ApolloFilterGate
+        open={gateOpen}
+        onOpenChange={setGateOpen}
+        strategyId={activeId}
+        pending={discoverAccounts.isPending}
+        confirmLabel="Discover accounts"
+        onConfirm={(facets: ApolloFacets) => {
+          discoverAccounts.mutate(
+            {
+              id: activeId,
+              limit:
+                leadLimit && leadLimit !== "default"
+                  ? Number(leadLimit)
+                  : undefined,
+              facets,
+            },
+            { onSettled: () => setGateOpen(false) },
+          );
+        }}
+      />
       <PageHeader
         eyebrow="Stage 2 · Research & scoring"
         title="Prospects"
@@ -375,9 +399,19 @@ export function Prospects() {
             <Button
               size="sm"
               variant="secondary"
-              disabled={leadSearch.isPending}
+              disabled={discoverAccounts.isPending}
+              onClick={() => setGateOpen(true)}
+              data-testid="button-discover-leads"
+            >
+              <Building2 className="mr-2 h-4 w-4" />
+              {discoverAccounts.isPending ? "Discovering…" : "Discover accounts"}
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={getContacts.isPending}
               onClick={() =>
-                leadSearch.mutate({
+                getContacts.mutate({
                   id: activeId,
                   limit:
                     leadLimit && leadLimit !== "default"
@@ -385,10 +419,11 @@ export function Prospects() {
                       : undefined,
                 })
               }
-              data-testid="button-discover-leads"
+              title="Pull contacts (people) for the discovered accounts — uses Apollo enrichment credits"
+              data-testid="button-get-contacts"
             >
-              <Search className="mr-2 h-4 w-4" />
-              {leadSearch.isPending ? "Searching…" : "Discover leads"}
+              <Users className="mr-2 h-4 w-4" />
+              {getContacts.isPending ? "Pulling…" : "Get contacts"}
             </Button>
             <Select value={signalLimit} onValueChange={setSignalLimit}>
               <SelectTrigger

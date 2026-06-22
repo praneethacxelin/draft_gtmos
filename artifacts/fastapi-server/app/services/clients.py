@@ -327,6 +327,7 @@ def apollo_people_search(
     filters: dict,
     per_page: int = 10,
     page: int = 1,
+    enrich: bool = True,
     _strategy_id: Optional[str] = None,
     _strategy_name: Optional[str] = None,
 ) -> Optional[list[dict]]:
@@ -335,7 +336,9 @@ def apollo_people_search(
     Step 1: ``/api/v1/mixed_people/api_search`` — free search, returns
     partial profiles (no credits consumed).
     Step 2: ``/api/v1/people/bulk_match`` — enrich found IDs to reveal
-    emails (costs credits per reveal).
+    emails (costs credits per reveal). Skipped when ``enrich=False`` so a
+    caller (e.g. accounts-first discovery) can map the company universe
+    without spending Apollo credits.
 
     The old ``/v1/mixed_people/search`` endpoint was deprecated and now
     returns 403/422 on newer API tokens.
@@ -401,7 +404,7 @@ def apollo_people_search(
             # ---- Step 2: Enrich via bulk_match (costs credits) ----
             # Extract IDs from search results for enrichment
             person_ids = [p.get("id") for p in search_results if p.get("id")]
-            if person_ids:
+            if enrich and person_ids:
                 _rl_consume("apollo")
                 match_url = "https://api.apollo.io/api/v1/people/bulk_match"
                 match_body = {

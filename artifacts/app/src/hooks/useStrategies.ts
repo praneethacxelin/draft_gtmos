@@ -310,6 +310,14 @@ export interface GtmPlan {
     total_experiment_leads?: number;
     window_send_capacity?: number;
     capacity_limited?: boolean;
+    hypotheses?: {
+      idx?: number;
+      persona?: string;
+      segment?: string;
+      angle?: string | null;
+      label?: string;
+      leads?: number;
+    }[];
     rationale?: string;
   };
   reconciliation?: {
@@ -675,6 +683,123 @@ export function useLeadSearch() {
           toast.success("Lead discovery complete");
         }
       }).catch(() => {});
+    },
+    onError: (err: Error) => {
+      import("sonner").then(({ toast }) => toast.error(err.message)).catch(() => {});
+    },
+  });
+}
+
+export interface ApolloFacets {
+  titles: string[];
+  seniorities: string[];
+  locations: string[];
+  industries: string[];
+  employee_ranges: string[];
+  technologies: string[];
+  keywords: string[];
+}
+
+export interface FilterPreview {
+  facets: ApolloFacets;
+  seniority_options: string[];
+  ai_designed: boolean;
+  apollo_key_present: boolean;
+}
+
+/**
+ * Designs (but does not run) the Apollo facets for the params gate. Lazy:
+ * pass `enabled` (e.g. dialog-open state) so the LLM design only runs when the
+ * user actually opens the preview. Cached for the session to avoid re-charging.
+ */
+export function useFilterPreview(id?: string, enabled = false) {
+  return useQuery<FilterPreview>({
+    queryKey: id ? [...strategyKeys.detail(id), "filter-preview"] : ["filter-preview", "none"],
+    queryFn: () => apiFetch(`/api/strategies/${id}/leads/filter-preview`),
+    enabled: !!id && enabled,
+    staleTime: Infinity,
+    gcTime: 5 * 60 * 1000,
+    retry: false,
+  });
+}
+
+export function useDiscoverAccounts() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      limit,
+      facets,
+    }: {
+      id: string;
+      limit?: number;
+      facets?: Partial<ApolloFacets>;
+    }) =>
+      streamSse(
+        withLimit(`/api/strategies/${id}/accounts/discover`, limit),
+        undefined,
+        facets,
+      ),
+    onSuccess: (result: unknown) => {
+      qc.invalidateQueries({ queryKey: ["accounts"] });
+      import("sonner")
+        .then(({ toast }) => {
+          const r = result as
+            | { accounts_added?: number; is_demo?: boolean; message?: string }
+            | null;
+          if (r?.message) {
+            toast.info(r.message);
+          } else if (r) {
+            const demo = r.is_demo ? " (demo)" : "";
+            toast.success(`Discovered ${r.accounts_added ?? 0} accounts${demo}`);
+          } else {
+            toast.success("Account discovery complete");
+          }
+        })
+        .catch(() => {});
+    },
+    onError: (err: Error) => {
+      import("sonner").then(({ toast }) => toast.error(err.message)).catch(() => {});
+    },
+  });
+}
+
+export function useGetContacts() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      limit,
+      facets,
+    }: {
+      id: string;
+      limit?: number;
+      facets?: Partial<ApolloFacets>;
+    }) =>
+      streamSse(
+        withLimit(`/api/strategies/${id}/leads/contacts`, limit),
+        undefined,
+        facets,
+      ),
+    onSuccess: (result: unknown) => {
+      qc.invalidateQueries({ queryKey: ["accounts"] });
+      qc.invalidateQueries({ queryKey: ["contacts"] });
+      import("sonner")
+        .then(({ toast }) => {
+          const r = result as
+            | { accounts_added?: number; contacts_added?: number; cached?: boolean; message?: string }
+            | null;
+          if (r?.message) {
+            toast.info(r.message);
+          } else if (r) {
+            toast.success(
+              `Added ${r.contacts_added ?? 0} contacts across ${r.accounts_added ?? 0} accounts`,
+            );
+          } else {
+            toast.success("Contacts pulled");
+          }
+        })
+        .catch(() => {});
     },
     onError: (err: Error) => {
       import("sonner").then(({ toast }) => toast.error(err.message)).catch(() => {});
