@@ -15,6 +15,7 @@ from app.agents.s2_signals import (
     run_competitors,
     run_lead_search,
     run_experiment_discovery,
+    design_apollo_facets,
     run_signals,
     score_leads,
     recognize_patterns,
@@ -595,6 +596,80 @@ async def lead_search(
 ):
     own_strategy(db, strategy_id, user)
     return _sse(lambda d: run_lead_search(d, strategy_id, limit=limit), "leads")
+
+
+class ApolloFacets(BaseModel):
+    """Editable Apollo facets submitted from the Prospects “preview & edit” gate."""
+    titles: list[str] | None = None
+    seniorities: list[str] | None = None
+    locations: list[str] | None = None
+    industries: list[str] | None = None
+    employee_ranges: list[str] | None = None
+    technologies: list[str] | None = None
+    keywords: list[str] | None = None
+
+    def to_override(self) -> dict | None:
+        """Return only the non-empty facets, or None when nothing was set."""
+        out = {
+            k: [s for s in (v or []) if s and s.strip()]
+            for k, v in self.model_dump().items()
+        }
+        out = {k: v for k, v in out.items() if v}
+        return out or None
+
+
+@router.get("/{strategy_id}/leads/filter-preview")
+async def lead_filter_preview(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    """Design (but do NOT run) the Apollo facets for this strategy so the user
+    can review/edit them before discovery. Powers the params gate."""
+    own_strategy(db, strategy_id, user)
+    result = await design_apollo_facets(db, strategy_id)
+    if isinstance(result, dict) and result.get("error"):
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
+@router.post("/{strategy_id}/accounts/discover")
+async def accounts_discover(
+    strategy_id: str,
+    body: ApolloFacets | None = None,
+    limit: int | None = Query(None, ge=1, le=25),
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+):
+    """Accounts-first discovery: map the company universe with the (optionally
+    user-edited) facets without spending Apollo enrichment credits or creating
+    any contacts. Contacts are pulled afterwards via ``/leads/contacts``."""
+    own_strategy(db, strategy_id, user)
+    override = body.to_override() if body else None
+    return _sse(
+        lambda d: run_lead_search(
+            d, strategy_id, limit=limit, override_filters=override, accounts_only=True
+        ),
+        "accounts",
+    )
+
+
+@router.post("/{strategy_id}/leads/contacts")
+async def leads_get_contacts(
+    strategy_id: str,
+    body: ApolloFacets | None = None,
+    limit: int | None = Query(None, ge=1, le=25),
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+):
+    """Pull contacts for the discovered accounts (enriched people search). Reuses
+    the same facets so contacts match the account universe."""
+    own_strategy(db, strategy_id, user)
+    override = body.to_override() if body else None
+    return _sse(
+        lambda d: run_lead_search(d, strategy_id, limit=limit, override_filters=override),
+        "leads",
+    )
 
 
 @router.post("/{strategy_id}/leads/discover-experiments")
