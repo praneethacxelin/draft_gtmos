@@ -1275,6 +1275,31 @@ function GtmPlanSection({ plan }: { plan: GtmPlan }) {
             <CalcStat label="Leads per experiment" value={fmtInt(exp.leads_per_experiment)} />
             <CalcStat label="Total experiment leads" value={fmtInt(exp.total_experiment_leads)} />
           </div>
+          {exp.hypotheses && exp.hypotheses.length > 0 && (
+            <div className="mt-3">
+              <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                What each experiment tests (persona × segment)
+              </div>
+              <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                {exp.hypotheses.map((h) => (
+                  <div
+                    key={h.idx}
+                    className="flex items-center gap-2 rounded border border-card-border bg-background/40 px-2.5 py-1.5 text-xs"
+                  >
+                    <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[10px] font-semibold text-primary">
+                      {h.idx}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-foreground/90" title={h.label}>
+                      {h.label}
+                    </span>
+                    <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+                      {fmtInt(h.leads)} leads
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="mt-2 text-[11px] text-muted-foreground">{exp.rationale}</div>
           <div className="mt-3 flex items-start gap-2 rounded border border-primary/30 bg-primary/5 px-3 py-2 text-xs text-foreground/90">
             <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />

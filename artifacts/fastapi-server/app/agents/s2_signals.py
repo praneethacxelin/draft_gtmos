@@ -526,6 +526,166 @@ async def run_competitors(db: Session, strategy_id: str) -> list[dict]:
     return out
 
 
+# Apollo's fixed seniority taxonomy — surfaced to the params-gate UI so the
+# user edits from a valid set instead of free-typing values Apollo ignores.
+APOLLO_SENIORITY_OPTIONS = [
+    "owner", "founder", "c_suite", "partner", "vp", "head", "director", "manager",
+]
+
+# Discovery org-size labels → Apollo "min,max" employee ranges. Shared by the
+# heuristic facet design and run_lead_search so both stay in lockstep.
+_ORG_SIZE_MAP = {
+    "1–10 (Startup)": "1,10",
+    "11–50 (Small)": "11,50",
+    "51–200 (Mid-Market)": "51,200",
+    "201–1,000 (Enterprise)": "201,1000",
+    "1,000+ (Large Enterprise)": "1001,5000",
+}
+
+# The single source of truth for the Apollo filter-design prompt, reused by
+# both run_lead_search and design_apollo_facets so the preview the user edits
+# matches what discovery would otherwise send.
+def _apollo_filter_prompt(strategy, icp: dict, dd: dict, all_locations: list) -> str:
+    return (
+        "You are a senior B2B prospecting strategist configuring an Apollo.io "
+        "people search to surface the highest-fit decision makers for a product.\n"
+        f"Product: {strategy.product_name}\n"
+        f"ICP: {json.dumps(icp)[:1200]}\n"
+        f"Personas: {json.dumps(strategy.personas_json)[:1000] if strategy.personas_json else 'none'}\n"
+        f"Discovery answers: {json.dumps(dd)[:1500] if dd else 'none'}\n"
+        f"Target countries (already normalized, use these verbatim): {all_locations}\n\n"
+        "Decide the OPTIMAL Apollo parameters. Return JSON with keys: "
+        "person_titles (array of 4-8 specific job titles of the people who OWN the "
+        "problem this product solves and would buy/champion it — be specific to the "
+        "product's domain, not generic 'VP of Sales'), "
+        "person_seniorities (subset of: owner, founder, c_suite, partner, vp, head, director, manager), "
+        "employee_ranges (array of 'min,max' strings, e.g. '51,200'), "
+        "industries (array of the buyer's OWN industry — the companies that would "
+        "USE this product, not the product's category), "
+        "technologies (array of specific tools these buyers likely already use), "
+        "locations (array of specific COUNTRY names only — never regions like "
+        "'Asia-Pacific' or 'North America'; use the Target countries above). "
+        "Do not emit generic keywords. Only include a key when it sharpens precision; omit it otherwise."
+    )
+
+
+def _lead_heuristics(strategy) -> dict:
+    """Deterministic ICP/discovery-derived facet fallbacks (no LLM, no Apollo).
+
+    Returns the raw heuristic values used both as the LLM safety-net and as
+    the base for the editable params gate.
+    """
+    icp = strategy.icp_json or {}
+    dd = strategy.discovery_data or {}
+
+    titles: list[str] = []
+    if isinstance(strategy.personas_json, dict):
+        for k in ("champion", "economic_buyer", "blocker"):
+            p = strategy.personas_json.get(k)
+            if p and p.get("title"):
+                titles.append(p["title"])
+    if not titles:
+        for field in ("economic_buyer", "champion"):
+            val = dd.get(field)
+            if isinstance(val, str) and val.strip() and val != "__other__":
+                titles.append(val.strip())
+
+    icp_locations = icp.get("geographies", []) or []
+    dd_geos = dd.get("target_geos", [])
+    if isinstance(dd_geos, list):
+        dd_geos = [g for g in dd_geos if g and g != "__other__"]
+    elif isinstance(dd_geos, str) and dd_geos.strip():
+        dd_geos = [dd_geos.strip()]
+    else:
+        dd_geos = []
+    all_locations = _normalize_apollo_locations(list(icp_locations) + list(dd_geos))
+
+    icp_industries = icp.get("industries", []) or []
+
+    dd_org_sizes = dd.get("org_size", [])
+    if isinstance(dd_org_sizes, list):
+        employee_ranges = [_ORG_SIZE_MAP.get(s) for s in dd_org_sizes if _ORG_SIZE_MAP.get(s)]
+    else:
+        employee_ranges = []
+    if not employee_ranges:
+        employee_ranges = ["51,200", "201,500", "501,1000"]
+
+    tech_keywords: list[str] = []
+    dd_alternatives = dd.get("alternatives")
+    if isinstance(dd_alternatives, str) and dd_alternatives.strip():
+        tech_keywords = [t.strip() for t in dd_alternatives.split(",") if t.strip()]
+    icp_tech = icp.get("tech_stack_signals", [])
+    if isinstance(icp_tech, list):
+        tech_keywords = list(dict.fromkeys(tech_keywords + icp_tech))
+
+    return {
+        "titles": titles,
+        "all_locations": all_locations,
+        "icp_industries": icp_industries,
+        "employee_ranges": employee_ranges,
+        "tech_keywords": tech_keywords,
+        "icp": icp,
+        "dd": dd,
+    }
+
+
+async def design_apollo_facets(db: Session, strategy_id: str) -> dict:
+    """Design the raw, human-readable Apollo facets for a strategy WITHOUT
+    running a search — powers the "preview & edit filters" gate.
+
+    The user sees exactly which titles / seniorities / locations / industries /
+    company sizes / technologies / keywords would be sent to Apollo and can
+    edit them before discovery runs. The edited facets are then passed back as
+    ``override_filters`` so the search uses them verbatim.
+
+    Returns raw DISPLAY values (industry/technology NAMES, not resolved Apollo
+    taxonomy UIDs); resolution happens inside ``run_lead_search``.
+    """
+    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    if not strategy:
+        return {"error": "Strategy not found"}
+
+    h = _lead_heuristics(strategy)
+    apollo_key = settings_service.get_key(db, strategy.user_id, "apollo")
+
+    ai_filters: dict = {}
+    if apollo_key:
+        ai_resp = await chat_json(
+            _apollo_filter_prompt(strategy, h["icp"], h["dd"], h["all_locations"]),
+            max_tokens=600,
+        )
+        if isinstance(ai_resp, dict) and "_error" not in ai_resp:
+            ai_filters = ai_resp
+
+    def _pick(key, fallback):
+        val = ai_filters.get(key)
+        if isinstance(val, list):
+            val = [v for v in val if v]
+        return val or fallback
+
+    raw_tech = _pick("technologies", h["tech_keywords"])
+    raw_kw = ai_filters.get("keywords")
+    facets = {
+        "titles": _pick("person_titles", h["titles"] or ["VP of Sales", "Head of Marketing"]),
+        "seniorities": _pick("person_seniorities", []),
+        "locations": _normalize_apollo_locations(_pick("locations", h["all_locations"])),
+        "industries": _pick("industries", h["icp_industries"]),
+        "employee_ranges": _pick("employee_ranges", h["employee_ranges"]),
+        "technologies": raw_tech if isinstance(raw_tech, list) else [raw_tech],
+        "keywords": raw_kw if isinstance(raw_kw, list) else ([raw_kw] if raw_kw else []),
+    }
+    # Coerce every facet to a clean list[str] so the UI never chokes on a stray
+    # scalar/None the model may emit.
+    facets = {k: [str(x) for x in (v or []) if x is not None and str(x).strip()] for k, v in facets.items()}
+
+    return {
+        "facets": facets,
+        "seniority_options": APOLLO_SENIORITY_OPTIONS,
+        "ai_designed": bool(ai_filters),
+        "apollo_key_present": bool(apollo_key),
+    }
+
+
 async def run_lead_search(
     db: Session,
     strategy_id: str,
@@ -535,8 +695,14 @@ async def run_lead_search(
     source: str = "discovery",
     source_ref: str | None = None,
     persona_hint: str | None = None,
+    accounts_only: bool = False,
 ) -> dict:
     """Discover and enrich leads. Apollo/Clay if configured, else AI demo data.
+
+    ``accounts_only`` runs the same robust filter design + Apollo relaxation
+    ladder but persists ONLY the company (Account) universe — no contacts, no
+    bulk_match enrichment (free), no scoring. This powers the accounts-first
+    step on Prospects; contacts are pulled afterwards via a normal run.
 
     Caching: If this strategy already has real (non-demo) contacts in the
     DB, skip the Apollo API call entirely and return cached data. This
@@ -564,7 +730,7 @@ async def run_lead_search(
     # save Apollo credits. But when the user deliberately picks a number from
     # the "Leads" dropdown, treat it as an intent to fetch MORE — never block
     # it on the cache, otherwise the button feels broken.
-    explicit_limit = limit is not None or override_filters is not None
+    explicit_limit = limit is not None or override_filters is not None or accounts_only
     existing_contacts = 0
     if apollo_key:
         # Check if we already have leads to save Apollo credits
@@ -705,6 +871,7 @@ async def run_lead_search(
                     "locations": override_filters.get("locations"),
                     "industries": override_filters.get("industries"),
                     "technologies": override_filters.get("technologies"),
+                    "keywords": override_filters.get("keywords"),
                 }.items()
                 if v
             }
@@ -748,6 +915,11 @@ async def run_lead_search(
         )
         if technologies:
             search_filters["technologies"] = technologies[:5]  # Apollo limit
+        # q_keywords is normally omitted (it over-narrows people-text search),
+        # but when the user EXPLICITLY sets keywords in the params gate we honor
+        # that intent — it sits in the precise tier and is peeled by relaxation.
+        if override_filters and override_filters.get("keywords"):
+            search_filters["keywords"] = override_filters["keywords"]
         filter_resolution = {
             "industries": industry_notes,
             "technologies": {
@@ -829,8 +1001,9 @@ async def run_lead_search(
             # Tier 0 — full precision (titles + every AI facet)
             ("precise (all AI facets)", dict(search_filters)),
         ]
-        # Tier 1 — drop q_keywords (people-text search is the harshest narrower)
-        t1 = {k: v for k, v in search_filters.items() if k != "technologies"}
+        # Tier 1 — drop q_keywords + technologies (the harshest people-text /
+        # taxonomy narrowers) but keep titles + geo + size anchors.
+        t1 = {k: v for k, v in search_filters.items() if k not in ("technologies", "keywords")}
         ladder.append(("dropped technologies", t1))
         # Tier 2 — also drop technologies (need Apollo UIDs, often unresolved)
         t2 = {k: v for k, v in t1.items() if k != "industries"}
@@ -866,6 +1039,7 @@ async def run_lead_search(
                 apollo_key,
                 cleaned,
                 per_page=_fetch_per_page,
+                enrich=not accounts_only,
                 _strategy_id=strategy_id,
                 _strategy_name=strategy.product_name,
             )
@@ -903,9 +1077,11 @@ async def run_lead_search(
                 summary="S2 → Apollo Relaxation: exhausted all tiers, 0 leads",
             )
 
-    # Wipe existing AI demo contacts so they don't pollute the view when discovering new real leads
-    db.query(Contact).filter(Contact.strategy_id == strategy_id, Contact.is_demo == True).delete()
-    db.commit()
+    # Wipe existing AI demo contacts so they don't pollute the view when discovering new real leads.
+    # In accounts-only mode we never touch contacts, so leave them be.
+    if not accounts_only:
+        db.query(Contact).filter(Contact.strategy_id == strategy_id, Contact.is_demo == True).delete()
+        db.commit()
 
     # Pre-load existing accounts/contacts to avoid duplicate inserts on re-run
     existing_accounts = (
@@ -969,6 +1145,8 @@ async def run_lead_search(
                 newly_added_accounts.append(company)
             else:
                 _update_account_from_apollo_org(account, org)
+            if accounts_only:
+                continue
             # Apollo returns name as "name" OR as first_name + last_name
             full_name = (
                 p.get("name")
@@ -1033,6 +1211,8 @@ async def run_lead_search(
                 db.flush()
                 new_accounts[company] = account
                 newly_added_accounts.append(company)
+            if accounts_only:
+                continue
             contact = Contact(
                 user_id=strategy.user_id,
                 account_id=account.id,
@@ -1050,7 +1230,7 @@ async def run_lead_search(
 
     # ---- Inject Inbox Tracker Lead ----
     tracker_email = "saipraneeth2525@gmail.com"
-    if tracker_email not in existing_emails:
+    if not accounts_only and tracker_email not in existing_emails:
         tracker_company = "Inbox Tracker Corp"
         account = new_accounts.get(tracker_company)
         if not account:
@@ -1142,8 +1322,9 @@ async def run_lead_search(
         summary=f"S2 → Lead Discovery: Found {len(new_contacts)} new leads ({'Live' if not is_demo else 'Demo'})",
     )
 
-    # Auto-trigger scoring
-    score_leads(db, strategy_id)
+    # Auto-trigger scoring (skipped in accounts-only mode — nothing to score yet)
+    if not accounts_only:
+        score_leads(db, strategy_id)
 
     provenance = stamp(
         source="apollo" if apollo_key else "ai_generated",

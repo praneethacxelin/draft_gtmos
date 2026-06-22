@@ -731,14 +731,23 @@ export function ExperimentsPanel({
                 <span className="font-mono font-semibold">{recExperiments}</span> experiment
                 {recExperiments === 1 ? "" : "s"}
               </span>
-              {recTargetLeads != null && (
+              {recSampleLeads != null && (
                 <span>
-                  <span className="font-mono font-semibold">
-                    {recTargetLeads.toLocaleString()}
-                  </span>{" "}
-                  target leads / experiment / month
+                  <span className="font-mono font-semibold">{recSampleLeads}</span> test leads /
+                  experiment
                 </span>
               )}
+              {recTargetLeads != null &&
+                recSampleLeads != null &&
+                recTargetLeads > recSampleLeads && (
+                  <span className="text-muted-foreground">
+                    → scale winners to{" "}
+                    <span className="font-mono font-semibold text-foreground">
+                      {recTargetLeads.toLocaleString()}
+                    </span>{" "}
+                    / month
+                  </span>
+                )}
               {roiPlan.window_months != null && (
                 <span className="text-muted-foreground">
                   {roiPlan.window_months}-month learning window

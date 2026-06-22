@@ -19,7 +19,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from app.db import Contact, Strategy
+from app.db import Strategy
 from app.llm import chat_json, MODEL_NAME
 from app.provenance import stamp
 from app.services import audit_service
@@ -51,6 +51,14 @@ SENDING_DAYS_PER_MONTH = 21
 EXPERIMENT_WINDOW_MONTHS = 1        # default learning window before phases begin
 DEFAULT_EXPERIMENT_COUNT = 3        # persona × segment hypotheses to test
 MIN_LEADS_PER_EXPERIMENT = 25       # statistically-useful floor per experiment
+# A single experiment teaches nothing — learning requires *comparing* at least
+# two persona × segment cells against each other. So we floor the count at 2 and
+# cap it so month-1 stays focused.
+MIN_EXPERIMENTS = 2
+MAX_EXPERIMENTS = 6
+# Messaging angles used to split into comparable cells when the profile only
+# exposes a single persona and a single segment (so we still get >=2 cells).
+EXPERIMENT_ANGLES = ["pain-led angle", "ROI-led angle", "social-proof angle"]
 
 # --- Revenue execution planning (phases / seasonality / carry-forward) ---
 DEFAULT_SALES_CYCLE_MONTHS = 3
@@ -208,34 +216,99 @@ def _build_experiment_plan(
     *,
     required_prospects: int,
     window_capacity: int,
-    persona_count: int,
+    personas: Optional[list[str]] = None,
+    segments: Optional[list[str]] = None,
     experiment_window_months: int = EXPERIMENT_WINDOW_MONTHS,
 ) -> dict:
-    """Seed the month-1 experiment loop from the ROI math (capacity-driven).
+    """Seed the month-1 experiment loop as a persona × segment grid.
 
-    The number of experiments reflects how many persona × segment hypotheses we
-    can meaningfully test, and leads-per-experiment is what the inboxes can
-    actually email in the experiment window divided across those experiments
-    (floored at a useful sample size).
+    A single experiment can't teach anything — learning comes from *comparing*
+    distinct cells (e.g. "Customer Service Manager × India" vs "CFO × USA"). So
+    we build a grid of persona × segment hypotheses (floored at ``MIN_EXPERIMENTS``
+    so there is always something to compare), cap it by send capacity and by
+    ``MAX_EXPERIMENTS`` to keep month-1 focused, and split the window's sendable
+    volume evenly across the cells (each at a useful sample size).
     """
-    # How many emails we can really send in the learning window.
     sendable = max(0, int(window_capacity or 0))
 
-    # Number of hypotheses to test: bounded by persona variety and by whether we
-    # have the send capacity to give each experiment a useful sample.
-    max_by_capacity = max(1, sendable // MIN_LEADS_PER_EXPERIMENT) if sendable > 0 else 1
-    desired = max(1, min(DEFAULT_EXPERIMENT_COUNT, max(1, persona_count or DEFAULT_EXPERIMENT_COUNT)))
-    n_experiments = max(1, min(desired, max_by_capacity))
+    # Clean inputs, preserving order and dropping dupes/placeholders.
+    def _clean(items: Optional[list[str]]) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for it in items or []:
+            s = str(it).strip()
+            if not s or s.lower() in ("__other__", "none"):
+                continue
+            key = s.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(s)
+        return out
+
+    persona_list = _clean(personas) or ["Primary buyer persona"]
+    segment_list = _clean(segments) or ["Core segment"]
+
+    # Build persona × segment cells, persona-fast so the earliest (and possibly
+    # capped) cells already vary the persona dimension for comparable learnings.
+    cells: list[dict] = []
+    for seg in segment_list:
+        for per in persona_list:
+            cells.append({"persona": per, "segment": seg, "angle": None})
+
+    # If the profile only yields a single cell, split it into messaging-angle
+    # variants so there are still at least MIN_EXPERIMENTS to compare.
+    if len(cells) < MIN_EXPERIMENTS:
+        base = cells[0]
+        cells = [
+            {"persona": base["persona"], "segment": base["segment"], "angle": EXPERIMENT_ANGLES[i]}
+            for i in range(MIN_EXPERIMENTS)
+        ]
+
+    # How many cells can we actually give a useful sample to this window?
+    max_by_capacity = max(1, sendable // MIN_LEADS_PER_EXPERIMENT) if sendable > 0 else MAX_EXPERIMENTS
+    n_experiments = min(len(cells), MAX_EXPERIMENTS, max_by_capacity)
+    n_experiments = max(MIN_EXPERIMENTS, n_experiments)
+    # Never plan more cells than capacity can sample, but keep the >=2 floor so
+    # the comparison is meaningful even on a thin send budget.
+    if sendable > 0:
+        n_experiments = min(n_experiments, max(MIN_EXPERIMENTS, max_by_capacity))
+
+    selected = cells[:n_experiments]
 
     if sendable > 0:
         leads_per_experiment = max(MIN_LEADS_PER_EXPERIMENT, sendable // n_experiments)
-        # Never plan to email more than we can send in the window.
-        leads_per_experiment = min(leads_per_experiment, max(1, sendable // n_experiments) or leads_per_experiment)
     else:
         leads_per_experiment = MIN_LEADS_PER_EXPERIMENT
 
     total_experiment_leads = n_experiments * leads_per_experiment
     capacity_limited = sendable > 0 and total_experiment_leads >= sendable
+
+    hypotheses = []
+    for i, cell in enumerate(selected):
+        if cell["angle"]:
+            label = f"{cell['persona']} · {cell['segment']} ({cell['angle']})"
+        else:
+            label = f"{cell['persona']} · {cell['segment']}"
+        hypotheses.append(
+            {
+                "idx": i + 1,
+                "persona": cell["persona"],
+                "segment": cell["segment"],
+                "angle": cell["angle"],
+                "label": label,
+                "leads": leads_per_experiment,
+            }
+        )
+
+    if len(segment_list) > 1 and len(persona_list) > 1:
+        variety = f"{len(persona_list)} persona(s) across {len(segment_list)} segment(s)"
+    elif len(persona_list) > 1:
+        variety = f"{len(persona_list)} personas in {segment_list[0]}"
+    elif len(segment_list) > 1:
+        variety = f"{persona_list[0]} across {len(segment_list)} segments"
+    else:
+        variety = f"{persona_list[0]} in {segment_list[0]} (messaging-angle variants)"
 
     return {
         "window_months": max(1, int(experiment_window_months or 1)),
@@ -244,10 +317,12 @@ def _build_experiment_plan(
         "total_experiment_leads": total_experiment_leads,
         "window_send_capacity": sendable,
         "capacity_limited": capacity_limited,
+        "hypotheses": hypotheses,
         "rationale": (
-            f"Run {n_experiments} experiment(s) of {leads_per_experiment} leads each in the "
-            f"{max(1, int(experiment_window_months or 1))}-month learning window to test which "
-            "persona/segment converts before committing to phased execution."
+            f"Run {n_experiments} parallel experiments ({variety}), {leads_per_experiment} leads each, "
+            f"in the {max(1, int(experiment_window_months or 1))}-month learning window. Comparing how "
+            "these distinct cells respond reveals which persona/segment converts before you commit to "
+            "phased execution — a single experiment would give nothing to compare against."
         ),
     }
 
@@ -444,7 +519,8 @@ def _build_gtm_plan(
     ai_token_cost: float = DEFAULT_AI_TOKEN_COST,
     email_accounts: int = DEFAULT_EMAIL_ACCOUNTS,
     email_account_type: str = DEFAULT_EMAIL_ACCOUNT_TYPE,
-    persona_count: int = 0,
+    experiment_personas: Optional[list[str]] = None,
+    experiment_segments: Optional[list[str]] = None,
 ) -> dict:
     """Deterministic GTM planning layer built on top of the feasibility check.
 
@@ -509,7 +585,8 @@ def _build_gtm_plan(
     experiment_plan = _build_experiment_plan(
         required_prospects=required_prospects,
         window_capacity=email_capacity["experiment_window_capacity"],
-        persona_count=persona_count,
+        personas=experiment_personas,
+        segments=experiment_segments,
     )
 
     # ---- Reconciliation: does this plan reach the target, and how does the
@@ -770,6 +847,72 @@ def _build_gtm_plan(
     }
 
 
+def _derive_verdict(
+    *,
+    expected_revenue: float,
+    realistic_low: Optional[float],
+    realistic_high: Optional[float],
+    expected_multiple: Optional[float],
+    timeframe_months: int,
+    ceiling_breached: bool,
+) -> tuple[Optional[str], Optional[str]]:
+    """Deterministically judge the expectation against the market-grounded range.
+
+    Returns ``(verdict, headline)``. The verdict is derived from how the stated
+    revenue compares with the realistic revenue range (grounded in the profile's
+    SOM + benchmarks), NOT from the raw investment multiple — so the label and its
+    justification change with the actual numbers instead of always reading "too
+    optimistic". Returns ``(None, None)`` when no range is available so the caller
+    can keep the model's verdict.
+    """
+    def _m(v: float) -> str:
+        return f"${v:,.0f}"
+
+    mult = f"{expected_multiple:g}x" if expected_multiple else "n/a"
+
+    if ceiling_breached:
+        return (
+            "too_optimistic",
+            f"At {_m(expected_revenue)} ({mult} return) the target breaches this market's "
+            f"TAM/SAM/SOM ceiling over {timeframe_months} months — it can't be reached no matter "
+            "the spend. Scale the target down to what the obtainable market (SOM) supports.",
+        )
+
+    lo = realistic_low if (realistic_low and realistic_low > 0) else None
+    hi = realistic_high if (realistic_high and realistic_high > 0) else None
+    if lo and hi and lo > hi:
+        lo, hi = hi, lo
+
+    if hi is not None and expected_revenue > hi * 1.1:
+        ratio = expected_revenue / hi
+        floor_txt = _m(lo) if lo else _m(hi)
+        return (
+            "too_optimistic",
+            f"{_m(expected_revenue)} is {ratio:.1f}x the realistic ceiling of {_m(hi)} that this "
+            f"market supports over {timeframe_months} months. A grounded target is "
+            f"{floor_txt}-{_m(hi)} — the {mult} return assumes far more reach than the SOM allows.",
+        )
+
+    if lo is not None and expected_revenue < lo * 0.9:
+        ceil_txt = _m(hi) if hi else _m(lo)
+        return (
+            "too_conservative",
+            f"{_m(expected_revenue)} sits below the realistic floor of {_m(lo)} for this market "
+            f"over {timeframe_months} months. It can support {_m(lo)}-{ceil_txt}, so a higher "
+            "target is achievable with the same motion.",
+        )
+
+    if lo is not None or hi is not None:
+        rng = f"{_m(lo) if lo else '—'}-{_m(hi) if hi else '—'}"
+        return (
+            "realistic",
+            f"{_m(expected_revenue)} ({mult}) lands within the realistic {rng} range this market "
+            f"supports over {timeframe_months} months — the target and motion are aligned.",
+        )
+
+    return (None, None)
+
+
 async def validate_roi(
     db: Session,
     strategy_id: str,
@@ -922,30 +1065,63 @@ async def validate_roi(
     result["expected_multiple"] = expected_multiple
     result["market_context"] = market_ctx
 
-    # Deterministic ceiling check wins: if revenue breaches TAM/SAM/SOM, force
-    # the verdict to "too_optimistic" regardless of what the model said.
+    # Deterministic verdict wins: judge the stated revenue against the
+    # market-grounded realistic range (and the TAM/SAM/SOM ceiling) so the label
+    # and its justification track the actual numbers instead of the model's gut.
     existing_warnings = result.get("warnings")
     warnings = list(existing_warnings) if isinstance(existing_warnings, list) else []
     if ceiling_flags:
         warnings = ceiling_flags + warnings
-        if result.get("verdict") not in ("too_optimistic",):
-            result["verdict"] = "too_optimistic"
     result["warnings"] = warnings
+
+    det_verdict, det_headline = _derive_verdict(
+        expected_revenue=expected_revenue,
+        realistic_low=_money(result.get("realistic_revenue_low_usd")),
+        realistic_high=_money(result.get("realistic_revenue_high_usd")),
+        expected_multiple=expected_multiple,
+        timeframe_months=timeframe_months,
+        ceiling_breached=bool(ceiling_flags),
+    )
+    if det_verdict:
+        result["verdict"] = det_verdict
+        result["headline"] = det_headline
+    elif ceiling_flags and result.get("verdict") not in ("too_optimistic",):
+        # No realistic range to compare, but the ceiling is breached.
+        result["verdict"] = "too_optimistic"
 
     # ---- GTM planning layer (deterministic, additive — does not alter the
     # existing feasibility verdict above) ----
     benchmark_block = result.get("benchmark") if isinstance(result.get("benchmark"), dict) else {}
     benchmark_acv = _money(benchmark_block.get("avg_contract_value_usd"))
-    # Distinct personas present for this strategy seed the experiment count.
-    try:
-        persona_count = (
-            db.query(Contact.persona_type)
-            .filter(Contact.strategy_id == strategy_id, Contact.persona_type.isnot(None))
-            .distinct()
-            .count()
-        )
-    except Exception:
-        persona_count = 0
+    # Persona titles + target segments seed the persona × segment experiment grid
+    # (so month-1 tests e.g. "Customer Service Manager × India" vs "CFO × USA").
+    experiment_personas: list[str] = []
+    if isinstance(strategy.personas_json, dict):
+        for k in ("champion", "economic_buyer", "blocker"):
+            p = strategy.personas_json.get(k)
+            if isinstance(p, dict) and p.get("title"):
+                experiment_personas.append(str(p["title"]))
+    if not experiment_personas and isinstance(dd, dict):
+        for field in ("economic_buyer", "champion"):
+            val = dd.get(field)
+            if isinstance(val, str) and val.strip() and val != "__other__":
+                experiment_personas.append(val.strip())
+
+    experiment_segments: list[str] = []
+    icp_geos = icp.get("geographies") if isinstance(icp, dict) else None
+    if isinstance(icp_geos, list):
+        experiment_segments.extend(str(g) for g in icp_geos if g)
+    if isinstance(dd, dict):
+        dd_geos = dd.get("target_geos")
+        if isinstance(dd_geos, list):
+            experiment_segments.extend(str(g) for g in dd_geos if g and g != "__other__")
+        elif isinstance(dd_geos, str) and dd_geos.strip() and dd_geos != "__other__":
+            experiment_segments.append(dd_geos.strip())
+    if not experiment_segments:
+        icp_inds = icp.get("industries") if isinstance(icp, dict) else None
+        if isinstance(icp_inds, list):
+            experiment_segments.extend(str(s) for s in icp_inds if s)
+
     result["gtm_plan"] = _build_gtm_plan(
         revenue_target=(_money(revenue_target_usd) if revenue_target_usd is not None else expected_revenue),
         average_deal_size=_money(average_deal_size_usd),
@@ -969,7 +1145,8 @@ async def validate_roi(
         ai_token_cost=ai_token_cost,
         email_accounts=email_accounts,
         email_account_type=email_account_type,
-        persona_count=persona_count,
+        experiment_personas=experiment_personas,
+        experiment_segments=experiment_segments,
     )
 
     result["_provenance"] = stamp(
