@@ -36,12 +36,15 @@ def list_accounts(
             "industry": a.industry,
             "employee_count": a.employee_count,
             "revenue_range": a.revenue_range,
+            "location": a.location,
+            "founded_year": a.founded_year,
             "tier": a.tier,
             "tech_stack": a.tech_stack_json,
             "signal_count": signal_count,
             "contact_count": contact_count,
             "intent_score": intent.score if intent else None,
             "intent_classification": intent.classification if intent else None,
+            "source": (a.enrichment_json or {}).get("source", "unknown"),
         })
     out.sort(key=lambda x: (x["tier"] or 9, -(x["intent_score"] or 0)))
     return out

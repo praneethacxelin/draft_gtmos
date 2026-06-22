@@ -30,9 +30,12 @@ from app.routes import (
     admin,
     audit,
     analytics,
+    experiments,
+    learnings,
 )
 from app.services.instantly_poller import poll_loop
 from app.services.m3_tracking import m3_loop
+from app.services.signal_cron import signal_cron_loop
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("gtm")
@@ -103,11 +106,12 @@ async def lifespan(app: FastAPI):
     _auto_configure_api_keys()
     poller = asyncio.create_task(poll_loop())
     m3 = asyncio.create_task(m3_loop())
-    log.info("Background tasks started: Instantly poller (1h), M3 tracker (6h)")
+    signals = asyncio.create_task(signal_cron_loop())
+    log.info("Background tasks started: Instantly poller (1h), M3 tracker (6h), Signal cron (24h)")
     try:
         yield
     finally:
-        for t in (poller, m3):
+        for t in (poller, m3, signals):
             t.cancel()
             try:
                 await t
@@ -159,6 +163,7 @@ def me(user: User = Depends(current_user)) -> dict:
 
 app.include_router(settings.router, prefix=api_prefix)
 app.include_router(strategies.router, prefix=api_prefix)
+app.include_router(experiments.router, prefix=api_prefix)
 app.include_router(accounts.router, prefix=api_prefix)
 app.include_router(contacts.router, prefix=api_prefix)
 app.include_router(signals.router, prefix=api_prefix)
@@ -169,6 +174,7 @@ app.include_router(dashboard.router, prefix=api_prefix)
 app.include_router(admin.router, prefix=api_prefix)
 app.include_router(audit.router, prefix=api_prefix)
 app.include_router(analytics.router, prefix=api_prefix)
+app.include_router(learnings.router, prefix=api_prefix)
 
 
 if __name__ == "__main__":

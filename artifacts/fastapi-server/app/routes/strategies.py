@@ -14,12 +14,19 @@ from app.agents.s2_signals import (
     run_market_sizing,
     run_competitors,
     run_lead_search,
+    run_experiment_discovery,
     run_signals,
     score_leads,
     recognize_patterns,
     fetch_contact_emails,
     fetch_contact_phones,
 )
+from app.agents.roi_validator import validate_roi
+from app.agents.persona_intelligence import (
+    compute_persona_intelligence,
+    compute_persona_allocation,
+)
+from app.agents.campaign_plan import build_campaign_plan
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
 
@@ -203,6 +210,15 @@ def patch_discovery(
     current = dict(s.discovery_data or {})
     current.update(body)
     s.discovery_data = current
+    # Mirror key discovery answers onto the top-level columns so list views,
+    # exports, and the S1 gate stay in sync (the questionnaire is the source of
+    # truth, but `description`/`pain_points_raw` are what the UI reads).
+    product_desc = _discovery_value(current.get("product_description"))
+    if product_desc:
+        s.description = product_desc
+    pain_points = _discovery_value(current.get("pain_points"))
+    if pain_points:
+        s.pain_points_raw = pain_points
     db.commit()
     db.refresh(s)
     audit_service.log_change(
@@ -307,15 +323,66 @@ def patch_use_cases(
     return _serialize(s)
 
 
+def _discovery_value(val):
+    """Clean a discovery field into a non-empty string, or '' if blank."""
+    if val is None:
+        return ""
+    if isinstance(val, list):
+        clean = [v for v in val if v and v != "__other__"]
+        return ", ".join(clean)
+    if isinstance(val, str) and val.strip() and val != "__other__":
+        return val.strip()
+    return ""
+
+
+def discovery_core_ready(strategy) -> tuple[bool, list[str]]:
+    """Has the user supplied enough discovery to run S1 on real data?
+
+    Core fields: a product description, the pain points it solves, and at
+    least one buyer role (economic buyer or champion). Without these, S1 would
+    hallucinate from the product name alone — wasting tokens and producing
+    fake results. Falls back to the legacy ``description``/``pain_points_raw``
+    columns so older profiles still qualify.
+    """
+    dd = strategy.discovery_data or {}
+    missing = []
+    if not (_discovery_value(dd.get("product_description")) or (strategy.description or "").strip()):
+        missing.append("product description")
+    if not (_discovery_value(dd.get("pain_points")) or (strategy.pain_points_raw or "").strip()):
+        missing.append("pain points")
+    if not (_discovery_value(dd.get("economic_buyer")) or _discovery_value(dd.get("champion"))):
+        missing.append("economic buyer or champion")
+    return (len(missing) == 0, missing)
+
+
 def _s1_event_gen(strategy_id: str):
     async def event_gen():
         db2 = SessionLocal()
         try:
+            strategy = db2.query(Strategy).filter(Strategy.id == strategy_id).first()
+            if strategy is not None:
+                ready, missing = discovery_core_ready(strategy)
+                if not ready:
+                    yield {
+                        "event": "error",
+                        "data": json.dumps({
+                            "status": 422,
+                            "code": "discovery_incomplete",
+                            "missing": missing,
+                            "message": (
+                                "Fill in the discovery form first ("
+                                + ", ".join(missing)
+                                + ") so S1 runs on your real inputs instead of guessing."
+                            ),
+                        }),
+                    }
+                    return
             async for ev in stream_s1(db2, strategy_id):
                 yield {"event": ev["event"], "data": json.dumps(ev["data"])}
         finally:
             db2.close()
     return event_gen
+
 
 
 @router.post("/{strategy_id}/run")
@@ -372,6 +439,112 @@ def _sse(coro_or_value, label: str):
     return EventSourceResponse(gen())
 
 
+class RoiValidateRequest(BaseModel):
+    investment_usd: float
+    expected_revenue_usd: float
+    timeframe_months: int = 12
+    market_segment: str | None = None
+    notes: str | None = None
+    # --- GTM planning assumptions (optional, additive) ---
+    revenue_target_usd: float | None = None
+    average_deal_size_usd: float | None = None
+    conversion_rate: float = 0.01
+    lead_acquisition_cost: float = 0.30
+    outreach_cost: float = 0.50
+    gtm_engineer_capacity: float = 10
+    current_gtm_engineers: int = 1
+    time_urgency: str = "medium"
+    campaign_count: int = 3
+    sales_cycle_months: int = 3
+    execution_start_month: int = 1
+    serp_api_cost: float = 0.10
+    ai_token_cost: float = 0.05
+    email_accounts: int = 2
+    email_account_type: str = "workspace"
+
+
+@router.post("/{strategy_id}/roi/validate")
+async def roi_validate(
+    strategy_id: str,
+    body: RoiValidateRequest,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    own_strategy(db, strategy_id, user)
+    result = await validate_roi(
+        db,
+        strategy_id,
+        investment_usd=body.investment_usd,
+        expected_revenue_usd=body.expected_revenue_usd,
+        timeframe_months=body.timeframe_months,
+        market_segment=body.market_segment,
+        notes=body.notes,
+        revenue_target_usd=body.revenue_target_usd,
+        average_deal_size_usd=body.average_deal_size_usd,
+        conversion_rate=body.conversion_rate,
+        lead_acquisition_cost=body.lead_acquisition_cost,
+        outreach_cost=body.outreach_cost,
+        gtm_engineer_capacity=body.gtm_engineer_capacity,
+        current_gtm_engineers=body.current_gtm_engineers,
+        time_urgency=body.time_urgency,
+        campaign_count=body.campaign_count,
+        sales_cycle_months=body.sales_cycle_months,
+        execution_start_month=body.execution_start_month,
+        serp_api_cost=body.serp_api_cost,
+        ai_token_cost=body.ai_token_cost,
+        email_accounts=body.email_accounts,
+        email_account_type=body.email_account_type,
+    )
+    if isinstance(result, dict) and "_error" in result:
+        raise HTTPException(status_code=502, detail=result["_error"])
+    return result
+
+
+@router.get("/{strategy_id}/persona-intelligence")
+def persona_intelligence(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    own_strategy(db, strategy_id, user)
+    return compute_persona_intelligence(db, strategy_id)
+
+
+@router.get("/{strategy_id}/persona-allocation")
+def persona_allocation(
+    strategy_id: str,
+    total_prospects: int | None = None,
+    weights: str | None = None,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    own_strategy(db, strategy_id, user)
+    parsed_weights: list[float] | None = None
+    if weights:
+        try:
+            parsed_weights = [
+                float(w.strip()) for w in weights.split(",") if w.strip()
+            ] or None
+        except ValueError:
+            parsed_weights = None
+    return compute_persona_allocation(
+        db,
+        strategy_id,
+        total_prospects=total_prospects,
+        weights=parsed_weights,
+    )
+
+
+@router.get("/{strategy_id}/campaign-plan")
+def campaign_plan(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    own_strategy(db, strategy_id, user)
+    return build_campaign_plan(db, strategy_id)
+
+
 @router.post("/{strategy_id}/market-sizing")
 async def market_sizing(
     strategy_id: str,
@@ -422,6 +595,23 @@ async def lead_search(
 ):
     own_strategy(db, strategy_id, user)
     return _sse(lambda d: run_lead_search(d, strategy_id, limit=limit), "leads")
+
+
+@router.post("/{strategy_id}/leads/discover-experiments")
+async def lead_search_experiments(
+    strategy_id: str,
+    limit: int | None = Query(None, ge=1, le=25),
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+):
+    """Experiment-driven discovery: pull leads using the winning experiment's
+    facets + persona split, tagged ``source="experiment"``. Gated until a batch
+    has been analyzed."""
+    own_strategy(db, strategy_id, user)
+    return _sse(
+        lambda d: run_experiment_discovery(d, strategy_id, limit=limit),
+        "leads",
+    )
 
 
 @router.post("/{strategy_id}/signals/run")
@@ -513,6 +703,7 @@ def _serialize(s: Strategy) -> dict:
         "stakeholder_map": s.stakeholder_map_json,
         "use_cases": s.use_cases_json,
         "tam_sam_som": s.tam_sam_som_json,
+        "roi": s.roi_json,
         "status": s.status,
         "discovery_data": s.discovery_data,
         "created_at": s.created_at.isoformat() if s.created_at else None,

@@ -102,9 +102,9 @@ def reveal_contact(
     a = db.query(Account).filter(Account.id == c.account_id).first()
 
     # Skip if we already have the requested data
-    if type == "email" and c.email and c.email != "(not revealed)":
+    if type == "email" and c.email and c.email not in ("(not revealed)", "Not found"):
         return _serialize(c, a)
-    if type == "phone" and c.phone and c.phone != "Maybe: please request direct dial via people/bulk_match":
+    if type == "phone" and c.phone and c.phone not in ("Not found", "Maybe: please request direct dial via people/bulk_match"):
         return _serialize(c, a)
 
     apollo_key = settings_service.get_key(db, user.id, "apollo")
@@ -120,12 +120,27 @@ def reveal_contact(
         name=c.full_name,
         org_name=company_name,
         domain=domain,
+        linkedin_url=c.linkedin_url,
         reveal_phone=(type == "phone"),
         _strategy_id=c.strategy_id,
     )
 
     if not match_result:
         raise HTTPException(404, "Contact not found in Apollo or reveal failed")
+
+    org = match_result.get("organization") or {}
+    if a and org:
+        domain = clients.apollo_org_domain(org)
+        if domain and not a.domain:
+            a.domain = domain
+        if org.get("industry") and not a.industry:
+            a.industry = org.get("industry")
+        if org.get("estimated_num_employees") and not a.employee_count:
+            a.employee_count = org.get("estimated_num_employees")
+        if org.get("organization_revenue_printed") and not a.revenue_range:
+            a.revenue_range = org.get("organization_revenue_printed")
+        if org.get("technologies") and not a.tech_stack_json:
+            a.tech_stack_json = org.get("technologies")
 
     if type == "email":
         new_email = match_result.get("email")
@@ -147,8 +162,22 @@ def reveal_contact(
                 summary=f"Revealed email for {c.full_name}",
             )
         else:
+            before_email = c.email
             c.email = "Not found"
+            c.is_demo = False
             db.commit()
+            db.refresh(c)
+            audit_service.log_change(
+                event_type="contact_reveal",
+                entity_type="contact",
+                entity_id=c.id,
+                strategy_id=c.strategy_id,
+                change_field="email",
+                change_before=before_email,
+                change_after="Not found",
+                actor="user",
+                summary=f"Attempted to reveal email for {c.full_name} but Apollo had no email",
+            )
     else:
         # Reveal phone
         phones = match_result.get("phone_numbers") or []
@@ -171,8 +200,22 @@ def reveal_contact(
                 summary=f"Revealed phone for {c.full_name}",
             )
         else:
+            before_phone = c.phone
             c.phone = "Not found"
+            c.is_demo = False
             db.commit()
+            db.refresh(c)
+            audit_service.log_change(
+                event_type="contact_reveal",
+                entity_type="contact",
+                entity_id=c.id,
+                strategy_id=c.strategy_id,
+                change_field="phone",
+                change_before=before_phone,
+                change_after="Not found",
+                actor="user",
+                summary=f"Attempted to reveal phone for {c.full_name} but Apollo had no phone",
+            )
 
     return _serialize(c, a)
 
@@ -288,6 +331,8 @@ def _serialize(c: Contact, a: Account | None) -> dict:
         "total_score": c.total_score,
         "tier": c.tier,
         "is_demo": c.is_demo,
+        "source": c.source or "discovery",
+        "source_ref": c.source_ref,
         "account_id": c.account_id,
         "company_name": a.company_name if a else None,
         "industry": a.industry if a else None,

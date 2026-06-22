@@ -21,6 +21,8 @@ import { useToast } from "@/hooks/use-toast";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   useLeadSearch,
+  useDiscoverExperimentLeads,
+  useCampaignPlan,
   useRunSignals,
   useScoreLeads,
   useRunPatterns,
@@ -42,6 +44,11 @@ import {
   XCircle,
   HelpCircle,
   ShieldCheck,
+  ExternalLink,
+  FlaskConical,
+  Lock,
+  Users,
+  Target,
 } from "lucide-react";
 import { ReasoningPanel, SourceBadge } from "@/components/ReasoningPanel";
 import { useFetchLimits } from "@/hooks/useSettings";
@@ -62,6 +69,146 @@ const PERSONA_OPTIONS = [
   { value: "economic_buyer", label: "Economic buyer" },
   { value: "blocker", label: "Blocker" },
 ];
+
+const FACET_LABELS: Record<string, string> = {
+  titles: "Titles",
+  seniorities: "Seniorities",
+  locations: "Locations",
+  industries: "Industries",
+  employee_ranges: "Company size",
+  technologies: "Technologies",
+  keywords: "Keywords",
+};
+
+function ExperimentDiscoverySection({ strategyId }: { strategyId: string }) {
+  const { data: plan, isLoading } = useCampaignPlan(strategyId);
+  const discover = useDiscoverExperimentLeads();
+  const [expLimit, setExpLimit] = useState<string>("default");
+
+  if (isLoading) return null;
+
+  if (!plan || !plan.ready) {
+    const reason =
+      plan?.reason ??
+      "Run and analyze a batch of experiments first — discovery uses the winning experiment's facets.";
+    return (
+      <Card className="mb-4 border-dashed p-4">
+        <div className="flex items-start gap-3">
+          <div className="rounded-md bg-muted p-2 text-muted-foreground">
+            <Lock className="h-4 w-4" />
+          </div>
+          <div>
+            <p className="text-sm font-medium">Experiment-driven discovery (locked)</p>
+            <p className="text-sm text-muted-foreground">{reason}</p>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  const facets = plan.winning_facets ?? {};
+  const facetEntries = Object.entries(facets).filter(([, v]) =>
+    Array.isArray(v) ? v.length > 0 : Boolean(v),
+  );
+  const personaSplit = plan.phases?.[0]?.persona_split ?? [];
+
+  function runDiscovery() {
+    const limit = expLimit === "default" ? undefined : Number(expLimit);
+    discover.mutate({ id: strategyId, limit });
+  }
+
+  return (
+    <Card className="mb-4 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-start gap-3">
+          <div className="rounded-md bg-primary/10 p-2 text-primary">
+            <FlaskConical className="h-4 w-4" />
+          </div>
+          <div>
+            <p className="text-sm font-medium">Experiment-driven discovery</p>
+            <p className="text-sm text-muted-foreground">
+              Pull leads using the winning experiment
+              {plan.winning_experiment_name ? (
+                <> — <span className="font-medium text-foreground">{plan.winning_experiment_name}</span></>
+              ) : null}{" "}
+              and the persona split. These leads are tagged as experiment-sourced for outreach.
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Select value={expLimit} onValueChange={setExpLimit}>
+            <SelectTrigger className="w-[130px]">
+              <SelectValue placeholder="Leads" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="default">Default</SelectItem>
+              <SelectItem value="5">5 leads</SelectItem>
+              <SelectItem value="10">10 leads</SelectItem>
+              <SelectItem value="15">15 leads</SelectItem>
+              <SelectItem value="25">25 leads</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button onClick={runDiscovery} disabled={discover.isPending}>
+            <Target className="mr-2 h-4 w-4" />
+            {discover.isPending ? "Discovering…" : "Discover experiment leads"}
+          </Button>
+        </div>
+      </div>
+
+      {facetEntries.length > 0 && (
+        <div className="mt-4 space-y-2">
+          <p className="text-xs font-medium uppercase text-muted-foreground">Winning facets</p>
+          <div className="space-y-1.5">
+            {facetEntries.map(([key, val]) => {
+              const items = Array.isArray(val) ? val : [String(val)];
+              return (
+                <div key={key} className="flex flex-wrap items-center gap-1.5">
+                  <span className="w-24 shrink-0 text-xs text-muted-foreground">
+                    {FACET_LABELS[key] ?? key}
+                  </span>
+                  {items.map((v, i) => (
+                    <span
+                      key={`${key}-${i}`}
+                      className="rounded-full bg-muted px-2 py-0.5 text-xs"
+                    >
+                      {v}
+                    </span>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {personaSplit.length > 0 && (
+        <div className="mt-4 space-y-2">
+          <p className="flex items-center gap-1.5 text-xs font-medium uppercase text-muted-foreground">
+            <Users className="h-3.5 w-3.5" /> Persona allocation
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {personaSplit.map((p) => (
+              <span
+                key={p.persona_type}
+                className="rounded-md border px-2 py-1 text-xs"
+              >
+                <span className="font-medium">{p.label}</span>
+                <span className="text-muted-foreground">
+                  {" "}
+                  · {p.weight_pct}% · {p.prospect_count} leads
+                </span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {plan.winning_parameters_insight && (
+        <p className="mt-3 text-xs text-muted-foreground">{plan.winning_parameters_insight}</p>
+      )}
+    </Card>
+  );
+}
 
 export function Prospects() {
   const { active, activeId } = useActiveStrategy();
@@ -352,7 +499,9 @@ export function Prospects() {
       <ReasoningPanel
         title="How prospects are produced"
         fallback={{
-          source: "ai_generated",
+          source: (prioritized?.tier_1?.some(a => a.source !== 'ai_demo') || 
+                   prioritized?.tier_2?.some(a => a.source !== 'ai_demo') || 
+                   prioritized?.tier_3?.some(a => a.source !== 'ai_demo')) ? "apollo" : "ai_generated",
           logic:
             "Without an Apollo or SerpAPI key, accounts, contacts, and signals are AI-generated demo data. Add live keys in Settings to swap to real Apollo people-search and SerpAPI funding/hiring queries — the per-run limits below cap how many records each click pulls.",
           steps: [
@@ -363,6 +512,8 @@ export function Prospects() {
         }}
         className="mb-4"
       />
+
+      {activeId && <ExperimentDiscoverySection strategyId={activeId} />}
 
       <Tabs defaultValue="accounts" className="space-y-4">
         <TabsList>
@@ -392,6 +543,7 @@ export function Prospects() {
                     <thead className="bg-muted/40">
                       <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
                         <th className="px-4 py-2">Company</th>
+                        <th className="px-4 py-2">Location</th>
                         <th className="px-4 py-2">Industry</th>
                         <th className="px-4 py-2 text-right">Employees</th>
                         <th className="px-4 py-2">Revenue</th>
@@ -414,20 +566,44 @@ export function Prospects() {
                                   {a.company_name}
                                 </div>
                                 {a.domain && (
-                                  <div className="text-[11px] text-muted-foreground">
-                                    {a.domain}
-                                  </div>
+                                  <a
+                                    href={`https://${a.domain.replace(/^https?:\/\//, '')}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="inline-flex max-w-[220px] items-center gap-1 truncate text-[11px] text-sky-300 hover:text-sky-200"
+                                    title={a.domain}
+                                  >
+                                    <ExternalLink className="h-3 w-3 shrink-0" />
+                                    <span className="truncate">{a.domain}</span>
+                                  </a>
                                 )}
                               </div>
                             </div>
+                            {a.tech_stack && a.tech_stack.length > 0 && (
+                              <div className="mt-2 flex flex-wrap gap-1">
+                                {a.tech_stack.slice(0, 3).map((tech, i) => (
+                                  <span key={i} className="rounded bg-muted/60 px-1.5 py-0.5 text-[9px] text-muted-foreground">
+                                    {tech}
+                                  </span>
+                                ))}
+                                {a.tech_stack.length > 3 && (
+                                  <span className="rounded bg-muted/40 px-1.5 py-0.5 text-[9px] text-muted-foreground">
+                                    +{a.tech_stack.length - 3}
+                                  </span>
+                                )}
+                              </div>
+                            )}
                           </td>
-                          <td className="px-4 py-2 text-muted-foreground">
+                          <td className="px-4 py-2 text-muted-foreground text-[11px]">
+                            {a.location || "—"}
+                          </td>
+                          <td className="px-4 py-2 text-muted-foreground text-[11px]">
                             {a.industry || "—"}
                           </td>
                           <td className="px-4 py-2 text-right font-mono tabular-nums">
                             {a.employee_count?.toLocaleString() ?? "—"}
                           </td>
-                          <td className="px-4 py-2 text-muted-foreground">
+                          <td className="px-4 py-2 text-muted-foreground text-[11px]">
                             {a.revenue_range || "—"}
                           </td>
                           <td className="px-4 py-2 text-right font-mono tabular-nums">
@@ -450,7 +626,8 @@ export function Prospects() {
                                 <span className="font-mono text-xs tabular-nums">
                                   {a.intent_score.toFixed(0)}
                                 </span>
-                                <SourceBadge source="ai_generated" />
+                                <SourceBadge source={a.source === "ai_demo" ? "ai_generated" : "apollo"} />
+                                {a.source === "ai_demo" && <DemoBadge />}
                               </div>
                             ) : (
                               <span className="text-xs text-muted-foreground">
@@ -548,8 +725,24 @@ export function Prospects() {
                           {c.title}
                         </div>
                       </td>
-                      <td className="px-4 py-2 text-muted-foreground">
-                        {c.company_name}
+                      <td className="px-4 py-2">
+                        <div className="max-w-[220px]">
+                          <div className="truncate text-muted-foreground" title={c.company_name}>
+                            {c.company_name}
+                          </div>
+                          {c.domain && (
+                            <a
+                              href={`https://${c.domain.replace(/^https?:\/\//, '')}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex max-w-full items-center gap-1 truncate text-[11px] text-sky-300 hover:text-sky-200"
+                              title={c.domain}
+                            >
+                              <ExternalLink className="h-3 w-3 shrink-0" />
+                              <span className="truncate">{c.domain}</span>
+                            </a>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-2">
                         <div className="space-y-0.5">
@@ -582,6 +775,11 @@ export function Prospects() {
                                 </button>
                               )}
                             </div>
+                          ) : c.email === "Not found" ? (
+                            <div className="flex items-center gap-1 text-[11px] text-muted-foreground/50">
+                              <Mail className="h-3 w-3 shrink-0" />
+                              <span>Email unavailable</span>
+                            </div>
                           ) : (
                             <div className="flex items-center gap-1 text-[11px] text-muted-foreground/50">
                               <Mail className="h-3 w-3 shrink-0" />
@@ -590,7 +788,28 @@ export function Prospects() {
                                 variant="outline"
                                 className="h-5 px-1.5 text-[10px]"
                                 disabled={revealEmail.isPending}
-                                onClick={() => revealEmail.mutate(c.id)}
+                                onClick={() => revealEmail.mutate(c.id, {
+                                  onSuccess: (data) => {
+                                    if (data.email && data.email !== "Not found") {
+                                      toast({
+                                        title: "Email revealed",
+                                        description: `Successfully found email for ${c.full_name}.`,
+                                      });
+                                    } else if (data.email === "Not found") {
+                                      toast({
+                                        title: "Email not found",
+                                        description: "Apollo matched this contact but does not have their email address.",
+                                      });
+                                    }
+                                  },
+                                  onError: (err: any) => {
+                                    toast({
+                                      title: "Email fetch failed",
+                                      description: err.message || "An error occurred fetching the email.",
+                                      variant: "destructive"
+                                    });
+                                  }
+                                })}
                                 title="Uses 1 Apollo credit to fetch this person's email"
                               >
                                 {revealEmail.isPending ? "Fetching..." : "Get Email"}

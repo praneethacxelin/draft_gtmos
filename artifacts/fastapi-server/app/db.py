@@ -1,7 +1,9 @@
 """SQLAlchemy models + DB session for the GTM Factory.
 
-All tables created with `init_db()` on startup. Uses pgvector for ICP
-embeddings to support similarity-based pattern recognition.
+All tables created with `init_db()` on startup. ICP/pattern embeddings are
+stored as JSON lists; the queryable vector store is ChromaDB
+(``app/services/vector_store.py``) so the stack stays portable to Windows
+without compiling the pgvector native extension.
 """
 import os
 import uuid
@@ -122,8 +124,13 @@ class Strategy(Base):
     stakeholder_map_json = Column(JSONB, nullable=True)
     use_cases_json = Column(JSONB, nullable=True)
     tam_sam_som_json = Column(JSONB, nullable=True)
+    # ROI expectation validation (investment vs expected revenue) grounded in
+    # this profile's market sizing + ICP. Computed by app/agents/roi_validator.py.
+    roi_json = Column(JSONB, nullable=True)
     status = Column(String, default="draft")  # draft / generating / ready
     discovery_data = Column(JSONB, nullable=True)
+    last_signal_scan = Column(DateTime, nullable=True)
+    daily_signal_summary = Column(JSONB, nullable=True)
     created_at = Column(DateTime, default=now)
     updated_at = Column(DateTime, default=now, onupdate=now)
 
@@ -132,7 +139,10 @@ class IcpEmbedding(Base):
     __tablename__ = "icp_embeddings"
     id = Column(String, primary_key=True, default=gen_id)
     strategy_id = Column(String, ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False)
-    embedding = Column(PgARRAY(Float), nullable=False)
+    # Stored as a JSON list of floats. ChromaDB is the queryable vector store
+    # (see app/services/vector_store.py); this column keeps a portable copy
+    # and avoids the pgvector native extension (hard to compile on Windows).
+    embedding = Column(JSONB, nullable=False)
     summary = Column(Text, nullable=True)
     created_at = Column(DateTime, default=now)
 
@@ -161,6 +171,8 @@ class Account(Base):
     industry = Column(String, nullable=True)
     employee_count = Column(Integer, nullable=True)
     revenue_range = Column(String, nullable=True)
+    location = Column(String, nullable=True)
+    founded_year = Column(Integer, nullable=True)
     tech_stack_json = Column(JSONB, nullable=True)
     enrichment_json = Column(JSONB, nullable=True)
     tier = Column(Integer, nullable=True)  # 1/2/3
@@ -188,6 +200,12 @@ class Contact(Base):
     tier = Column(Integer, nullable=True)
     is_demo = Column(Boolean, default=False)
     email_verified = Column(String, nullable=True)  # valid/invalid/catch_all/pending/None
+    # Where this contact came from, so outreach can group leads by origin:
+    #   discovery  — standard ICP/persona lead search
+    #   experiment — pulled via a winning experiment's facets
+    #   campaign   — pulled as part of phased campaign execution
+    source = Column(String, default="discovery", nullable=True)
+    source_ref = Column(String, nullable=True)  # batch_id / experiment_id / phase label
     created_at = Column(DateTime, default=now)
 
 
@@ -211,7 +229,7 @@ class PatternCluster(Base):
     pattern_name = Column(String, nullable=False)
     signal_combination_json = Column(JSONB, nullable=True)
     conversion_rate = Column(Float, default=0.0)
-    cluster_embedding = Column(PgARRAY(Float), nullable=True)
+    cluster_embedding = Column(JSONB, nullable=True)  # JSON list of floats (see vector_store.py)
     created_at = Column(DateTime, default=now)
 
 
@@ -401,17 +419,100 @@ class AuditLog(Base):
     summary = Column(Text, nullable=True)
 
 
+# ---------- Experiments (Apollo parameter search) ----------
+#
+# A profile can run multiple experiment batches. Each batch holds N
+# experiments — distinct Apollo facet combinations (location, industry,
+# employee size, revenue, titles, …) — that are run against Apollo and then
+# analysed together so the LLM can surface the best-performing parameter set
+# and the most relevant leads for the product profile.
+
+
+class ExperimentBatch(Base):
+    __tablename__ = "experiment_batches"
+    id = Column(String, primary_key=True, default=gen_id)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    strategy_id = Column(String, ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String, nullable=True)
+    n_experiments = Column(Integer, nullable=False, default=3)
+    leads_per_experiment = Column(Integer, nullable=False, default=10)
+    status = Column(String, default="draft")  # draft / seeded / running / analyzed
+    hypothesis = Column(Text, nullable=True)
+    best_experiment_id = Column(String, nullable=True)
+    analysis_json = Column(JSONB, nullable=True)  # cross-experiment summary + ranking
+    created_at = Column(DateTime, default=now)
+    updated_at = Column(DateTime, default=now, onupdate=now)
+
+
+class Experiment(Base):
+    __tablename__ = "experiments"
+    id = Column(String, primary_key=True, default=gen_id)
+    batch_id = Column(String, ForeignKey("experiment_batches.id", ondelete="CASCADE"), nullable=False, index=True)
+    strategy_id = Column(String, ForeignKey("strategies.id", ondelete="CASCADE"), nullable=False, index=True)
+    idx = Column(Integer, nullable=False)  # 1-based position within the batch
+    name = Column(String, nullable=True)
+    hypothesis = Column(Text, nullable=True)
+    # Editable Apollo facet form: {titles, seniorities, locations, industries,
+    # employee_ranges, technologies, revenue_ranges}
+    params_json = Column(JSONB, nullable=True)
+    source = Column(String, default="ai")  # ai | user
+    status = Column(String, default="draft")  # draft / running / done / failed
+    # Run outputs
+    result_summary_json = Column(JSONB, nullable=True)  # counts, winning tier, provenance
+    leads_json = Column(JSONB, nullable=True)  # list of normalized lead dicts (NOT persisted to contacts)
+    relevancy_json = Column(JSONB, nullable=True)  # per-experiment relevancy scoring vs profile
+    score = Column(Float, nullable=True)  # composite 0-100 (relevancy x volume)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=now)
+    updated_at = Column(DateTime, default=now, onupdate=now)
+
+
+# ---------- Learnings ----------
+#
+# Centralized "what we've learned" memory. Every workstream (experiments,
+# persona intelligence, outreach, manual notes) writes durable insights here
+# so the rest of the factory can recall them. The text is also embedded into
+# the ChromaDB ``gtm_learnings`` collection (see vector_store) for semantic
+# similarity search; ``embedded`` records whether that succeeded.
+
+
+class Learning(Base):
+    __tablename__ = "learnings"
+    id = Column(String, primary_key=True, default=gen_id)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    # Tagged with a source strategy for filtering, but learnings are recallable
+    # across strategies (cross-pollination of what works).
+    strategy_id = Column(String, ForeignKey("strategies.id", ondelete="SET NULL"), nullable=True, index=True)
+    category = Column(String, nullable=False, default="general", index=True)
+    # persona | segment | messaging | timing | experiment | channel | general
+    title = Column(String, nullable=True)
+    content = Column(Text, nullable=False)  # the learning text (this is what gets embedded)
+    source = Column(String, default="manual")  # experiment | persona | outreach | roi | manual
+    source_ref = Column(String, nullable=True)  # e.g. batch_id / experiment_id / contact_id
+    metrics_json = Column(JSONB, nullable=True)  # supporting numbers (response %, depth, score)
+    tags_json = Column(JSONB, nullable=True)  # list[str] for filtering
+    confidence = Column(String, default="Moderate")  # High | Moderate | Low
+    embedded = Column(Boolean, default=False)  # stored in the vector collection
+    created_at = Column(DateTime, default=now)
+    updated_at = Column(DateTime, default=now, onupdate=now)
+
+
 # ---------- Helpers ----------
 
 
 def init_db() -> None:
-    """Enable pgvector, run light migrations, create new tables.
+    """Run light migrations and create new tables.
 
     Heavy schema migrations live under ``alembic/`` (see ``alembic upgrade
     head``). The startup hook here only does the additive work needed for
-    the seeded demo to come up cleanly: enable pgvector, drop the legacy
-    ``competitors`` table that has been renamed to ``competitor_profiles``,
-    and ensure all model tables exist.
+    the seeded demo to come up cleanly: drop the legacy ``competitors``
+    table that has been renamed to ``competitor_profiles`` and ensure all
+    model tables exist.
+
+    Note: the pgvector native extension is intentionally NOT enabled here.
+    Embeddings are stored as JSON lists and the queryable vector store is
+    ChromaDB (``app/services/vector_store.py``), which keeps the stack
+    portable to Windows where compiling pgvector is painful.
     """
     db_url_str = os.environ.get("DATABASE_URL", "")
     if db_url_str.startswith("sqlite"):
@@ -422,6 +523,16 @@ def init_db() -> None:
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
             conn.execute(text("DROP TABLE IF EXISTS competitors CASCADE"))
     Base.metadata.create_all(bind=engine)
+    # Additive column migrations for already-existing tables (create_all only
+    # creates missing tables, it never alters existing ones). Postgres supports
+    # IF NOT EXISTS so these are safe to run on every startup.
+    with engine.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS source VARCHAR DEFAULT 'discovery'"
+        ))
+        conn.execute(text(
+            "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS source_ref VARCHAR"
+        ))
 
     if db_url_str.startswith("sqlite"):
         # Older demo databases may predate the Instantly analytics fields.

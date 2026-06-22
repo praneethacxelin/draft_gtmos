@@ -92,7 +92,11 @@ export function StrategyList() {
                     <div>
                       <div className="text-sm font-medium">{s.product_name}</div>
                       <div className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">
-                        {s.description || "No description yet — complete the discovery questionnaire"}
+                        {s.description ||
+                          (typeof s.discovery_data?.product_description === "string"
+                            ? s.discovery_data.product_description
+                            : "") ||
+                          "No description yet — complete the discovery questionnaire"}
                       </div>
                     </div>
                     <StatusPill status={s.status} />

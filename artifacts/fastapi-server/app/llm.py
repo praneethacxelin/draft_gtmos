@@ -86,12 +86,13 @@ async def chat_text(prompt: str, system: str = "You are a helpful sales strategi
 
 
 def deterministic_embedding(text_in: str, dim: int = 1536) -> list[float]:
-    """Generate a deterministic 384-dim 'embedding' from text using SHA256.
+    """Generate a deterministic pseudo-embedding from text using SHA256.
 
-    The Replit AI Integrations OpenAI proxy does not expose the embeddings
-    API. We use a hash-based pseudo-embedding so pgvector similarity search
-    still works for demoing pattern recognition. Distances are not as
-    meaningful as real embeddings, but related strings still cluster.
+    Used as a portable fallback when ChromaDB's local sentence-transformer
+    model can't load (offline / missing onnxruntime). Distances are not as
+    meaningful as real embeddings, but related strings still cluster, so the
+    rest of the pipeline keeps working. The primary embedding path is the
+    MiniLM model in ``app.services.vector_store``.
     """
     # Take repeated hashes of the input to seed a deterministic float vector
     seed_bytes = b""

@@ -85,7 +85,7 @@ GTM Factory is a **single-operator console** designed for GTM Engineers, CROs, a
 └──────────────────────┬──────────────────────────────────────┘
                        │ SQL
 ┌──────────────────────▼──────────────────────────────────────┐
-│          PostgreSQL + pgvector extension                     │
+│          PostgreSQL  +  ChromaDB (local vector store)        │
 │  20+ tables: strategies, accounts, contacts, signals,        │
 │  sequences, lead_scores, engagement_events, intent_scores,   │
 │  audit_logs, icp_embeddings, pattern_clusters, etc.          │
@@ -101,8 +101,8 @@ GTM Factory is a **single-operator console** designed for GTM Engineers, CROs, a
 | **Frontend** | React 18, Vite, TypeScript, Tailwind CSS v4, shadcn/ui, TanStack Query, Wouter (routing), Lucide Icons |
 | **Backend** | Python 3.11, FastAPI, SQLAlchemy 2.0, psycopg3, sse-starlette (SSE streaming) |
 | **AI** | OpenAI GPT-4o-mini via Replit proxy (consumed in `app/llm.py`) |
-| **Embeddings** | pgvector with deterministic SHA-based 1536-dim pseudo-embeddings (forward-compatible with real embeddings API) |
-| **Database** | PostgreSQL with `pgvector` extension |
+| **Embeddings** | ChromaDB (local, embedded) with a built-in MiniLM sentence-transformer; deterministic SHA-based fallback when the model can't load |
+| **Database** | PostgreSQL (relational) + ChromaDB (vector similarity) |
 | **External APIs** | Apollo.io (lead discovery), SerpAPI (market research + signals), Clay (enrichment), Instantly.ai (email campaigns + verification) |
 
 ---
@@ -249,7 +249,7 @@ Attached-Assets/
 
 | Table | Purpose |
 |-------|---------|
-| `icp_embeddings` | pgvector embeddings for similarity-based pattern matching |
+| `icp_embeddings` | ICP embeddings (JSON copy in Postgres; queryable copy in ChromaDB) for semantic ICP-fit scoring |
 | `pattern_clusters` | Learned conversion patterns from scoring |
 | `audit_logs` | Immutable log of every API call + data change |
 
@@ -333,7 +333,7 @@ Weighted composite:
 Tier assignment: Tier 1 (≥70), Tier 2 (40–69), Tier 3 (<40).
 
 #### 2e. Pattern Recognition (`run_patterns`)
-pgvector-based clustering on ICP embeddings to find common conversion patterns.
+pgvector-free pattern recognition: signal co-occurrences are clustered with a `Counter`, named, and (when available) indexed in ChromaDB for semantic pattern memory.
 
 ---
 
@@ -533,7 +533,7 @@ API keys are encrypted with **Fernet** (AES-128-CBC) before storage in the `app_
 ### Prerequisites
 - Node.js 18+ and pnpm
 - Python 3.11+
-- PostgreSQL with pgvector extension
+- PostgreSQL (ChromaDB is embedded — no separate server or pgvector extension needed)
 
 ### Backend
 ```bash
@@ -590,7 +590,7 @@ python seed.py
     ├── Market Sizing (SerpAPI + AI)
     ├── Lead Discovery (Apollo + dedup + scoring)
     ├── Signal Detection (SerpAPI + LLM actionable insights)
-    └── Pattern Recognition (pgvector clustering)
+    └── Pattern Recognition (Counter clustering + ChromaDB memory)
     │
     ▼
 [S3 Pipeline] (triggered per contact)

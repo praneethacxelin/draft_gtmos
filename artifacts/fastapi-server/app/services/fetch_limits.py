@@ -25,7 +25,7 @@ DEFAULTS: dict[str, int] = {
 }
 
 MAXIMUMS: dict[str, int] = {
-    "leads_per_run": 10,
+    "leads_per_run": 25,
     "signals_per_account": 10,
     "market_sizing_results": 10,
 }

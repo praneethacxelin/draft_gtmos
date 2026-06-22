@@ -8,12 +8,15 @@ export interface Account {
   industry?: string;
   employee_count?: number;
   revenue_range?: string;
+  location?: string;
+  founded_year?: number;
   tier?: number;
   tech_stack?: string[];
   signal_count: number;
   contact_count: number;
   intent_score?: number;
   intent_classification?: string;
+  source?: string;
 }
 
 export function useAccounts(strategyId?: string) {

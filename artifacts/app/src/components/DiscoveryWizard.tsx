@@ -16,6 +16,7 @@ import {
   Target,
   Users,
   Zap,
+  DollarSign,
   Sparkles,
 } from "lucide-react";
 
@@ -218,6 +219,42 @@ const SECTIONS: Section[] = [
           "3–6 months",
           "6–12 months",
           "12+ months",
+        ],
+      },
+    ],
+  },
+  {
+    id: "roi",
+    title: "Investment & ROI",
+    subtitle: "What you'll invest and expect back",
+    icon: <DollarSign className="h-4 w-4" />,
+    questions: [
+      {
+        id: "planned_investment",
+        title: "What is your planned GTM investment?",
+        desc: "Total budget for this go-to-market motion (tools, people, ads, etc.). Enter a dollar amount.",
+        type: "text",
+        placeholder: "e.g., $250,000",
+      },
+      {
+        id: "expected_revenue",
+        title: "What revenue / return do you expect from it?",
+        desc: "The revenue you expect this investment to generate over the timeframe below.",
+        type: "text",
+        placeholder: "e.g., $1,500,000",
+      },
+      {
+        id: "roi_timeframe",
+        title: "Over what timeframe?",
+        desc: "The window in which you expect to realize that return.",
+        type: "mcq",
+        options: [
+          "3 months",
+          "6 months",
+          "12 months",
+          "18 months",
+          "24 months",
+          "36 months",
         ],
       },
     ],

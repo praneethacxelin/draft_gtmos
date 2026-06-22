@@ -17,6 +17,37 @@ export interface ActivityItem {
   at?: string;
 }
 
+export interface SignalMover {
+  contact_id: string;
+  contact_name: string;
+  title?: string;
+  company?: string;
+  before: number;
+  after: number;
+  delta: number;
+}
+
+export interface RecentSignal {
+  signal_type: string;
+  summary: string;
+  company?: string;
+  strength?: number;
+  source?: string;
+  detected_at?: string;
+}
+
+export interface SignalPulse {
+  strategy_id?: string;
+  strategy_name?: string;
+  has_serpapi: boolean;
+  last_scanned?: string | null;
+  new_signals: number;
+  is_demo?: boolean;
+  top_movers: SignalMover[];
+  recent_signals: RecentSignal[];
+  message?: string | null;
+}
+
 export function useDashboardSummary() {
   return useQuery<DashboardSummary>({
     queryKey: ["dashboard", "summary"],
@@ -31,3 +62,15 @@ export function useDashboardActivity() {
     queryFn: () => apiFetch("/api/dashboard/activity"),
   });
 }
+
+export function useSignalPulse(strategyId?: string) {
+  return useQuery<SignalPulse>({
+    queryKey: ["dashboard", "signal-pulse", strategyId ?? "auto"],
+    queryFn: () =>
+      apiFetch(
+        `/api/dashboard/signal-pulse${strategyId ? `?strategy_id=${strategyId}` : ""}`,
+      ),
+    refetchInterval: 60000,
+  });
+}
+
