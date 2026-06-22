@@ -16,7 +16,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.execute("TRUNCATE TABLE icp_embeddings")
+    op.execute("DELETE FROM icp_embeddings")
     op.execute("ALTER TABLE icp_embeddings DROP COLUMN embedding")
     op.execute("ALTER TABLE icp_embeddings ADD COLUMN embedding float8[] NOT NULL DEFAULT '{}'")
 

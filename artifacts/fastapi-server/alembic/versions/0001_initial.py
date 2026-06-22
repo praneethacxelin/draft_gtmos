@@ -17,7 +17,7 @@ depends_on = None
 
 def upgrade() -> None:
     bind = op.get_bind()
-    op.execute("DROP TABLE IF EXISTS competitors CASCADE")
+    op.execute("DROP TABLE IF EXISTS competitors")
 
     # Import lazily so Alembic env can run without app side-effects at import time.
     from app.db import Base
