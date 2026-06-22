@@ -160,6 +160,17 @@ export interface RoiValidation extends WithProvenance {
     timeframe_months?: number;
     market_segment?: string | null;
     notes?: string | null;
+    revenue_target_usd?: number | null;
+    average_deal_size_usd?: number | null;
+    conversion_rate?: number;
+    lead_acquisition_cost?: number;
+    outreach_cost?: number;
+    gtm_engineer_capacity?: number;
+    current_gtm_engineers?: number;
+    time_urgency?: string;
+    campaign_count?: number;
+    sales_cycle_months?: number;
+    execution_start_month?: number;
   };
   market_context?: {
     tam_usd?: number | null;
@@ -167,6 +178,152 @@ export interface RoiValidation extends WithProvenance {
     som_usd?: number | null;
     methodology?: string | null;
   };
+  gtm_plan?: GtmPlan | null;
+}
+
+export type CampaignMode = "parallel" | "sequential" | "hybrid";
+
+export type RevenueAssessment =
+  | "Conservative"
+  | "Realistic"
+  | "Aggressive"
+  | "Unrealistic";
+
+export interface GtmPlanCampaign {
+  name: string;
+  prospects: number;
+  engineers: number;
+  closures: number;
+  throughput_prospects?: number;
+  utilization_pct?: number | null;
+  bottleneck?: boolean;
+}
+
+export type ConfidenceLevel = "High" | "Moderate" | "Low";
+
+export interface RevenuePhase {
+  phase: number;
+  label: string;
+  month_range: string;
+  calendar_range: string;
+  quarter: string;
+  base_target_usd: number;
+  carried_in_usd: number;
+  phase_target_usd: number;
+  effective_target_usd?: number;
+  required_closures: number;
+  required_prospects: number;
+  phase_capacity_prospects: number;
+  season_factor: number;
+  season_notes?: string[];
+  projected_attainment_pct: number;
+  projected_revenue_usd: number;
+  carry_forward_usd: number;
+  confidence: ConfidenceLevel;
+}
+
+export interface RevenuePlan {
+  sales_cycle_months: number;
+  execution_start_month: number;
+  execution_start_label: string;
+  phase_count: number;
+  annual_target_usd: number;
+  projected_total_usd: number;
+  projected_coverage_pct: number;
+  final_shortfall_usd: number;
+  overall_confidence: ConfidenceLevel;
+  seasonality_impact?: string | null;
+  phases: RevenuePhase[];
+}
+
+export interface GtmPlan {
+  inputs?: {
+    revenue_target_usd?: number;
+    average_deal_size_usd?: number;
+    conversion_rate?: number;
+    lead_acquisition_cost?: number;
+    outreach_cost?: number;
+    serp_api_cost?: number;
+    ai_token_cost?: number;
+    gtm_engineer_capacity?: number;
+    current_gtm_engineers?: number;
+    time_horizon_months?: number;
+    time_urgency?: string;
+    campaign_count?: number;
+    email_accounts?: number;
+    email_account_type?: string;
+    sales_cycle_months?: number;
+    execution_start_month?: number;
+  };
+  required_closures?: number;
+  required_prospects?: number;
+  costs?: {
+    lead_acquisition_cost_usd?: number;
+    outreach_cost_usd?: number;
+    serp_api_cost_usd?: number;
+    ai_token_cost_usd?: number;
+    total_gtm_cost_usd?: number;
+    budget_sufficient?: boolean;
+    planned_investment_usd?: number | null;
+  };
+  capacity?: {
+    working_days?: number;
+    capacity_per_engineer?: number;
+    available_capacity?: number;
+    required_capacity?: number;
+    utilization_pct?: number | null;
+    capacity_gap?: number;
+    sufficient?: boolean;
+    current_engineers?: number;
+    recommended_engineers?: number;
+    additional_engineers?: number;
+    message?: string;
+  };
+  campaign_plan?: {
+    mode?: CampaignMode;
+    campaign_count?: number;
+    reasoning?: string;
+    campaigns?: GtmPlanCampaign[];
+    waves?: string[][];
+    bottlenecks?: string[];
+    available_engineers?: number;
+  };
+  revenue_plan?: RevenuePlan | null;
+  email_capacity?: {
+    email_accounts?: number;
+    email_account_type?: string;
+    per_account_per_day?: number;
+    daily_capacity?: number;
+    monthly_capacity?: number;
+    total_capacity?: number;
+    experiment_window_capacity?: number;
+    required_prospects?: number;
+    sufficient?: boolean;
+    recommended_accounts?: number;
+    additional_accounts?: number;
+    message?: string | null;
+  };
+  experiment_plan?: {
+    window_months?: number;
+    n_experiments?: number;
+    leads_per_experiment?: number;
+    total_experiment_leads?: number;
+    window_send_capacity?: number;
+    capacity_limited?: boolean;
+    rationale?: string;
+  };
+  reconciliation?: {
+    target_usd?: number;
+    forward_revenue_usd?: number;
+    reaches_target?: boolean;
+    realistic_low_usd?: number | null;
+    realistic_high_usd?: number | null;
+    alignment?: "above_realistic" | "below_realistic" | "within_realistic" | "unknown";
+    prospects_for_realistic_low?: number | null;
+    prospects_for_realistic_high?: number | null;
+  };
+  revenue_assessment?: RevenueAssessment;
+  strategic_guidance?: string[];
 }
 
 export interface Strategy {
@@ -286,6 +443,21 @@ export interface RoiValidateInput {
   timeframe_months?: number;
   market_segment?: string | null;
   notes?: string | null;
+  revenue_target_usd?: number | null;
+  average_deal_size_usd?: number | null;
+  conversion_rate?: number;
+  lead_acquisition_cost?: number;
+  outreach_cost?: number;
+  gtm_engineer_capacity?: number;
+  current_gtm_engineers?: number;
+  time_urgency?: string;
+  campaign_count?: number;
+  sales_cycle_months?: number;
+  execution_start_month?: number;
+  serp_api_cost?: number;
+  ai_token_cost?: number;
+  email_accounts?: number;
+  email_account_type?: string;
 }
 
 export function useValidateRoi() {
@@ -298,6 +470,152 @@ export function useValidateRoi() {
       }),
     onSuccess: (_, { id }) =>
       qc.invalidateQueries({ queryKey: strategyKeys.detail(id) }),
+  });
+}
+
+export interface PersonaFunnelStage {
+  stage: string;
+  count: number;
+}
+
+export interface PersonaScore {
+  persona_type: string;
+  label: string;
+  contacts: number;
+  score: number;
+  grade: string;
+  confidence: "High" | "Moderate" | "Low";
+  basis: "funnel" | "contact_scores";
+  metrics: {
+    sent: number;
+    opened: number;
+    clicked: number;
+    replied: number;
+    bounced: number;
+    open_rate_pct: number;
+    reply_rate_pct: number;
+    qualified: number;
+    sql: number;
+    conversions: number;
+    won: number;
+    conversion_value_usd: number;
+    avg_response_hours: number | null;
+    avg_funnel_depth: number;
+  };
+  components: {
+    response: number;
+    depth: number;
+    conversion: number;
+    speed: number;
+  };
+  funnel: PersonaFunnelStage[];
+}
+
+export interface PersonaIntelligence {
+  strategy_id: string;
+  persona_count: number;
+  total_contacts: number;
+  data_basis?: "funnel" | "contact_scores";
+  personas: PersonaScore[];
+  top_performer?: { persona_type: string; label: string; score: number } | null;
+  lowest_performer?: { persona_type: string; label: string; score: number } | null;
+  recommendations: string[];
+}
+
+export function usePersonaIntelligence(id?: string) {
+  return useQuery<PersonaIntelligence>({
+    queryKey: id ? [...strategyKeys.detail(id), "persona-intelligence"] : ["persona-intel", "none"],
+    queryFn: () => apiFetch(`/api/strategies/${id}/persona-intelligence`),
+    enabled: !!id,
+  });
+}
+
+export interface PersonaAllocationRow {
+  persona_type: string;
+  label: string;
+  rank: number;
+  score: number;
+  grade: string;
+  confidence: "High" | "Moderate" | "Low";
+  weight_pct: number;
+  prospect_count: number;
+  reply_rate_pct: number | null;
+  avg_funnel_depth: number | null;
+}
+
+export interface PersonaAllocation {
+  strategy_id: string;
+  data_basis?: "funnel" | "contact_scores";
+  weights_input: number[];
+  total_prospects: number | null;
+  allocated_personas: number;
+  allocations: PersonaAllocationRow[];
+  deprioritized_personas: { persona_type: string; label: string; score: number }[];
+  notes: string[];
+}
+
+export function usePersonaAllocation(id?: string, totalProspects?: number | null) {
+  const qp =
+    totalProspects != null && totalProspects > 0 ? `?total_prospects=${Math.round(totalProspects)}` : "";
+  return useQuery<PersonaAllocation>({
+    queryKey: id
+      ? [...strategyKeys.detail(id), "persona-allocation", totalProspects ?? 0]
+      : ["persona-alloc", "none"],
+    queryFn: () => apiFetch(`/api/strategies/${id}/persona-allocation${qp}`),
+    enabled: !!id,
+  });
+}
+
+export interface CampaignPlanPersonaSplit {
+  persona_type: string;
+  label: string;
+  weight_pct: number;
+  prospect_count: number;
+}
+
+export interface CampaignPlanPhase {
+  phase: number;
+  label: string;
+  calendar_range: string;
+  quarter: string;
+  revenue_target_usd: number;
+  required_closures: number;
+  prospect_count: number;
+  prospect_share_pct: number;
+  baseline_prospects: number;
+  persona_split: CampaignPlanPersonaSplit[];
+  season_factor: number | null;
+  confidence: "High" | "Moderate" | "Low" | null;
+}
+
+export interface CampaignPlan {
+  ready: boolean;
+  gate: "ready" | "roi_pending" | "experiments_pending" | "missing_strategy";
+  reason?: string;
+  strategy_id?: string;
+  source_batch_id?: string;
+  winning_experiment_id?: string;
+  winning_experiment_name?: string | null;
+  winning_facets?: Record<string, string[] | string>;
+  winning_parameters_insight?: string | null;
+  kickoff_month?: number;
+  kickoff_label?: string;
+  experiment_window_months?: number;
+  total_prospects?: number;
+  frontload_decay?: number;
+  frontload_first_two_pct?: number;
+  phase_count?: number;
+  annual_target_usd?: number;
+  overall_confidence?: "High" | "Moderate" | "Low";
+  phases?: CampaignPlanPhase[];
+  notes?: string[];
+}
+
+export function useCampaignPlan(id?: string) {
+  return useQuery<CampaignPlan>({
+    queryKey: id ? [...strategyKeys.detail(id), "campaign-plan"] : ["campaign-plan", "none"],
+    queryFn: () => apiFetch(`/api/strategies/${id}/campaign-plan`),
+    enabled: !!id,
   });
 }
 
@@ -355,6 +673,39 @@ export function useLeadSearch() {
           toast.success(`Discovered ${r.contacts_added ?? 0} contacts across ${r.accounts_added ?? 0} accounts`);
         } else {
           toast.success("Lead discovery complete");
+        }
+      }).catch(() => {});
+    },
+    onError: (err: Error) => {
+      import("sonner").then(({ toast }) => toast.error(err.message)).catch(() => {});
+    },
+  });
+}
+
+export function useDiscoverExperimentLeads() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: string | { id: string; limit?: number }) => {
+      const { id, limit } = typeof vars === "string" ? { id: vars, limit: undefined } : vars;
+      return streamSse(withLimit(`/api/strategies/${id}/leads/discover-experiments`, limit));
+    },
+    onSuccess: (result: unknown) => {
+      qc.invalidateQueries({ queryKey: ["accounts"] });
+      qc.invalidateQueries({ queryKey: ["contacts"] });
+      import("sonner").then(({ toast }) => {
+        const r = result as
+          | { ready?: boolean; reason?: string; contacts_added?: number; accounts_added?: number; message?: string }
+          | null;
+        if (r && r.ready === false) {
+          toast.info(r.reason ?? "Experiment discovery is not ready yet");
+        } else if (r?.message) {
+          toast.info(r.message);
+        } else if (r) {
+          toast.success(
+            `Experiment discovery added ${r.contacts_added ?? 0} contacts across ${r.accounts_added ?? 0} accounts`,
+          );
+        } else {
+          toast.success("Experiment discovery complete");
         }
       }).catch(() => {});
     },

@@ -183,6 +183,12 @@ class Contact(Base):
     tier = Column(Integer, nullable=True)
     is_demo = Column(Boolean, default=False)
     email_verified = Column(String, nullable=True)  # valid/invalid/catch_all/pending/None
+    # Where this contact came from, so outreach can group leads by origin:
+    #   discovery  — standard ICP/persona lead search
+    #   experiment — pulled via a winning experiment's facets
+    #   campaign   — pulled as part of phased campaign execution
+    source = Column(String, default="discovery", nullable=True)
+    source_ref = Column(String, nullable=True)  # batch_id / experiment_id / phase label
     created_at = Column(DateTime, default=now)
 
 
@@ -444,6 +450,36 @@ class Experiment(Base):
     updated_at = Column(DateTime, default=now, onupdate=now)
 
 
+# ---------- Learnings ----------
+#
+# Centralized "what we've learned" memory. Every workstream (experiments,
+# persona intelligence, outreach, manual notes) writes durable insights here
+# so the rest of the factory can recall them. The text is also embedded into
+# the ChromaDB ``gtm_learnings`` collection (see vector_store) for semantic
+# similarity search; ``embedded`` records whether that succeeded.
+
+
+class Learning(Base):
+    __tablename__ = "learnings"
+    id = Column(String, primary_key=True, default=gen_id)
+    user_id = Column(String, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    # Tagged with a source strategy for filtering, but learnings are recallable
+    # across strategies (cross-pollination of what works).
+    strategy_id = Column(String, ForeignKey("strategies.id", ondelete="SET NULL"), nullable=True, index=True)
+    category = Column(String, nullable=False, default="general", index=True)
+    # persona | segment | messaging | timing | experiment | channel | general
+    title = Column(String, nullable=True)
+    content = Column(Text, nullable=False)  # the learning text (this is what gets embedded)
+    source = Column(String, default="manual")  # experiment | persona | outreach | roi | manual
+    source_ref = Column(String, nullable=True)  # e.g. batch_id / experiment_id / contact_id
+    metrics_json = Column(JSONB, nullable=True)  # supporting numbers (response %, depth, score)
+    tags_json = Column(JSONB, nullable=True)  # list[str] for filtering
+    confidence = Column(String, default="Moderate")  # High | Moderate | Low
+    embedded = Column(Boolean, default=False)  # stored in the vector collection
+    created_at = Column(DateTime, default=now)
+    updated_at = Column(DateTime, default=now, onupdate=now)
+
+
 # ---------- Helpers ----------
 
 
@@ -464,6 +500,16 @@ def init_db() -> None:
     with engine.begin() as conn:
         conn.execute(text("DROP TABLE IF EXISTS competitors CASCADE"))
     Base.metadata.create_all(bind=engine)
+    # Additive column migrations for already-existing tables (create_all only
+    # creates missing tables, it never alters existing ones). Postgres supports
+    # IF NOT EXISTS so these are safe to run on every startup.
+    with engine.begin() as conn:
+        conn.execute(text(
+            "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS source VARCHAR DEFAULT 'discovery'"
+        ))
+        conn.execute(text(
+            "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS source_ref VARCHAR"
+        ))
 
 
 def get_session() -> Generator[Session, None, None]:

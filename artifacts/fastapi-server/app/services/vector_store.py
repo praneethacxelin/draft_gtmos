@@ -37,6 +37,7 @@ log = logging.getLogger("gtm.vector")
 _ICP_COLLECTION = "icp_profiles"
 _ACCOUNT_COLLECTION = "accounts"
 _PATTERN_COLLECTION = "pattern_clusters"
+_LEARNING_COLLECTION = "gtm_learnings"
 
 
 class _VectorStore:
@@ -216,6 +217,95 @@ class _VectorStore:
             col.delete(where={"strategy_id": strategy_id})
         except Exception as exc:
             log.warning("delete_patterns failed: %s", exc)
+
+    # ---- centralized learnings ------------------------------------------
+
+    def add_learning(
+        self,
+        learning_id: str,
+        text: str,
+        metadata: Optional[dict] = None,
+    ) -> bool:
+        """Embed and store a learning. Returns True if it landed in the store."""
+        if not self._ensure() or not text:
+            return False
+        col = self._collection(_LEARNING_COLLECTION)
+        if col is None:
+            return False
+        vec = self._embed([text])
+        if not vec:
+            return False
+        # Chroma metadata values must be primitive (str/int/float/bool).
+        meta = {"learning_id": learning_id}
+        for k, v in (metadata or {}).items():
+            if isinstance(v, (str, int, float, bool)) and v is not None:
+                meta[k] = v
+        try:
+            col.upsert(
+                ids=[learning_id],
+                embeddings=vec,
+                documents=[text[:4000]],
+                metadatas=[meta],
+            )
+            return True
+        except Exception as exc:
+            log.warning("add_learning failed: %s", exc)
+            return False
+
+    def search_learnings(
+        self,
+        query_text: str,
+        n_results: int = 5,
+        where: Optional[dict] = None,
+    ) -> list[dict]:
+        """Semantic search over learnings.
+
+        Returns a list of ``{id, document, similarity, metadata}`` sorted by
+        similarity (highest first). Degrades to ``[]`` if the store is down.
+        """
+        if not self._ensure() or not query_text:
+            return []
+        col = self._collection(_LEARNING_COLLECTION)
+        if col is None:
+            return []
+        vec = self._embed([query_text])
+        if not vec:
+            return []
+        try:
+            res = col.query(
+                query_embeddings=vec,
+                n_results=max(1, n_results),
+                where=where or None,
+            )
+        except Exception as exc:
+            log.warning("search_learnings failed: %s", exc)
+            return []
+        ids = (res or {}).get("ids") or [[]]
+        docs = (res or {}).get("documents") or [[]]
+        dists = (res or {}).get("distances") or [[]]
+        metas = (res or {}).get("metadatas") or [[]]
+        out: list[dict] = []
+        for i, _id in enumerate(ids[0] if ids else []):
+            distance = float(dists[0][i]) if dists and dists[0] else 1.0
+            similarity = max(0.0, min(1.0, 1.0 - distance / 2.0))
+            out.append({
+                "id": _id,
+                "document": (docs[0][i] if docs and docs[0] else None),
+                "similarity": round(similarity, 4),
+                "metadata": (metas[0][i] if metas and metas[0] else {}) or {},
+            })
+        return out
+
+    def delete_learning(self, learning_id: str) -> None:
+        if not self._ensure():
+            return
+        col = self._collection(_LEARNING_COLLECTION)
+        if col is None:
+            return
+        try:
+            col.delete(ids=[learning_id])
+        except Exception as exc:
+            log.warning("delete_learning failed: %s", exc)
 
 
 # Module-level singleton

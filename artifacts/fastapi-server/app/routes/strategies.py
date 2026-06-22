@@ -14,6 +14,7 @@ from app.agents.s2_signals import (
     run_market_sizing,
     run_competitors,
     run_lead_search,
+    run_experiment_discovery,
     run_signals,
     score_leads,
     recognize_patterns,
@@ -21,6 +22,11 @@ from app.agents.s2_signals import (
     fetch_contact_phones,
 )
 from app.agents.roi_validator import validate_roi
+from app.agents.persona_intelligence import (
+    compute_persona_intelligence,
+    compute_persona_allocation,
+)
+from app.agents.campaign_plan import build_campaign_plan
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
 
@@ -439,6 +445,22 @@ class RoiValidateRequest(BaseModel):
     timeframe_months: int = 12
     market_segment: str | None = None
     notes: str | None = None
+    # --- GTM planning assumptions (optional, additive) ---
+    revenue_target_usd: float | None = None
+    average_deal_size_usd: float | None = None
+    conversion_rate: float = 0.01
+    lead_acquisition_cost: float = 0.30
+    outreach_cost: float = 0.50
+    gtm_engineer_capacity: float = 10
+    current_gtm_engineers: int = 1
+    time_urgency: str = "medium"
+    campaign_count: int = 3
+    sales_cycle_months: int = 3
+    execution_start_month: int = 1
+    serp_api_cost: float = 0.10
+    ai_token_cost: float = 0.05
+    email_accounts: int = 2
+    email_account_type: str = "workspace"
 
 
 @router.post("/{strategy_id}/roi/validate")
@@ -457,10 +479,70 @@ async def roi_validate(
         timeframe_months=body.timeframe_months,
         market_segment=body.market_segment,
         notes=body.notes,
+        revenue_target_usd=body.revenue_target_usd,
+        average_deal_size_usd=body.average_deal_size_usd,
+        conversion_rate=body.conversion_rate,
+        lead_acquisition_cost=body.lead_acquisition_cost,
+        outreach_cost=body.outreach_cost,
+        gtm_engineer_capacity=body.gtm_engineer_capacity,
+        current_gtm_engineers=body.current_gtm_engineers,
+        time_urgency=body.time_urgency,
+        campaign_count=body.campaign_count,
+        sales_cycle_months=body.sales_cycle_months,
+        execution_start_month=body.execution_start_month,
+        serp_api_cost=body.serp_api_cost,
+        ai_token_cost=body.ai_token_cost,
+        email_accounts=body.email_accounts,
+        email_account_type=body.email_account_type,
     )
     if isinstance(result, dict) and "_error" in result:
         raise HTTPException(status_code=502, detail=result["_error"])
     return result
+
+
+@router.get("/{strategy_id}/persona-intelligence")
+def persona_intelligence(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    own_strategy(db, strategy_id, user)
+    return compute_persona_intelligence(db, strategy_id)
+
+
+@router.get("/{strategy_id}/persona-allocation")
+def persona_allocation(
+    strategy_id: str,
+    total_prospects: int | None = None,
+    weights: str | None = None,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    own_strategy(db, strategy_id, user)
+    parsed_weights: list[float] | None = None
+    if weights:
+        try:
+            parsed_weights = [
+                float(w.strip()) for w in weights.split(",") if w.strip()
+            ] or None
+        except ValueError:
+            parsed_weights = None
+    return compute_persona_allocation(
+        db,
+        strategy_id,
+        total_prospects=total_prospects,
+        weights=parsed_weights,
+    )
+
+
+@router.get("/{strategy_id}/campaign-plan")
+def campaign_plan(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    own_strategy(db, strategy_id, user)
+    return build_campaign_plan(db, strategy_id)
 
 
 @router.post("/{strategy_id}/market-sizing")
@@ -513,6 +595,23 @@ async def lead_search(
 ):
     own_strategy(db, strategy_id, user)
     return _sse(lambda d: run_lead_search(d, strategy_id, limit=limit), "leads")
+
+
+@router.post("/{strategy_id}/leads/discover-experiments")
+async def lead_search_experiments(
+    strategy_id: str,
+    limit: int | None = Query(None, ge=1, le=25),
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+):
+    """Experiment-driven discovery: pull leads using the winning experiment's
+    facets + persona split, tagged ``source="experiment"``. Gated until a batch
+    has been analyzed."""
+    own_strategy(db, strategy_id, user)
+    return _sse(
+        lambda d: run_experiment_discovery(d, strategy_id, limit=limit),
+        "leads",
+    )
 
 
 @router.post("/{strategy_id}/signals/run")

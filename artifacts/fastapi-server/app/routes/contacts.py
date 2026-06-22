@@ -331,6 +331,8 @@ def _serialize(c: Contact, a: Account | None) -> dict:
         "total_score": c.total_score,
         "tier": c.tier,
         "is_demo": c.is_demo,
+        "source": c.source or "discovery",
+        "source_ref": c.source_ref,
         "account_id": c.account_id,
         "company_name": a.company_name if a else None,
         "industry": a.industry if a else None,

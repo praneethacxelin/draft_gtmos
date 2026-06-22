@@ -22,10 +22,17 @@ import {
   useLaunchSequence,
   useUpdateSequenceStep,
 } from "@/hooks/useSequences";
-import { Mail, Linkedin, Phone, ShieldCheck, Send, Wand2, Pencil, X, FlaskConical, Check } from "lucide-react";
+import { Mail, Linkedin, Phone, ShieldCheck, Send, Wand2, Pencil, X, FlaskConical, Check, Megaphone, Search } from "lucide-react";
 import { fmtDate } from "@/lib/format";
 import { ReasoningPanel, SourceBadge } from "@/components/ReasoningPanel";
 import { RetriggerBar, type RetriggerAction } from "@/components/RetriggerBar";
+
+const SOURCE_META: Record<string, { label: string; icon: typeof FlaskConical }> = {
+  experiment: { label: "From experiments", icon: FlaskConical },
+  campaign: { label: "From campaigns", icon: Megaphone },
+  discovery: { label: "From discovery", icon: Search },
+};
+const SOURCE_ORDER = ["experiment", "campaign", "discovery"] as const;
 
 interface StepDraft {
   subject: string;
@@ -304,31 +311,48 @@ export function Outreach() {
           <div className="mb-2 px-2 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
             Contacts
           </div>
-          <div className="space-y-1">
-            {contacts?.map((c) => (
-              <button
-                key={c.id}
-                onClick={() => {
-                  setSelected(c.id);
-                  setEditingStepId(null);
-                  setStepDirty(false);
-                }}
-                className={`flex w-full items-center justify-between rounded px-3 py-2 text-left text-sm hover-elevate ${
-                  selected === c.id ? "bg-sidebar-accent" : ""
-                }`}
-                data-testid={`contact-row-${c.id}`}
-              >
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-medium">
-                    {c.full_name}
+          <div className="space-y-3">
+            {SOURCE_ORDER.map((src) => {
+              const group = (contacts ?? []).filter(
+                (c) => (c.source ?? "discovery") === src,
+              );
+              if (group.length === 0) return null;
+              const meta = SOURCE_META[src];
+              const Icon = meta.icon;
+              return (
+                <div key={src} className="space-y-1">
+                  <div className="flex items-center gap-1.5 px-2 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+                    <Icon className="h-3 w-3" />
+                    {meta.label}
+                    <span className="text-muted-foreground/70">({group.length})</span>
                   </div>
-                  <div className="truncate text-[11px] text-muted-foreground">
-                    {c.title} · {c.company_name}
-                  </div>
+                  {group.map((c) => (
+                    <button
+                      key={c.id}
+                      onClick={() => {
+                        setSelected(c.id);
+                        setEditingStepId(null);
+                        setStepDirty(false);
+                      }}
+                      className={`flex w-full items-center justify-between rounded px-3 py-2 text-left text-sm hover-elevate ${
+                        selected === c.id ? "bg-sidebar-accent" : ""
+                      }`}
+                      data-testid={`contact-row-${c.id}`}
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium">
+                          {c.full_name}
+                        </div>
+                        <div className="truncate text-[11px] text-muted-foreground">
+                          {c.title} · {c.company_name}
+                        </div>
+                      </div>
+                      <TierBadge tier={c.tier} />
+                    </button>
+                  ))}
                 </div>
-                <TierBadge tier={c.tier} />
-              </button>
-            ))}
+              );
+            })}
             {(!contacts || contacts.length === 0) && (
               <div className="px-3 py-6 text-center text-xs text-muted-foreground">
                 No contacts yet. Run lead discovery first.

@@ -691,7 +691,7 @@ export function StrategyDetail() {
         </TabsContent>
 
         <TabsContent value="experiments" className="space-y-4">
-          <ExperimentsPanel strategyId={id!} />
+          <ExperimentsPanel strategyId={id!} strategy={strategy} />
         </TabsContent>
 
         <TabsContent value="competitors" className="space-y-4">
