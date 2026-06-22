@@ -53,8 +53,12 @@ export function useGenerateSequence() {
   return useMutation({
     mutationFn: (contactId: string) =>
       apiFetch(`/api/sequences/generate/${contactId}`, { method: "POST" }),
-    onSuccess: (_, contactId) =>
-      qc.invalidateQueries({ queryKey: ["sequence", "contact", contactId] }),
+    onSuccess: (_, contactId) => {
+      // Invalidate the specific contact sequence AND the broader query tree
+      // so any components watching sequences all get fresh data.
+      qc.invalidateQueries({ queryKey: ["sequence", "contact", contactId], refetchType: "all" });
+      qc.invalidateQueries({ queryKey: ["sequence"], refetchType: "all" });
+    },
   });
 }
 
@@ -73,16 +77,46 @@ export function useDeliverabilityCheck() {
 export function useLaunchSequence() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ sequenceId, testEmail, schedule }: { sequenceId: string; testEmail?: string; schedule?: Record<string, any> }) =>
+    mutationFn: ({
+      sequenceId,
+      testEmail,
+      schedule,
+      is_test,
+    }: {
+      sequenceId: string;
+      testEmail?: string;
+      schedule?: Record<string, any>;
+      is_test?: boolean;
+    }) =>
       streamSse(
         `/api/sequences/${sequenceId}/launch`,
         undefined,
         {
           ...(testEmail ? { test_email: testEmail } : {}),
-          ...(schedule ? { schedule } : {})
+          ...(schedule ? { schedule } : {}),
+          is_test: is_test ?? false,
         }
       ),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["sequence"] }),
+    onSuccess: (data: any) => {
+      qc.invalidateQueries({ queryKey: ["sequence"] });
+      import("sonner").then(({ toast }) => {
+        if (data?.instantly_pushed) {
+          toast.success(
+            `Campaign launched via Instantly${data.is_test ? " (Test)" : ""}`,
+            { description: `Recipient: ${data.lead_email ?? "—"}` }
+          );
+        } else {
+          toast.success("Sequence launched (simulated)", {
+            description: "No Instantly key configured — engagement timeline simulated.",
+          });
+        }
+      }).catch(() => {});
+    },
+    onError: (err: Error) => {
+      import("sonner").then(({ toast }) => {
+        toast.error("Launch failed", { description: err.message });
+      }).catch(() => {});
+    },
   });
 }
 

@@ -594,6 +594,88 @@ def clay_enrich(api_key: str, contacts: list[dict]) -> Optional[list[dict]]:
         return None
     return contacts
 
+# ---------------------------------------------------------------------------
+# Timezone normalisation for Instantly v2
+# Instantly only accepts specific IANA timezone strings. Windows (and some
+# browsers) emit deprecated aliases like "Asia/Calcutta" or legacy zone IDs
+# like "US/Eastern". This map converts known bad values to accepted ones and
+# we fall back to "UTC" for anything we can’t recognise.
+# ---------------------------------------------------------------------------
+_INSTANTLY_TZ_ALIASES: dict[str, str] = {
+    # Indian subcontinent
+    "Asia/Calcutta":         "Asia/Kolkata",
+    # US legacy zones
+    "US/Eastern":            "America/New_York",
+    "US/Central":            "America/Chicago",
+    "US/Mountain":           "America/Denver",
+    "US/Pacific":            "America/Los_Angeles",
+    "US/Alaska":             "America/Anchorage",
+    "US/Hawaii":             "Pacific/Honolulu",
+    "US/Arizona":            "America/Phoenix",
+    # Other common aliases
+    "America/Indiana/Indianapolis": "America/Indianapolis",
+    "Atlantic/Reykjavik":    "UTC",
+    "Etc/UTC":               "UTC",
+    "Etc/GMT":               "UTC",
+    "GMT":                   "UTC",
+    "GB":                    "Europe/London",
+    "Japan":                 "Asia/Tokyo",
+    "Singapore":             "Asia/Singapore",
+    "Australia/ACT":         "Australia/Sydney",
+    "Australia/Queensland":  "Australia/Brisbane",
+    "Etc/GMT+5":             "America/New_York",   # rough mapping
+}
+
+# Minimal set of timezone strings confirmed to be accepted by Instantly v2.
+# Any tz NOT in this set is mapped to UTC to avoid 400 errors.
+_INSTANTLY_KNOWN_GOOD_TZ: set[str] = {
+    "UTC",
+    "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles",
+    "America/Phoenix", "America/Anchorage", "Pacific/Honolulu", "America/Halifax",
+    "America/Sao_Paulo", "America/Buenos_Aires", "America/Santiago", "America/Bogota",
+    "America/Lima", "America/Mexico_City", "America/Caracas", "America/Indianapolis",
+    "America/Toronto", "America/Vancouver", "America/Edmonton", "America/Winnipeg",
+    "Europe/London", "Europe/Paris", "Europe/Berlin", "Europe/Rome", "Europe/Madrid",
+    "Europe/Amsterdam", "Europe/Brussels", "Europe/Vienna", "Europe/Zurich",
+    "Europe/Stockholm", "Europe/Oslo", "Europe/Copenhagen", "Europe/Helsinki",
+    "Europe/Warsaw", "Europe/Prague", "Europe/Budapest", "Europe/Bucharest",
+    "Europe/Athens", "Europe/Istanbul", "Europe/Moscow", "Europe/Kiev",
+    "Africa/Nairobi", "Africa/Lagos", "Africa/Cairo", "Africa/Johannesburg",
+    "Asia/Kolkata", "Asia/Colombo", "Asia/Dhaka", "Asia/Kathmandu",
+    "Asia/Dubai", "Asia/Riyadh", "Asia/Kuwait", "Asia/Bahrain", "Asia/Qatar",
+    "Asia/Jerusalem", "Asia/Karachi", "Asia/Tashkent", "Asia/Almaty",
+    "Asia/Bangkok", "Asia/Jakarta", "Asia/Singapore", "Asia/Kuala_Lumpur",
+    "Asia/Hong_Kong", "Asia/Shanghai", "Asia/Taipei", "Asia/Manila",
+    "Asia/Seoul", "Asia/Tokyo", "Asia/Vladivostok",
+    "Australia/Sydney", "Australia/Melbourne", "Australia/Brisbane",
+    "Australia/Adelaide", "Australia/Perth", "Australia/Darwin",
+    "Pacific/Auckland", "Pacific/Fiji", "Pacific/Guam",
+}
+
+
+def _normalize_tz(tz: str | None) -> str:
+    """Return an Instantly-accepted IANA timezone string.
+
+    1. Map known deprecated/alias names to their canonical equivalents.
+    2. If the result is in the confirmed-good set, return it.
+    3. Otherwise fall back to 'UTC' so the campaign never gets a 400 error.
+    """
+    if not tz:
+        return "UTC"
+    tz = tz.strip()
+    # Apply alias map first
+    tz = _INSTANTLY_TZ_ALIASES.get(tz, tz)
+    # Accept if known-good
+    if tz in _INSTANTLY_KNOWN_GOOD_TZ:
+        return tz
+    # Try a case-insensitive lookup as a last resort
+    tz_lower = tz.lower()
+    for good in _INSTANTLY_KNOWN_GOOD_TZ:
+        if good.lower() == tz_lower:
+            return good
+    log.warning("Unknown Instantly timezone '%s', falling back to UTC", tz)
+    return "UTC"
+
 
 def _instantly_headers(api_key: str) -> dict:
     """Build standard headers for Instantly v2 API calls."""
@@ -645,10 +727,11 @@ def instantly_create_campaign(
     }
 
     if schedule:
+        raw_tz = schedule.get("timezone", "UTC")
         camp_schedule = {
             "name": "Custom UI Schedule",
             "timing": {"from": schedule.get("time_from", "09:00"), "to": schedule.get("time_to", "17:00")},
-            "timezone": schedule.get("timezone", "UTC"),
+            "timezone": _normalize_tz(raw_tz),
             "days": schedule.get("days", camp_schedule["days"])
         }
 
@@ -672,6 +755,53 @@ def instantly_create_campaign(
             raw_response_preview = r.text[:1000]
             r.raise_for_status()
             result = r.json()
+            
+            # Fetch accounts to assign as senders in email_list
+            email_list = []
+            try:
+                accts_url = "https://api.instantly.ai/api/v2/accounts"
+                accts_headers = _instantly_headers(api_key)
+                r_accts = c.get(accts_url, headers=accts_headers)
+                if r_accts.status_code == 200:
+                    items = r_accts.json().get("items", [])
+                    email_list = [item["email"] for item in items if item.get("status") == 1]
+            except Exception as e:
+                log.warning("Failed to fetch Instantly accounts for email_list assignment: %s", e)
+
+            # PATCH campaign to set schedule and assign accounts
+            campaign_id = result.get("id") or result.get("campaign_id")
+            if campaign_id:
+                patch_url = f"https://api.instantly.ai/api/v2/campaigns/{campaign_id}"
+                patch_body = {}
+                if schedule:
+                    patch_body["campaign_schedule"] = {
+                        "schedules": [camp_schedule]
+                    }
+                if email_list:
+                    patch_body["email_list"] = email_list
+                
+                if patch_body:
+                    try:
+                        patch_curl = _make_curl("PATCH", patch_url, headers=headers, body=patch_body)
+                        r_patch = c.patch(patch_url, json=patch_body, headers=headers)
+                        r_patch.raise_for_status()
+                        audit_service.log_api_call(
+                            service="instantly",
+                            method="PATCH",
+                            url=patch_url,
+                            request_params={"campaign_id": campaign_id},
+                            response_status=r_patch.status_code,
+                            latency_ms=0,
+                            curl_command=patch_curl,
+                            strategy_id=_strategy_id,
+                            strategy_name=_strategy_name,
+                            is_live=True,
+                            response_summary=r_patch.json(),
+                            summary=f"Instantly: patch campaign schedule/accounts {campaign_id[:12]}",
+                        )
+                    except Exception as e:
+                        log.warning("Failed to patch Instantly campaign schedule/accounts: %s", e)
+            
             return result
     except Exception as e:
         error_text = str(e)
@@ -784,7 +914,7 @@ def instantly_launch_campaign(
     _rl_consume("instantly")
     url = f"https://api.instantly.ai/api/v2/campaigns/{campaign_id}/activate"
     headers = _instantly_headers(api_key)
-    curl = _make_curl("POST", url, headers=headers)
+    curl = _make_curl("POST", url, headers=headers, body={})
     t0 = time.perf_counter()
     status = None
     result: Optional[dict] = None
@@ -792,7 +922,7 @@ def instantly_launch_campaign(
     raw_response_preview: Optional[str] = None
     try:
         with httpx.Client(timeout=TIMEOUT) as c:
-            r = c.post(url, headers=headers)
+            r = c.post(url, json={}, headers=headers)
             status = r.status_code
             raw_response_preview = r.text[:1000]
             r.raise_for_status()

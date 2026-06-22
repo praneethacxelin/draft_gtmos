@@ -62,12 +62,22 @@ export function Outreach() {
   });
   const [stepDirty, setStepDirty] = useState(false);
 
-  // Test-mode email — persisted in localStorage so it survives page refreshes
+  // ── Global test email — persisted in localStorage ──
   const [testEmail, setTestEmail] = useState<string>(
     () => localStorage.getItem("gtm_test_email") ?? "",
   );
   const [testEmailDraft, setTestEmailDraft] = useState("");
   const [editingTestEmail, setEditingTestEmail] = useState(false);
+
+  // ── Per-lead test email overrides (keyed by contact id) ──
+  const [perLeadTestEmail, setPerLeadTestEmail] = useState<Record<string, string>>({});
+  const [perLeadEditing, setPerLeadEditing] = useState<Record<string, boolean>>({});
+  const [perLeadDraft, setPerLeadDraft] = useState<Record<string, string>>({});
+
+  // Effective test email: per-lead → global → empty (live mode)
+  function effectiveTestEmail(contactId: string): string {
+    return perLeadTestEmail[contactId] || testEmail || "";
+  }
 
   function openTestEmailEdit() {
     setTestEmailDraft(testEmail);
@@ -144,25 +154,62 @@ export function Outreach() {
     },
   ];
 
-  if (!activeId) {
-    return (
-      <div className="rounded border border-dashed border-border p-12 text-center text-sm text-muted-foreground">
-        Select an active strategy to plan outreach.
-      </div>
-    );
-  }
+  // ── Timezone normalisation (must be before early return — used in useState init) ──
+  const TZ_ALIASES: Record<string, string> = {
+    "Asia/Calcutta":  "Asia/Kolkata",
+    "US/Eastern":     "America/New_York",
+    "US/Central":     "America/Chicago",
+    "US/Mountain":    "America/Denver",
+    "US/Pacific":     "America/Los_Angeles",
+    "US/Alaska":      "America/Anchorage",
+    "US/Hawaii":      "Pacific/Honolulu",
+    "US/Arizona":     "America/Phoenix",
+    "Etc/UTC":        "UTC",
+    "Etc/GMT":        "UTC",
+    "GMT":            "UTC",
+    "GB":             "Europe/London",
+    "Japan":          "Asia/Tokyo",
+    "Singapore":      "Asia/Singapore",
+  };
+  const rawBrowserTz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const browserTz = TZ_ALIASES[rawBrowserTz] ?? rawBrowserTz;
 
-  const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  const presetTzs = ["UTC", "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "Europe/London", "Asia/Kolkata"];
-  const [schedule, setSchedule] = useState({
-    timezone: browserTz,
-    time_from: "09:00",
-    time_to: "17:00",
-    days: { "0": false, "1": true, "2": true, "3": true, "4": true, "5": true, "6": false }
+  const presetTzs = [
+    "UTC",
+    "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles",
+    "America/Phoenix", "America/Toronto", "America/Sao_Paulo",
+    "Europe/London", "Europe/Paris", "Europe/Berlin", "Europe/Moscow",
+    "Asia/Kolkata", "Asia/Dubai", "Asia/Singapore", "Asia/Tokyo", "Asia/Shanghai",
+    "Australia/Sydney", "Pacific/Auckland",
+  ];
+
+  // ── Schedule — persisted in localStorage so navigation doesn't reset it ──
+  // IMPORTANT: this useState MUST be before any conditional return to satisfy React's hooks rules.
+  const SCHED_KEY = "gtm_launch_schedule";
+  const [schedule, setSchedule] = useState(() => {
+    try {
+      const saved = localStorage.getItem(SCHED_KEY);
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return {
+      timezone: TZ_ALIASES[Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"] ??
+                (Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"),
+      time_from: "09:00",
+      time_to: "17:00",
+      days: { "0": false, "1": true, "2": true, "3": true, "4": true, "5": true, "6": false },
+    };
   });
 
+  function updateSchedule(patch: Partial<typeof schedule>) {
+    const next = { ...schedule, ...patch };
+    setSchedule(next);
+    try { localStorage.setItem(SCHED_KEY, JSON.stringify(next)); } catch {}
+  }
+
   const toggleDay = (d: string) => {
-    setSchedule(s => ({ ...s, days: { ...s.days, [d]: !s.days[d as keyof typeof s.days] } }));
+    const next = { ...schedule, days: { ...schedule.days, [d]: !schedule.days[d as keyof typeof schedule.days] } };
+    setSchedule(next);
+    try { localStorage.setItem(SCHED_KEY, JSON.stringify(next)); } catch {}
   };
 
   const daysMap = [
@@ -174,6 +221,14 @@ export function Outreach() {
     { k: "6", label: "S" },
     { k: "0", label: "S" },
   ];
+
+  if (!activeId) {
+    return (
+      <div className="rounded border border-dashed border-border p-12 text-center text-sm text-muted-foreground">
+        Select an active strategy to plan outreach.
+      </div>
+    );
+  }
 
   return (
     <>
@@ -244,7 +299,7 @@ export function Outreach() {
 
           <div className="space-y-2">
             <Label className="text-xs text-muted-foreground">Timezone</Label>
-            <Select value={schedule.timezone} onValueChange={(v) => setSchedule(s => ({ ...s, timezone: v }))}>
+            <Select value={schedule.timezone} onValueChange={(v) => updateSchedule({ timezone: v })}>
               <SelectTrigger className="h-8 text-xs">
                 <SelectValue />
               </SelectTrigger>
@@ -265,14 +320,14 @@ export function Outreach() {
               <Input 
                 type="time" 
                 value={schedule.time_from} 
-                onChange={(e) => setSchedule(s => ({ ...s, time_from: e.target.value }))}
+                onChange={(e) => updateSchedule({ time_from: e.target.value })}
                 className="h-8 text-xs w-[100px]" 
               />
               <span className="text-muted-foreground text-xs">to</span>
               <Input 
                 type="time" 
                 value={schedule.time_to} 
-                onChange={(e) => setSchedule(s => ({ ...s, time_to: e.target.value }))}
+                onChange={(e) => updateSchedule({ time_to: e.target.value })}
                 className="h-8 text-xs w-[100px]" 
               />
             </div>
@@ -349,6 +404,61 @@ export function Outreach() {
                     {contact.title} · {contact.company_name}
                   </div>
                 )}
+                {/* ── Per-lead test email override ── */}
+                {contact && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <FlaskConical className="h-3 w-3 shrink-0 text-amber-400" />
+                    <span className="text-[11px] text-muted-foreground">Test email:</span>
+                    {perLeadEditing[contact.id] ? (
+                      <>
+                        <Input
+                          value={perLeadDraft[contact.id] ?? ""}
+                          onChange={(e) => setPerLeadDraft(p => ({ ...p, [contact.id]: e.target.value }))}
+                          placeholder={testEmail || "override@yourdomain.com"}
+                          className="h-6 w-44 text-[11px] border-amber-500/40 focus:border-amber-500"
+                          autoFocus
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              setPerLeadTestEmail(p => ({ ...p, [contact.id]: perLeadDraft[contact.id]?.trim() ?? "" }));
+                              setPerLeadEditing(p => ({ ...p, [contact.id]: false }));
+                            }
+                            if (e.key === "Escape") setPerLeadEditing(p => ({ ...p, [contact.id]: false }));
+                          }}
+                        />
+                        <button className="text-amber-400 hover:text-amber-300" onClick={() => {
+                          setPerLeadTestEmail(p => ({ ...p, [contact.id]: perLeadDraft[contact.id]?.trim() ?? "" }));
+                          setPerLeadEditing(p => ({ ...p, [contact.id]: false }));
+                        }}><Check className="h-3 w-3" /></button>
+                        <button className="text-muted-foreground" onClick={() => setPerLeadEditing(p => ({ ...p, [contact.id]: false }))}>
+                          <X className="h-3 w-3" />
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        {perLeadTestEmail[contact.id] ? (
+                          <span className="rounded bg-amber-500/15 px-1.5 py-0.5 font-mono text-[11px] text-amber-400">{perLeadTestEmail[contact.id]}</span>
+                        ) : testEmail ? (
+                          <span className="rounded bg-amber-500/10 px-1.5 py-0.5 font-mono text-[11px] text-amber-500/70 italic">{testEmail} (global)</span>
+                        ) : (
+                          <span className="text-[11px] italic text-muted-foreground">not set</span>
+                        )}
+                        <button className="text-muted-foreground hover:text-amber-400 transition-colors" title="Set per-lead test email"
+                          onClick={() => {
+                            setPerLeadDraft(p => ({ ...p, [contact.id]: perLeadTestEmail[contact.id] ?? "" }));
+                            setPerLeadEditing(p => ({ ...p, [contact.id]: true }));
+                          }}>
+                          <Pencil className="h-3 w-3" />
+                        </button>
+                        {perLeadTestEmail[contact.id] && (
+                          <button className="text-muted-foreground hover:text-destructive transition-colors" title="Clear"
+                            onClick={() => setPerLeadTestEmail(p => ({ ...p, [contact.id]: "" }))}>
+                            <X className="h-3 w-3" />
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
                 {sequence && (
                   <div className="mt-2 flex items-center gap-2">
                     <StatusPill status={sequence.status} />
@@ -386,26 +496,38 @@ export function Outreach() {
                   <ShieldCheck className="mr-2 h-4 w-4" />
                   {check.isPending ? "Checking…" : "Deliverability"}
                 </Button>
+                {/* Test Launch — sends to test email, keeps sequence as draft */}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!sequence || launch.isPending || !effectiveTestEmail(selected ?? "")}
+                  onClick={() => {
+                    if (!sequence || !selected) return;
+                    const addr = effectiveTestEmail(selected);
+                    if (!addr) return;
+                    launch.mutate({ sequenceId: sequence.id, testEmail: addr, schedule, is_test: true });
+                  }}
+                  data-testid="button-test-launch"
+                  title={
+                    effectiveTestEmail(selected ?? "")
+                      ? `Test send → ${effectiveTestEmail(selected ?? "")} (sequence stays draft)`
+                      : "Set a test email above to enable test launch"
+                  }
+                  className="border-amber-500/50 text-amber-400 hover:bg-amber-500/10 hover:text-amber-300 disabled:opacity-40"
+                >
+                  <FlaskConical className="mr-2 h-4 w-4" />
+                  {launch.isPending ? "Sending…" : "Test Launch"}
+                </Button>
+                {/* Live Launch — sends to lead's actual email, sets sequence active */}
                 <Button
                   size="sm"
                   disabled={!sequence || launch.isPending}
-                  onClick={() =>
-                    sequence &&
-                    launch.mutate({
-                      sequenceId: sequence.id,
-                      testEmail: testEmail || undefined,
-                      schedule: schedule,
-                    })
-                  }
+                  onClick={() => sequence && launch.mutate({ sequenceId: sequence.id, testEmail: undefined, schedule, is_test: false })}
                   data-testid="button-launch"
-                  title={testEmail ? `Will send to ${testEmail} (test mode)` : "Launch via Instantly"}
+                  title="Launch to real lead email via Instantly"
                 >
                   <Send className="mr-2 h-4 w-4" />
-                  {launch.isPending
-                    ? "Launching…"
-                    : testEmail
-                      ? "Launch → test inbox"
-                      : "Launch"}
+                  {launch.isPending ? "Launching…" : "Launch"}
                 </Button>
               </div>
             </div>
@@ -527,7 +649,7 @@ export function Outreach() {
 
                   {editingStepId === s.id ? (
                     <div className="space-y-3 border-t border-border pt-3">
-                      <div className="grid grid-cols-3 gap-3">
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-2">
                         <div>
                           <Label className="text-xs">Channel</Label>
                           <Select
@@ -560,11 +682,6 @@ export function Outreach() {
                             }
                             className="h-8 text-xs"
                           />
-                        </div>
-                        <div className="col-span-1 flex items-end">
-                          <div className="rounded-md bg-muted/50 border border-border px-3 py-1.5 text-[10px] text-muted-foreground leading-snug">
-                            ⏰ Sending window is set at campaign level via Instantly.ai (e.g. 9am–5pm weekdays). Individual step timing uses the delay above.
-                          </div>
                         </div>
                       </div>
                       {editDraft.channel !== "call" && (

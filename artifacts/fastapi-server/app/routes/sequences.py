@@ -76,6 +76,7 @@ def check(
 class LaunchBody(BaseModel):
     test_email: Optional[str] = None
     schedule: Optional[dict] = None
+    is_test: bool = False
 
 
 @router.post("/{sequence_id}/launch")
@@ -89,13 +90,14 @@ def launch(
     own_sequence(db, sequence_id, user)
     test_email = payload.test_email if payload else None
     schedule = payload.schedule if payload else None
+    is_test = payload.is_test if payload else False
     from app.services.rate_limit import RateLimitExceeded
 
     async def gen():
         yield {"event": "stage_start", "data": json.dumps({"stage": "launch"})}
         db2 = SessionLocal()
         try:
-            result = launch_sequence(db2, sequence_id, test_email=test_email, schedule=schedule)
+            result = launch_sequence(db2, sequence_id, test_email=test_email, schedule=schedule, is_test=is_test)
             yield {"event": "stage_complete", "data": json.dumps({"stage": "launch", "result": result})}
             yield {"event": "complete", "data": json.dumps({"stage": "launch"})}
         except RateLimitExceeded as rle:
@@ -120,6 +122,7 @@ class StepPatch(BaseModel):
     body: str | None = None
     channel: str | None = None
     wait_days: int | None = None
+    send_at: str | None = None  # ISO 8601 string from frontend datetime-local input
 
 
 @router.patch("/steps/{step_id}")
@@ -129,6 +132,7 @@ def patch_step(
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ) -> dict:
+    from datetime import datetime as _dt
     step = db.query(SequenceStep).filter(SequenceStep.id == step_id).first()
     if not step:
         raise HTTPException(404, "Step not found")
@@ -139,7 +143,21 @@ def patch_step(
     changes = body.model_dump(exclude_unset=True)
     before = {k: getattr(step, k) for k in changes}
     for field, val in changes.items():
-        setattr(step, field, val)
+        if field == "send_at":
+            # Frontend sends a local ISO string; parse to datetime for the DB column
+            if val:
+                try:
+                    parsed = _dt.fromisoformat(val)
+                    setattr(step, "send_at", parsed)
+                except ValueError:
+                    pass  # ignore malformed value; keep existing
+            else:
+                setattr(step, "send_at", None)
+        else:
+            if field in ("subject", "body"):
+                from app.agents.s3_outreach import _normalize_merge_tags
+                val = _normalize_merge_tags(val)
+            setattr(step, field, val)
     db.commit()
     db.refresh(step)
     for field, old_val in before.items():

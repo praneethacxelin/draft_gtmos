@@ -1,6 +1,12 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+import os as _os
+# Allow OPENAI_API_KEY as an alias for the Replit-style env var name.
+# The .env ships with OPENAI_API_KEY; llm.py reads AI_INTEGRATIONS_OPENAI_API_KEY.
+if not _os.environ.get("AI_INTEGRATIONS_OPENAI_API_KEY") and _os.environ.get("OPENAI_API_KEY"):
+    _os.environ["AI_INTEGRATIONS_OPENAI_API_KEY"] = _os.environ["OPENAI_API_KEY"]
+
 import os
 import logging
 import asyncio
@@ -96,6 +102,13 @@ async def lifespan(app: FastAPI):
         traceback.print_exc(file=sys.stderr)
         sys.stderr.flush()
         raise
+    # Dispose the connection pool so every subsequent request gets a fresh
+    # connection that sees the post-migration schema. Without this, psycopg3's
+    # server-side prepared-statement cache can hold a stale column list from
+    # before Alembic added new columns (e.g. discovery_data, roi_json).
+    from app.db import engine as _engine
+    _engine.dispose()
+    log.info("Connection pool recycled after migrations")
     _auto_configure_api_keys()
     poller = asyncio.create_task(poll_loop())
     m3 = asyncio.create_task(m3_loop())
@@ -112,7 +125,7 @@ async def lifespan(app: FastAPI):
                 pass
 
 
-# Trigger reload
+# Trigger reload - force restart 1
 app = FastAPI(
     title="GTMOS Backend",
     description="Agentic GTM Factory API",

@@ -38,6 +38,18 @@ URL_SHORTENERS = [
 ]
 
 
+def _normalize_merge_tags(text: str | None) -> str | None:
+    if not text:
+        return text
+    # Replace various formats of company name to {{companyName}}
+    for placeholder in ["{{{company_name}}}", "{{company_name}}", "{{{companyName}}}", "{{{company name}}}", "{{company name}}"]:
+        text = text.replace(placeholder, "{{companyName}}")
+    # Replace various formats of first name to {{firstName}}
+    for placeholder in ["{{{first_name}}}", "{{first_name}}", "{{{firstName}}}", "{{{first name}}}", "{{first name}}"]:
+        text = text.replace(placeholder, "{{firstName}}")
+    return text
+
+
 async def generate_sequence(db: Session, contact_id: str) -> dict:
     contact = db.query(Contact).filter(Contact.id == contact_id).first()
     if not contact:
@@ -92,19 +104,38 @@ async def generate_sequence(db: Session, contact_id: str) -> dict:
         summary=f"S3 → Channel Plan: {'Email' if email_first else 'LinkedIn'}-first for {contact.full_name} (seniority={seniority})",
     )
 
-    # Personalize messages
+    # Personalize messages — with strong deliverability constraints
     plan_str = ", ".join(f"step {s['step']} via {s['channel']}" for s in channel_plan)
-    msg_prompt = (
-        f"Write personalized outreach messages for {contact.full_name}, {contact.title} at "
-        f"{account.company_name if account else 'the company'}. "
-        f"Product: {strategy.product_name if strategy else ''}. "
-        f"Persona profile: {persona_block}. Top use cases: {use_cases}. "
-        f"Sequence: {plan_str}. Return JSON with key 'messages' = array of "
-        "{step, subject, body}. Subjects under 60 chars. Bodies 4-6 sentences, "
-        "specific and not salesy. For LinkedIn steps, body should be a short DM (2-3 sentences). "
-        "For call steps, body should be a 3-bullet talking-points outline."
-    )
-    msgs = await chat_json(msg_prompt, max_tokens=2000)
+    contact_first = (contact.full_name or "there").split()[0]
+    company_name = account.company_name if account else "the company"
+
+    def _build_msg_prompt(extra_guidance: str = "") -> str:
+        return (
+            f"Write personalized outreach messages for {contact.full_name}, {contact.title} at "
+            f"{company_name}. "
+            f"Product: {strategy.product_name if strategy else ''}. "
+            f"Persona profile: {persona_block}. Top use cases: {use_cases}. "
+            f"Sequence: {plan_str}. Return JSON with key 'messages' = array of "
+            "{{step, subject, body}}. "
+            "DELIVERABILITY RULES (strictly follow all): "
+            "1. Subjects must be under 60 characters, conversational, no punctuation spam. "
+            "2. Email bodies must be 75-150 words — concise, specific, zero filler. "
+            "3. MUST include the merge tag {{{{first_name}}}} in the opening line and "
+            "{{{{company_name}}}} at least once — never use generic openers. "
+            "4. MAX 1 hyperlink per email body — use full URLs only (no bit.ly or URL shorteners). "
+            "5. NEVER use these words/phrases: free, guarantee, act now, click here, "
+            "buy now, limited time, exclusive deal, urgent, winner, prize, 100%%, "
+            "order now, special offer, risk-free, no obligation, earn money, make money, "
+            "cash bonus, incredible deal, don't miss, apply now, call now, no cost, "
+            "no fees, satisfaction guaranteed, money back, bulk email, mass email. "
+            "6. No ALL-CAPS words. No '!!!', '???', or '$$$' patterns. "
+            "7. For LinkedIn steps: 2-3 sentence DM, warm and human. "
+            "8. For call steps: 3-bullet talking-points outline (no subject needed). "
+            f"9. Write as if you are a trusted peer of {contact_first}, not a salesperson."
+            f"{(' ' + extra_guidance) if extra_guidance else ''}"
+        )
+
+    msgs = await chat_json(_build_msg_prompt(), max_tokens=2000)
 
     audit_service.log_pipeline_event(
         stage="message_generation",
@@ -118,8 +149,8 @@ async def generate_sequence(db: Session, contact_id: str) -> dict:
             "use_cases_len": len(use_cases),
         },
         outputs=msgs,
-        prompt=msg_prompt,
-        summary=f"S3 → Message Draft: AI wrote {len(msgs.get('messages', [])) if isinstance(msgs, dict) else '?'} personalized steps",
+        prompt=_build_msg_prompt(),
+        summary=f"S3 → Message Draft: AI wrote {len(msgs.get('messages', [])) if isinstance(msgs, dict) else '?'} personalized steps (deliverability-hardened)",
     )
 
     # Persist
@@ -137,12 +168,15 @@ async def generate_sequence(db: Session, contact_id: str) -> dict:
         logic=(
             "Picked an email-first or LinkedIn-first 4-step plan based on the "
             "contact's seniority, then asked the model to write personalised "
-            "subject lines and bodies grounded in the persona profile and top use cases."
+            "subject lines and bodies grounded in the persona profile and top use cases. "
+            "Deliverability rules enforced: no spam triggers, merge tags required, "
+            "75-150 word bodies, max 1 link."
         ),
         steps=[
             "Read contact + strategy + persona profile",
             f"Choose '{'email-first' if email_first else 'linkedin-first'}' plan based on seniority",
-            "Prompt model for per-step subject + body",
+            "Prompt model for per-step subject + body (deliverability-hardened)",
+            "Auto deliverability check — re-prompt once if score < 70",
             "Schedule send_at timestamps",
         ],
         counts={"steps": len(channel_plan)},
@@ -163,17 +197,66 @@ async def generate_sequence(db: Session, contact_id: str) -> dict:
             sequence_id=seq.id,
             step_number=s["step"],
             channel=s["channel"],
-            subject=m.get("subject"),
-            body=m.get("body"),
+            subject=_normalize_merge_tags(m.get("subject")),
+            body=_normalize_merge_tags(m.get("body")),
             wait_days=s["wait_days"],
             send_at=send_at,
         ))
     db.commit()
 
+    # ---- Auto deliverability check; re-generate once if score < 70 ----
+    d_report = deliverability_check(db, seq.id)
+    d_score = d_report.get("score", 100)
+
+    if d_score < 70:
+        # One retry with explicit guidance on what was wrong
+        suggestions_str = "; ".join(d_report.get("suggestions", [])[:4])
+        extra = (
+            f"IMPORTANT — previous draft scored only {d_score}/100 on deliverability. "
+            f"Fix these specific issues: {suggestions_str}. "
+            "Rewrite all email steps to fully comply."
+        )
+        msgs2 = await chat_json(_build_msg_prompt(extra), max_tokens=2000)
+        if isinstance(msgs2, dict) and msgs2.get("messages"):
+            # Replace steps with improved copy
+            db.query(SequenceStep).filter(SequenceStep.sequence_id == seq.id).delete()
+            cumulative = 0
+            msg_by_step2 = {m.get("step"): m for m in msgs2["messages"]}
+            for s in channel_plan:
+                m = msg_by_step2.get(s["step"], {})
+                cumulative += s["wait_days"]
+                send_at = base_time + timedelta(days=cumulative, hours=random.randint(0, 4))
+                db.add(SequenceStep(
+                    sequence_id=seq.id,
+                    step_number=s["step"],
+                    channel=s["channel"],
+                    subject=_normalize_merge_tags(m.get("subject")),
+                    body=_normalize_merge_tags(m.get("body")),
+                    wait_days=s["wait_days"],
+                    send_at=send_at,
+                ))
+            db.commit()
+            # Re-run check to persist final score
+            d_report = deliverability_check(db, seq.id)
+
+    audit_service.log_pipeline_event(
+        stage="deliverability_auto_check",
+        service="s3_outreach",
+        strategy_id=contact.strategy_id,
+        strategy_name=strategy.product_name if strategy else None,
+        inputs={"sequence_id": seq.id, "initial_score": d_score},
+        outputs={"final_score": d_report.get("score"), "retried": d_score < 70},
+        summary=(
+            f"S3 → Auto deliverability: score {d_score} → {d_report.get('score')} "
+            f"({'retried' if d_score < 70 else 'passed first attempt'})"
+        ),
+    )
+
     return {
         "sequence_id": seq.id,
         "step_count": len(channel_plan),
         "provenance": sequence_provenance,
+        "deliverability_score": d_report.get("score"),
     }
 
 
@@ -336,7 +419,22 @@ def deliverability_check(db: Session, sequence_id: str) -> dict:
     return report
 
 
-def launch_sequence(db: Session, sequence_id: str, test_email: str | None = None, schedule: dict | None = None) -> dict:
+def launch_sequence(
+    db: Session,
+    sequence_id: str,
+    test_email: str | None = None,
+    schedule: dict | None = None,
+    is_test: bool = False,
+) -> dict:
+    """Launch or test-launch a sequence.
+
+    When ``is_test=True`` the email is sent to ``test_email`` (which is
+    required) and the sequence status is kept as ``"draft"`` so that a real
+    launch can still be performed later.  All other behaviour — Instantly
+    campaign creation, lead add, activation — is identical to a live launch.
+    When ``is_test=False`` this is a live launch: the actual lead email is
+    used and status moves to ``"active"``.
+    """
     seq = db.query(Sequence).filter(Sequence.id == sequence_id).first()
     if not seq:
         return {"error": "Sequence not found"}
@@ -357,45 +455,85 @@ def launch_sequence(db: Session, sequence_id: str, test_email: str | None = None
         result = clients.instantly_create_campaign(
             instantly_key,
             f"GTM-{seq.id[:8]}",
-            [{"channel": s.channel, "subject": s.subject, "body": s.body, "wait_days": s.wait_days} for s in campaign_steps],
+            [{"channel": s.channel, "subject": _normalize_merge_tags(s.subject), "body": _normalize_merge_tags(s.body), "wait_days": s.wait_days} for s in campaign_steps],
             _strategy_id=seq.strategy_id,
             _strategy_name=strategy.product_name if strategy else None,
             schedule=schedule,
         )
         campaign_id = (result or {}).get("id") if isinstance(result, dict) else None
-        
-        if not campaign_id:
-            raise Exception("Failed to create Instantly campaign. Your Instantly workspace might not have an active paid plan or the API key is invalid.")
 
-        seq.status = "active"
-        seq.instantly_campaign_id = campaign_id
+        if not campaign_id:
+            # Instantly rejected the campaign — log the raw error and fall
+            # back to simulated mode so the sequence still progresses.
+            instantly_error = (result or {}).get("error") or "Instantly campaign creation returned no ID"
+            audit_service.log_pipeline_event(
+                stage="launch_instantly_error",
+                service="s3_outreach",
+                strategy_id=seq.strategy_id,
+                strategy_name=strategy.product_name if strategy else None,
+                inputs={"sequence_id": sequence_id, "is_test": is_test},
+                outputs={"instantly_raw_response": result},
+                summary=f"S3 → Instantly rejected campaign: {instantly_error[:200]}",
+            )
+            seq.status = "draft" if is_test else "simulated"
+            db.commit()
+            ingested = simulate_engagement_timeline(db, seq.id)
+            return {
+                "status": seq.status,
+                "instantly_pushed": False,
+                "events": ingested,
+                "is_test": is_test,
+                "warning": f"Instantly campaign creation failed — simulated instead. Error: {instantly_error[:300]}",
+            }
+
+        # Status: test launches keep "draft" so live launch can still be done;
+        # live launches promote to "active".
+        new_status = "draft" if is_test else "active"
+        seq.status = new_status
+        # Only persist the campaign ID on a live launch so the badge only
+        # shows "Active via Instantly" for real launches.
+        if not is_test:
+            seq.instantly_campaign_id = campaign_id
         lead_email: str | None = None
 
         if campaign_id:
             db.add(InstantlyCampaign(
                 sequence_id=seq.id,
                 instantly_campaign_id=str(campaign_id),
-                status="active",
+                status="test" if is_test else "active",
             ))
 
-            # Determine recipient: test_email overrides contact's email for demo testing
-            lead_email = test_email or (contact.email if contact else None)
+            # Determine recipient:
+            # • Test launch  → test_email (required; caller validates this)
+            # • Live launch  → actual contact email
+            lead_email = test_email if is_test else (contact.email if contact else None)
             if lead_email:
                 name_parts = (contact.full_name if contact else "Test User").split()
+                # For test launches use tester's name so personalisation
+                # looks correct in the test inbox.
+                if is_test:
+                    first = name_parts[0] if name_parts else "Test"
+                    last = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
+                    personalization = f"Hi {first}"   # real contact greeting
+                else:
+                    first = name_parts[0] if name_parts else ""
+                    last = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
+                    personalization = f"Hi {first}"
+
                 clients.instantly_add_leads(
                     instantly_key,
                     campaign_id,
                     leads=[{
                         "email": lead_email,
-                        "first_name": name_parts[0] if name_parts else "Test",
-                        "last_name": " ".join(name_parts[1:]) if len(name_parts) > 1 else "",
+                        "first_name": first,
+                        "last_name": last,
                         "company_name": account.company_name if account else "",
-                        "personalization": f"Hi {name_parts[0] if name_parts else 'there'}",
+                        "personalization": personalization,
                     }],
                     _strategy_id=seq.strategy_id,
                     _strategy_name=strategy.product_name if strategy else None,
                 )
-                # Activate the campaign so Instantly starts sending
+                # Activate the campaign — Instantly starts sending immediately
                 clients.instantly_launch_campaign(
                     instantly_key,
                     campaign_id,
@@ -403,27 +541,31 @@ def launch_sequence(db: Session, sequence_id: str, test_email: str | None = None
                     _strategy_name=strategy.product_name if strategy else None,
                 )
 
-            # Record initial "sent" outreach events; the hourly poller will
-            # backfill opens/clicks/replies as Instantly reports them.
+            # Record outreach events for both test and live launches.
+            event_type_prefix = "test_sent" if is_test else "sent"
             for s in steps:
                 s.sent_at = datetime.utcnow()
-                s.status = "sent"
+                s.status = event_type_prefix
                 db.add(OutreachEvent(
                     sequence_id=seq.id,
                     sequence_step_id=s.id,
-                    event_type="sent",
-                    raw_data_json={"instantly_campaign_id": campaign_id},
+                    event_type=event_type_prefix,
+                    raw_data_json={
+                        "instantly_campaign_id": campaign_id,
+                        "is_test": is_test,
+                        "recipient": lead_email,
+                    },
                 ))
         db.commit()
         return {
-            "status": "active",
+            "status": new_status,
             "instantly_pushed": True,
             "campaign_id": campaign_id,
             "lead_email": lead_email,
-            "is_test_mode": bool(test_email),
+            "is_test": is_test,
         }
     else:
-        seq.status = "simulated"
+        seq.status = "draft" if is_test else "simulated"
         db.commit()
         ingested = simulate_engagement_timeline(db, seq.id)
-        return {"status": "simulated", "instantly_pushed": False, "events": ingested}
+        return {"status": seq.status, "instantly_pushed": False, "events": ingested, "is_test": is_test}
