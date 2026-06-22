@@ -526,13 +526,28 @@ async def run_competitors(db: Session, strategy_id: str) -> list[dict]:
     return out
 
 
-async def run_lead_search(db: Session, strategy_id: str, limit: int | None = None) -> dict:
+async def run_lead_search(
+    db: Session,
+    strategy_id: str,
+    limit: int | None = None,
+    *,
+    override_filters: dict | None = None,
+    source: str = "discovery",
+    source_ref: str | None = None,
+    persona_hint: str | None = None,
+) -> dict:
     """Discover and enrich leads. Apollo/Clay if configured, else AI demo data.
 
     Caching: If this strategy already has real (non-demo) contacts in the
     DB, skip the Apollo API call entirely and return cached data. This
     prevents burning credits on repeated test runs. To force a re-fetch,
     delete existing contacts first.
+
+    ``override_filters`` lets a caller (e.g. experiment-driven discovery) supply
+    a proven Apollo facet set directly instead of having the LLM design one.
+    Inserted contacts are tagged with ``source``/``source_ref`` so outreach can
+    group leads by origin, and ``persona_hint`` backfills the persona for leads
+    Apollo doesn't classify.
     """
     strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
     if not strategy:
@@ -549,7 +564,7 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
     # save Apollo credits. But when the user deliberately picks a number from
     # the "Leads" dropdown, treat it as an intent to fetch MORE — never block
     # it on the cache, otherwise the button feels broken.
-    explicit_limit = limit is not None
+    explicit_limit = limit is not None or override_filters is not None
     existing_contacts = 0
     if apollo_key:
         # Check if we already have leads to save Apollo credits
@@ -678,9 +693,25 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
             "'Asia-Pacific' or 'North America'; use the Target countries above). "
             "Do not emit generic keywords. Only include a key when it sharpens precision; omit it otherwise."
         )
-        ai_resp = await chat_json(filter_prompt, max_tokens=600)
-        if isinstance(ai_resp, dict) and "_error" not in ai_resp:
-            ai_filters = ai_resp
+        if override_filters:
+            # Experiment-driven discovery: use the proven winning facets directly
+            # (mapped onto the LLM's key names so the assembly below reuses them).
+            ai_filters = {
+                k: v
+                for k, v in {
+                    "person_titles": override_filters.get("titles"),
+                    "person_seniorities": override_filters.get("seniorities"),
+                    "employee_ranges": override_filters.get("employee_ranges"),
+                    "locations": override_filters.get("locations"),
+                    "industries": override_filters.get("industries"),
+                    "technologies": override_filters.get("technologies"),
+                }.items()
+                if v
+            }
+        else:
+            ai_resp = await chat_json(filter_prompt, max_tokens=600)
+            if isinstance(ai_resp, dict) and "_error" not in ai_resp:
+                ai_filters = ai_resp
 
         def _pick(key, fallback):
             val = ai_filters.get(key)
@@ -907,6 +938,12 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
         if email_key:
             existing_emails.add(email_key)
         existing_contact_keys.add(name_key)
+        # Tag origin so outreach can group leads by source. Apollo doesn't
+        # classify persona, so backfill it from the winning persona when given.
+        contact.source = source
+        contact.source_ref = source_ref
+        if persona_hint and not contact.persona_type:
+            contact.persona_type = persona_hint
         new_contacts.append(contact)
 
     if apollo_results:
@@ -1140,6 +1177,70 @@ async def run_lead_search(db: Session, strategy_id: str, limit: int | None = Non
         "uses_clay": bool(clay_key),
         "provenance": provenance,
     }
+
+
+async def run_experiment_discovery(
+    db: Session, strategy_id: str, limit: int | None = None
+) -> dict:
+    """Discover leads using the winning experiment's proven facets.
+
+    This is a *separate* trigger from the generic ICP/persona lead search: it
+    only runs once a batch of experiments has been analyzed, and it reuses the
+    winning experiment's Apollo facets verbatim plus the persona 70/30 split so
+    prospecting stays aligned with what the experiments actually validated.
+    Contacts are tagged ``source="experiment"`` for downstream outreach grouping.
+    """
+    from app.agents.campaign_plan import _experiment_gate, _winning_facets
+    from app.agents.persona_intelligence import compute_persona_allocation
+
+    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    if not strategy:
+        return {"ready": False, "gate": "missing_strategy", "reason": "Strategy not found."}
+
+    batch, winner = _experiment_gate(db, strategy_id)
+    if not batch or not winner:
+        return {
+            "ready": False,
+            "gate": "experiments_pending",
+            "reason": "Run and analyze a batch of experiments first — discovery uses the winning experiment's facets.",
+        }
+
+    facets = _winning_facets(winner)
+    if not any(facets.values()):
+        return {
+            "ready": False,
+            "gate": "no_facets",
+            "reason": "The winning experiment has no usable Apollo facets to search with.",
+        }
+
+    # Persona allocation gives the recommended 70/30 split; the top persona
+    # backfills Apollo leads that come through unclassified.
+    allocation = compute_persona_allocation(db, strategy_id, total_prospects=limit)
+    persona_rows = allocation.get("allocations") or []
+    top_persona = persona_rows[0]["persona_type"] if persona_rows else None
+
+    result = await run_lead_search(
+        db,
+        strategy_id,
+        limit,
+        override_filters=facets,
+        source="experiment",
+        source_ref=batch.id,
+        persona_hint=top_persona,
+    )
+
+    result.update(
+        {
+            "ready": True,
+            "gate": "ok",
+            "source_batch_id": batch.id,
+            "winning_experiment_id": winner.id,
+            "winning_experiment_name": getattr(winner, "name", None),
+            "winning_facets": facets,
+            "persona_allocation": persona_rows,
+        }
+    )
+    return result
 
 
 async def run_signals(db: Session, strategy_id: str, limit: int | None = None) -> dict:

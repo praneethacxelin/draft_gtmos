@@ -21,6 +21,8 @@ import { useToast } from "@/hooks/use-toast";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   useLeadSearch,
+  useDiscoverExperimentLeads,
+  useCampaignPlan,
   useRunSignals,
   useScoreLeads,
   useRunPatterns,
@@ -43,6 +45,10 @@ import {
   HelpCircle,
   ShieldCheck,
   ExternalLink,
+  FlaskConical,
+  Lock,
+  Users,
+  Target,
 } from "lucide-react";
 import { ReasoningPanel, SourceBadge } from "@/components/ReasoningPanel";
 import { useFetchLimits } from "@/hooks/useSettings";
@@ -63,6 +69,146 @@ const PERSONA_OPTIONS = [
   { value: "economic_buyer", label: "Economic buyer" },
   { value: "blocker", label: "Blocker" },
 ];
+
+const FACET_LABELS: Record<string, string> = {
+  titles: "Titles",
+  seniorities: "Seniorities",
+  locations: "Locations",
+  industries: "Industries",
+  employee_ranges: "Company size",
+  technologies: "Technologies",
+  keywords: "Keywords",
+};
+
+function ExperimentDiscoverySection({ strategyId }: { strategyId: string }) {
+  const { data: plan, isLoading } = useCampaignPlan(strategyId);
+  const discover = useDiscoverExperimentLeads();
+  const [expLimit, setExpLimit] = useState<string>("default");
+
+  if (isLoading) return null;
+
+  if (!plan || !plan.ready) {
+    const reason =
+      plan?.reason ??
+      "Run and analyze a batch of experiments first — discovery uses the winning experiment's facets.";
+    return (
+      <Card className="mb-4 border-dashed p-4">
+        <div className="flex items-start gap-3">
+          <div className="rounded-md bg-muted p-2 text-muted-foreground">
+            <Lock className="h-4 w-4" />
+          </div>
+          <div>
+            <p className="text-sm font-medium">Experiment-driven discovery (locked)</p>
+            <p className="text-sm text-muted-foreground">{reason}</p>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  const facets = plan.winning_facets ?? {};
+  const facetEntries = Object.entries(facets).filter(([, v]) =>
+    Array.isArray(v) ? v.length > 0 : Boolean(v),
+  );
+  const personaSplit = plan.phases?.[0]?.persona_split ?? [];
+
+  function runDiscovery() {
+    const limit = expLimit === "default" ? undefined : Number(expLimit);
+    discover.mutate({ id: strategyId, limit });
+  }
+
+  return (
+    <Card className="mb-4 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-start gap-3">
+          <div className="rounded-md bg-primary/10 p-2 text-primary">
+            <FlaskConical className="h-4 w-4" />
+          </div>
+          <div>
+            <p className="text-sm font-medium">Experiment-driven discovery</p>
+            <p className="text-sm text-muted-foreground">
+              Pull leads using the winning experiment
+              {plan.winning_experiment_name ? (
+                <> — <span className="font-medium text-foreground">{plan.winning_experiment_name}</span></>
+              ) : null}{" "}
+              and the persona split. These leads are tagged as experiment-sourced for outreach.
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Select value={expLimit} onValueChange={setExpLimit}>
+            <SelectTrigger className="w-[130px]">
+              <SelectValue placeholder="Leads" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="default">Default</SelectItem>
+              <SelectItem value="5">5 leads</SelectItem>
+              <SelectItem value="10">10 leads</SelectItem>
+              <SelectItem value="15">15 leads</SelectItem>
+              <SelectItem value="25">25 leads</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button onClick={runDiscovery} disabled={discover.isPending}>
+            <Target className="mr-2 h-4 w-4" />
+            {discover.isPending ? "Discovering…" : "Discover experiment leads"}
+          </Button>
+        </div>
+      </div>
+
+      {facetEntries.length > 0 && (
+        <div className="mt-4 space-y-2">
+          <p className="text-xs font-medium uppercase text-muted-foreground">Winning facets</p>
+          <div className="space-y-1.5">
+            {facetEntries.map(([key, val]) => {
+              const items = Array.isArray(val) ? val : [String(val)];
+              return (
+                <div key={key} className="flex flex-wrap items-center gap-1.5">
+                  <span className="w-24 shrink-0 text-xs text-muted-foreground">
+                    {FACET_LABELS[key] ?? key}
+                  </span>
+                  {items.map((v, i) => (
+                    <span
+                      key={`${key}-${i}`}
+                      className="rounded-full bg-muted px-2 py-0.5 text-xs"
+                    >
+                      {v}
+                    </span>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {personaSplit.length > 0 && (
+        <div className="mt-4 space-y-2">
+          <p className="flex items-center gap-1.5 text-xs font-medium uppercase text-muted-foreground">
+            <Users className="h-3.5 w-3.5" /> Persona allocation
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {personaSplit.map((p) => (
+              <span
+                key={p.persona_type}
+                className="rounded-md border px-2 py-1 text-xs"
+              >
+                <span className="font-medium">{p.label}</span>
+                <span className="text-muted-foreground">
+                  {" "}
+                  · {p.weight_pct}% · {p.prospect_count} leads
+                </span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {plan.winning_parameters_insight && (
+        <p className="mt-3 text-xs text-muted-foreground">{plan.winning_parameters_insight}</p>
+      )}
+    </Card>
+  );
+}
 
 export function Prospects() {
   const { active, activeId } = useActiveStrategy();
@@ -366,6 +512,8 @@ export function Prospects() {
         }}
         className="mb-4"
       />
+
+      {activeId && <ExperimentDiscoverySection strategyId={activeId} />}
 
       <Tabs defaultValue="accounts" className="space-y-4">
         <TabsList>

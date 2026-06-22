@@ -21,10 +21,10 @@ causes hallucination and weak pattern finding) to:
   2. rank the experiments and justify the single best-performing parameter set.
 """
 import json
+import logging
 from typing import Optional
 
 from sqlalchemy.orm import Session
-
 from app.db import Strategy, ExperimentBatch, Experiment, gen_id
 from app.llm import chat_json, MODEL_NAME
 from app.provenance import stamp
@@ -33,6 +33,8 @@ from app.agents.s2_signals import (
     _normalize_apollo_locations,
     _resolve_apollo_industries,
 )
+
+log = logging.getLogger("gtm.experiments")
 
 # Facets the editable experiment form supports.
 _FACET_KEYS = (
@@ -771,6 +773,14 @@ async def analyze_batch(db: Session, batch_id: str) -> dict:
     batch.status = "analyzed"
     db.commit()
     db.refresh(batch)
+
+    # Distill the result into the centralized learnings memory (best-effort).
+    try:
+        from app.agents.learnings import capture_from_experiment_batch
+
+        capture_from_experiment_batch(db, batch.id)
+    except Exception as exc:  # never block analysis on memory capture
+        log.warning("learning capture failed for batch %s: %s", batch.id, exc)
 
     best_exp = next((e for e in run_rows if e.id == best_id), best_by_score)
     audit_service.log_pipeline_event(

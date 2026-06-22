@@ -18,6 +18,8 @@ export interface Contact {
   total_score: number;
   tier?: number;
   is_demo: boolean;
+  source?: string;
+  source_ref?: string;
   account_id: string;
   company_name?: string;
   industry?: string;

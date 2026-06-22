@@ -13,6 +13,13 @@ import {
   BarChart3,
   ChevronDown,
   ChevronRight,
+  Target,
+  Info,
+  Rocket,
+  CalendarClock,
+  Users,
+  Lock,
+  TrendingUp,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -32,6 +39,14 @@ import {
   type ExperimentBatch,
   type ExperimentParams,
 } from "@/hooks/useExperiments";
+import type { Strategy } from "@/hooks/useStrategies";
+import { useCampaignPlan } from "@/hooks/useStrategies";
+
+// The experiment batch is a relevancy TEST: each experiment samples a small,
+// server-capped number of leads (≤25) to find the best Apollo params. The ROI
+// plan's leads-per-experiment is the monthly OUTPUT target the winning params
+// will later be scaled to, so we cap the test sample at this value.
+const TEST_SAMPLE_CAP = 25;
 
 const FACETS: { key: keyof ExperimentParams; label: string; placeholder: string }[] = [
   { key: "titles", label: "Job titles", placeholder: "VP of Support, Head of CX" },
@@ -466,14 +481,223 @@ function BatchView({
 }
 
 /* ------------------------------------------------------------------ */
+/*  Campaign execution plan (post-experiments)                        */
+/* ------------------------------------------------------------------ */
+
+function fmtUsd(n?: number | null): string {
+  if (n == null) return "—";
+  return `$${Math.round(n).toLocaleString()}`;
+}
+
+function Stat({
+  icon,
+  label,
+  value,
+  sub,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  sub?: string;
+}) {
+  return (
+    <div className="rounded border border-card-border bg-background/50 p-2.5">
+      <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+        {icon}
+        {label}
+      </div>
+      <div className="mt-1 font-mono text-sm font-semibold text-foreground">
+        {value}
+      </div>
+      {sub && <div className="text-[10px] text-muted-foreground">{sub}</div>}
+    </div>
+  );
+}
+
+function CampaignPlanSection({ strategyId }: { strategyId: string }) {
+  const { data: plan, isLoading } = useCampaignPlan(strategyId);
+
+  if (isLoading) {
+    return (
+      <Card className="border-card-border bg-card p-5">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" /> Loading campaign plan…
+        </div>
+      </Card>
+    );
+  }
+  if (!plan) return null;
+
+  if (!plan.ready) {
+    return (
+      <Card className="border-card-border bg-muted/30 p-5">
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 rounded bg-muted p-1.5 text-muted-foreground">
+            <Lock className="h-4 w-4" />
+          </div>
+          <div>
+            <div className="text-sm font-semibold text-foreground">
+              Campaign execution plan — locked
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">{plan.reason}</p>
+          </div>
+        </div>
+      </Card>
+    );
+  }
+
+  const phases = plan.phases ?? [];
+  const facetEntries = Object.entries(plan.winning_facets ?? {});
+
+  return (
+    <Card className="border-primary/30 bg-primary/5 p-5">
+      <div className="mb-1 flex items-center gap-2">
+        <Rocket className="h-4 w-4 text-primary" />
+        <div className="text-sm font-semibold">Campaign execution plan</div>
+        {plan.overall_confidence && (
+          <Badge variant="secondary" className="ml-auto text-[10px]">
+            {plan.overall_confidence} confidence
+          </Badge>
+        )}
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Unlocked by the winning experiment
+        {plan.winning_experiment_name ? ` “${plan.winning_experiment_name}”` : ""}. Built from
+        the ROI phased targets, front-loaded, and split by persona.
+      </p>
+
+      <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <Stat
+          icon={<CalendarClock className="h-3.5 w-3.5" />}
+          label="Kickoff"
+          value={plan.kickoff_label ?? "—"}
+          sub={`after ${plan.experiment_window_months ?? 1}-mo window`}
+        />
+        <Stat
+          icon={<Users className="h-3.5 w-3.5" />}
+          label="Total prospects"
+          value={(plan.total_prospects ?? 0).toLocaleString()}
+        />
+        <Stat
+          icon={<TrendingUp className="h-3.5 w-3.5" />}
+          label="Front-loaded"
+          value={`${plan.frontload_first_two_pct ?? 0}%`}
+          sub="in first 2 phases"
+        />
+        <Stat
+          icon={<Target className="h-3.5 w-3.5" />}
+          label="Annual target"
+          value={fmtUsd(plan.annual_target_usd)}
+        />
+      </div>
+
+      {facetEntries.length > 0 && (
+        <div className="mt-4 rounded border border-card-border bg-background/50 p-3">
+          <div className="mb-2 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+            <Trophy className="h-3.5 w-3.5" /> Winning targeting facets
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {facetEntries.flatMap(([key, val]) => {
+              const items = Array.isArray(val) ? val : [val];
+              return items.map((v, i) => (
+                <span
+                  key={`${key}-${i}`}
+                  className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-foreground/80"
+                >
+                  {v}
+                </span>
+              ));
+            })}
+          </div>
+          {plan.winning_parameters_insight && (
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              {plan.winning_parameters_insight}
+            </p>
+          )}
+        </div>
+      )}
+
+      <div className="mt-4 space-y-2">
+        {phases.map((ph) => (
+          <div
+            key={ph.phase}
+            className="rounded border border-card-border bg-background/40 p-3"
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-medium text-foreground">{ph.label}</span>
+              <span className="text-[11px] text-muted-foreground">
+                {ph.calendar_range} · {ph.quarter}
+              </span>
+              <span className="ml-auto font-mono text-sm font-semibold text-primary">
+                {ph.prospect_count.toLocaleString()} prospects
+              </span>
+              <span className="font-mono text-[11px] text-muted-foreground">
+                {ph.prospect_share_pct}% share
+              </span>
+            </div>
+            <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+              <span>Target {fmtUsd(ph.revenue_target_usd)}</span>
+              <span>{ph.required_closures} closures</span>
+              {ph.confidence && <span>{ph.confidence} confidence</span>}
+            </div>
+            {ph.persona_split.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {ph.persona_split.map((p) => (
+                  <span
+                    key={p.persona_type}
+                    className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary"
+                  >
+                    {p.label} {p.weight_pct}% · {p.prospect_count.toLocaleString()}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {(plan.notes ?? []).map((note, i) => (
+        <div
+          key={i}
+          className="mt-2 flex items-start gap-2 text-[11px] text-muted-foreground"
+        >
+          <Info className="mt-0.5 h-3 w-3 shrink-0" />
+          <span>{note}</span>
+        </div>
+      ))}
+    </Card>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Main panel                                                        */
 /* ------------------------------------------------------------------ */
 
-export function ExperimentsPanel({ strategyId }: { strategyId: string }) {
+export function ExperimentsPanel({
+  strategyId,
+  strategy,
+}: {  strategyId: string;
+  strategy?: Strategy | null;
+}) {
   const { data: batches, isLoading } = useExperimentBatches(strategyId);
   const create = useCreateExperimentBatch(strategyId);
-  const [n, setN] = useState(3);
-  const [leads, setLeads] = useState(10);
+
+  // Seeding plan recommended by the ROI calculator (capacity-driven).
+  const roiPlan = strategy?.roi?.gtm_plan?.experiment_plan;
+  const recExperiments = roiPlan?.n_experiments
+    ? Math.max(1, Math.min(12, roiPlan.n_experiments))
+    : null;
+  const recTargetLeads = roiPlan?.leads_per_experiment ?? null;
+  const recSampleLeads =
+    recTargetLeads != null ? Math.max(1, Math.min(TEST_SAMPLE_CAP, recTargetLeads)) : null;
+
+  const [n, setN] = useState(recExperiments ?? 3);
+  const [leads, setLeads] = useState(recSampleLeads ?? 10);
+
+  function applyRoiPlan() {
+    if (recExperiments != null) setN(recExperiments);
+    if (recSampleLeads != null) setLeads(recSampleLeads);
+  }
 
   return (
     <div className="space-y-4">
@@ -496,6 +720,52 @@ export function ExperimentsPanel({ strategyId }: { strategyId: string }) {
           <FlaskConical className="h-4 w-4 text-primary" />
           <div className="text-sm font-semibold">New experiment batch</div>
         </div>
+        {roiPlan && recExperiments != null && (
+          <div className="mb-4 rounded border border-primary/30 bg-primary/5 p-3">
+            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-primary">
+              <Target className="h-3.5 w-3.5" />
+              ROI-recommended seeding plan
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm text-foreground">
+              <span>
+                <span className="font-mono font-semibold">{recExperiments}</span> experiment
+                {recExperiments === 1 ? "" : "s"}
+              </span>
+              {recTargetLeads != null && (
+                <span>
+                  <span className="font-mono font-semibold">
+                    {recTargetLeads.toLocaleString()}
+                  </span>{" "}
+                  target leads / experiment / month
+                </span>
+              )}
+              {roiPlan.window_months != null && (
+                <span className="text-muted-foreground">
+                  {roiPlan.window_months}-month learning window
+                </span>
+              )}
+            </div>
+            <div className="mt-2 flex items-start gap-2 text-[11px] text-muted-foreground">
+              <Info className="mt-0.5 h-3 w-3 shrink-0" />
+              <span>
+                Each experiment first runs a small relevancy test (sample capped at{" "}
+                {TEST_SAMPLE_CAP} leads) to find the best Apollo params. The{" "}
+                {recTargetLeads != null ? recTargetLeads.toLocaleString() : "target"} leads/month is
+                the output you scale the winning params to after a successful run.
+              </span>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={applyRoiPlan}
+              className="mt-3 gap-2"
+              data-testid="button-apply-roi-plan"
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              Apply ROI plan
+            </Button>
+          </div>
+        )}
         <div className="flex flex-wrap items-end gap-3">
           <div>
             <Label className="text-xs">Number of experiments</Label>
@@ -510,7 +780,7 @@ export function ExperimentsPanel({ strategyId }: { strategyId: string }) {
             />
           </div>
           <div>
-            <Label className="text-xs">Leads per experiment</Label>
+            <Label className="text-xs">Test leads per experiment</Label>
             <Input
               type="number"
               min={1}
@@ -559,6 +829,8 @@ export function ExperimentsPanel({ strategyId }: { strategyId: string }) {
           ))}
         </div>
       )}
+
+      <CampaignPlanSection strategyId={strategyId} />
     </div>
   );
 }
