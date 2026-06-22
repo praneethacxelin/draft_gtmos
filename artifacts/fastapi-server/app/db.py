@@ -423,6 +423,25 @@ def init_db() -> None:
             conn.execute(text("DROP TABLE IF EXISTS competitors CASCADE"))
     Base.metadata.create_all(bind=engine)
 
+    if db_url_str.startswith("sqlite"):
+        # Older demo databases may predate the Instantly analytics fields.
+        # Add them in-place so startup does not fail when the poller queries
+        # the model using the current ORM definition.
+        with engine.begin() as conn:
+            columns = {
+                row[1]
+                for row in conn.execute(text("PRAGMA table_info(instantly_campaigns)"))
+            }
+            for column_name in (
+                "analytics_json",
+                "daily_analytics_json",
+                "steps_analytics_json",
+            ):
+                if column_name not in columns:
+                    conn.execute(text(
+                        f"ALTER TABLE instantly_campaigns ADD COLUMN {column_name} JSON"
+                    ))
+
 
 def get_session() -> Generator[Session, None, None]:
     s = SessionLocal()
