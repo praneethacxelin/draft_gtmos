@@ -1,6 +1,7 @@
 """S2 — Market Research, Signals, Enrichment, Scoring."""
 import json
 import random
+import re
 from typing import AsyncIterator
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -1138,6 +1139,7 @@ async def run_lead_search(
                     revenue_range=org.get("organization_revenue_printed"),
                     tech_stack_json=org.get("technologies"),
                     enrichment_json={"source": "apollo"},
+                    tier=3,  # default until run signals + score leads re-tier it
                 )
                 db.add(account)
                 db.flush()
@@ -1162,7 +1164,11 @@ async def run_lead_search(
                 strategy_id=strategy_id,
                 full_name=full_name,
                 title=p.get("title"),
-                email=p.get("email"),
+                # Email is intentionally NOT stored here — it is revealed later
+                # via the explicit "Fetch emails" action (Apollo credit cost),
+                # so we surface name + role first and spend credits only on
+                # contacts the GTM engineer actually selects.
+                email=None,
                 phone=phone,
                 linkedin_url=p.get("linkedin_url"),
                 seniority=p.get("seniority"),
@@ -1206,6 +1212,7 @@ async def run_lead_search(
                     founded_year=p.get("founded_year"),
                     tech_stack_json=p.get("tech_stack"),
                     enrichment_json={"source": "ai_demo"},
+                    tier=3,  # default until run signals + score leads re-tier it
                 )
                 db.add(account)
                 db.flush()
@@ -1219,7 +1226,8 @@ async def run_lead_search(
                 strategy_id=strategy_id,
                 full_name=p.get("full_name", "Unknown"),
                 title=p.get("title"),
-                email=p.get("email"),
+                # Email revealed later via "Fetch emails" (credit conservation).
+                email=None,
                 linkedin_url=p.get("linkedin_url"),
                 seniority=p.get("seniority"),
                 department=p.get("department"),
@@ -1357,6 +1365,201 @@ async def run_lead_search(
         "is_demo": is_demo,
         "uses_clay": bool(clay_key),
         "provenance": provenance,
+    }
+
+
+# Deterministic demo name pool for synthesizing contacts without an Apollo key.
+_DEMO_FIRST = [
+    "Alex", "Jordan", "Taylor", "Morgan", "Casey", "Riley", "Jamie", "Avery",
+    "Quinn", "Cameron", "Drew", "Reese", "Skyler", "Devon", "Harper", "Rowan",
+]
+_DEMO_LAST = [
+    "Patel", "Nguyen", "Garcia", "Smith", "Kim", "Johnson", "Mehta", "Lopez",
+    "Brown", "Singh", "Davis", "Martin", "Chen", "Wilson", "Khan", "Adams",
+]
+
+
+async def fetch_account_contacts(
+    db: Session,
+    strategy_id: str,
+    *,
+    account_ids: list[str] | None = None,
+    persona: str | None = None,
+    per_account: int = 5,
+    override_filters: dict | None = None,
+) -> dict:
+    """Pull contacts (people) for a hand-picked set of accounts, scoped to the
+    given persona. This is the credit-conscious step the GTM engineer runs
+    AFTER scoring has re-tiered accounts: they select the accounts/tier they
+    care about, choose a persona, and we fetch up to ``per_account`` people per
+    account WITHOUT revealing emails (email is a separate paid "Fetch emails"
+    step). Demo installs (no Apollo key) get synthesized contacts so the flow
+    is testable end-to-end.
+    """
+    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    if not strategy:
+        return {"error": "Strategy not found"}
+
+    aq = db.query(Account).filter(Account.strategy_id == strategy_id)
+    if account_ids:
+        aq = aq.filter(Account.id.in_(account_ids))
+    accounts = aq.all()
+    if not accounts:
+        return {
+            "contacts_added": 0,
+            "accounts_targeted": 0,
+            "message": "No accounts selected. Discover accounts and run scoring first, then pick the accounts (or a tier) to pull contacts for.",
+        }
+
+    per_account = max(1, min(int(per_account or 5), 50))
+
+    # Resolve persona → person titles/seniorities.
+    personas = strategy.personas_json if isinstance(strategy.personas_json, dict) else {}
+    persona_titles: list[str] = []
+    persona_seniorities: list[str] = []
+    if persona and isinstance(personas.get(persona), dict):
+        pj = personas[persona]
+        if pj.get("title"):
+            persona_titles.append(str(pj["title"]))
+        sen = pj.get("seniority") or pj.get("seniorities")
+        if isinstance(sen, str):
+            persona_seniorities.append(sen)
+        elif isinstance(sen, list):
+            persona_seniorities.extend(str(s) for s in sen if s)
+
+    ov = override_filters or {}
+    titles = list(dict.fromkeys((ov.get("titles") or []) + persona_titles))
+    seniorities = list(dict.fromkeys((ov.get("seniorities") or []) + persona_seniorities))
+
+    apollo_key = settings_service.get_key(db, strategy.user_id, "apollo")
+
+    # When a real Apollo key is configured we never fabricate demo people. Clear
+    # any previously synthesized demo contacts for the targeted accounts so a
+    # real fetch replaces them instead of stacking AI-generated rows on top.
+    if apollo_key:
+        target_ids = [a.id for a in accounts]
+        if target_ids:
+            db.query(Contact).filter(
+                Contact.strategy_id == strategy_id,
+                Contact.account_id.in_(target_ids),
+                Contact.is_demo == True,  # noqa: E712
+            ).delete(synchronize_session=False)
+            db.commit()
+
+    # Dedupe against contacts that already exist for each account.
+    existing = {
+        (c.account_id, (c.full_name or "").lower())
+        for c in db.query(Contact).filter(Contact.strategy_id == strategy_id).all()
+    }
+
+    new_contacts: list[Contact] = []
+    accounts_no_domain = 0
+    accounts_no_results = 0
+    for acct in accounts:
+        if apollo_key:
+            # ---- Real Apollo path only — no synthesized fallback. ----
+            if not acct.domain:
+                # We can't reliably target a company in Apollo without its
+                # domain; skip rather than invent contacts.
+                accounts_no_domain += 1
+                continue
+            filt = {
+                "titles": titles,
+                "seniorities": seniorities,
+                "organization_domains": [acct.domain],
+            }
+            people = clients.apollo_people_search(
+                apollo_key,
+                filt,
+                per_page=per_account,
+                enrich=False,
+                _strategy_id=strategy_id,
+                _strategy_name=strategy.product_name,
+            )
+            if not people:
+                accounts_no_results += 1
+                continue
+            for p in people[:per_account]:
+                name = clients._person_name(p)
+                if not name or (acct.id, name.lower()) in existing:
+                    continue
+                existing.add((acct.id, name.lower()))
+                contact = Contact(
+                    user_id=strategy.user_id,
+                    account_id=acct.id,
+                    strategy_id=strategy_id,
+                    full_name=name,
+                    title=p.get("title") or (titles[0] if titles else None),
+                    email=None,  # revealed later via Fetch emails (paid)
+                    linkedin_url=p.get("linkedin_url"),
+                    seniority=p.get("seniority") or (seniorities[0] if seniorities else None),
+                    department=(p.get("departments") or [None])[0] if p.get("departments") else None,
+                    persona_type=persona,
+                    is_demo=False,
+                    source="discovery",
+                    source_ref=p.get("id"),  # Apollo person id → reliable email reveal later
+                )
+                db.add(contact)
+                new_contacts.append(contact)
+        else:
+            # ---- No Apollo key: synthesize demo people so the flow is testable. ----
+            title = titles[0] if titles else "Decision Maker"
+            for i in range(per_account):
+                fn = _DEMO_FIRST[(hash(acct.id) + i) % len(_DEMO_FIRST)]
+                ln = _DEMO_LAST[(hash(acct.id) // 7 + i) % len(_DEMO_LAST)]
+                name = f"{fn} {ln}"
+                if (acct.id, name.lower()) in existing:
+                    continue
+                existing.add((acct.id, name.lower()))
+                contact = Contact(
+                    user_id=strategy.user_id,
+                    account_id=acct.id,
+                    strategy_id=strategy_id,
+                    full_name=name,
+                    title=title,
+                    email=None,
+                    seniority=seniorities[0] if seniorities else None,
+                    persona_type=persona,
+                    is_demo=True,
+                    source="discovery",
+                )
+                db.add(contact)
+                new_contacts.append(contact)
+
+    db.commit()
+
+    # Re-score so the freshly pulled contacts get tiered immediately.
+    try:
+        score_leads(db, strategy_id)
+    except Exception as exc:  # never block contact creation on scoring
+        log.warning("score after fetch_account_contacts failed: %s", exc)
+
+    # Build a precise, honest message (no fabricated data when Apollo is live).
+    msg = (
+        f"Pulled {len(new_contacts)} real contact(s) across {len(accounts)} account(s)"
+        + (f" for the {persona} persona" if persona else "")
+    )
+    if apollo_key:
+        notes = []
+        if accounts_no_results:
+            notes.append(f"{accounts_no_results} account(s) returned no Apollo matches for this persona")
+        if accounts_no_domain:
+            notes.append(f"{accounts_no_domain} account(s) had no domain to search")
+        if notes:
+            msg += " — " + "; ".join(notes)
+        msg += ". Emails are hidden — use Fetch emails (or Get Email per row) to reveal them (Apollo credit)."
+    else:
+        msg += ". Demo mode (no Apollo key) — connect Apollo in Settings for real contacts."
+
+    return {
+        "contacts_added": len(new_contacts),
+        "accounts_targeted": len(accounts),
+        "accounts_no_results": accounts_no_results,
+        "accounts_no_domain": accounts_no_domain,
+        "persona": persona,
+        "per_account": per_account,
+        "is_demo": not apollo_key,
+        "message": msg,
     }
 
 
@@ -1586,22 +1789,25 @@ async def run_signals(db: Session, strategy_id: str, limit: int | None = None) -
     }
 
 
-async def fetch_contact_emails(db: Session, strategy_id: str) -> dict:
+async def fetch_contact_emails(
+    db: Session, strategy_id: str, contact_ids: list[str] | None = None
+) -> dict:
     """Reveal work emails for contacts that don't have one yet, using Apollo /v1/people/match.
 
     Apollo charges a credit per successful reveal. We skip contacts that
     already have an email so you only pay for genuinely missing ones.
-    Capped at 20 contacts per run to control costs.
+    When ``contact_ids`` is provided we reveal only that selection (so the GTM
+    engineer pays for exactly the contacts they picked); otherwise we cap at 50
+    per run to control costs. Demo contacts get a synthesized email so the flow
+    is testable without an Apollo key.
     """
     strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
     if not strategy:
         return {"error": "Strategy not found", "updated": 0}
 
     apollo_key = settings_service.get_key(db, strategy.user_id, "apollo")
-    if not apollo_key:
-        return {"error": "No Apollo API key configured in Settings → Integrations", "updated": 0}
 
-    contacts = (
+    q = (
         db.query(Contact)
         .join(Account, Account.id == Contact.account_id)
         .filter(
@@ -1612,21 +1818,74 @@ async def fetch_contact_emails(db: Session, strategy_id: str) -> dict:
                 Contact.email == "Not found",
             ),
         )
-        .limit(20)
-        .all()
     )
+    if contact_ids:
+        q = q.filter(Contact.id.in_(contact_ids))
+    contacts = q.limit(200 if contact_ids else 50).all()
     if not contacts:
-        return {"updated": 0, "skipped": 0, "message": "All contacts already have emails"}
+        return {"updated": 0, "skipped": 0, "message": "Selected contacts already have emails"}
 
     accounts = {
         a.id: a
         for a in db.query(Account).filter(Account.strategy_id == strategy_id).all()
     }
 
+    def _demo_email(name: str, domain: str | None) -> str:
+        slug = re.sub(r"[^a-z]", ".", (name or "contact").strip().lower()).strip(".")
+        slug = re.sub(r"\.+", ".", slug) or "contact"
+        return f"{slug}@{domain or 'example.com'}"
+
+    def _real_email(value: str | None) -> str | None:
+        """Return a usable work email, or None for Apollo's locked placeholders."""
+        if not value:
+            return None
+        low = value.strip().lower()
+        if not low or "@" not in low:
+            return None
+        # Apollo returns these sentinels when the email is not unlocked.
+        if "not_unlocked" in low or low.startswith("email_not_unlocked") or "domain.com" == low.split("@")[-1]:
+            return None
+        return value.strip()
+
     updated = 0
     skipped = 0
+
+    # --- Fast path: reveal by Apollo person id via bulk_match (most reliable). ---
+    if apollo_key:
+        by_apollo_id = {
+            c.source_ref: c
+            for c in contacts
+            if not c.is_demo and c.source_ref and str(c.source_ref).strip()
+        }
+        if by_apollo_id:
+            revealed = clients.apollo_bulk_reveal(
+                apollo_key,
+                list(by_apollo_id.keys()),
+                reveal_personal=False,
+                _strategy_id=strategy_id,
+                _strategy_name=strategy.product_name,
+            )
+            for pid, person in revealed.items():
+                contact = by_apollo_id.get(pid)
+                if not contact:
+                    continue
+                email = _real_email(person.get("email"))
+                if email:
+                    contact.email = email
+                    updated += 1
+
+    # --- Fallback path: per-contact match for demo/no-id/unresolved contacts. ---
     for contact in contacts:
+        if contact.email and _real_email(contact.email):
+            continue  # already revealed above
         account = accounts.get(contact.account_id)
+        # Demo contacts (or installs without an Apollo key) get a synthesized
+        # email so the reveal step is testable end-to-end.
+        if contact.is_demo or not apollo_key:
+            domain = account.domain if account else None
+            contact.email = _demo_email(contact.full_name, domain)
+            updated += 1
+            continue
         person = clients.apollo_match_person(
             apollo_key,
             name=contact.full_name,
@@ -1637,8 +1896,9 @@ async def fetch_contact_emails(db: Session, strategy_id: str) -> dict:
             _strategy_id=strategy_id,
             _strategy_name=strategy.product_name,
         )
-        if person and person.get("email"):
-            contact.email = person["email"]
+        email = _real_email((person or {}).get("email"))
+        if email:
+            contact.email = email
             updated += 1
         else:
             skipped += 1
@@ -1812,10 +2072,59 @@ def score_leads(db: Session, strategy_id: str) -> dict:
             tier=c.tier,
         ))
 
-    # Mirror to account.tier (highest contact tier wins)
+    # ---- Account-level scoring (works even before any contacts exist) ----
+    # The new prospect flow discovers ACCOUNTS first (no contacts), so account
+    # tiers must be derived from the account's own firmographic ICP fit + live
+    # signals + pattern boost — not only from contact tiers. Once contacts are
+    # pulled and scored, the better of the two tiers wins.
+    strat = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    icp = (strat.icp_json or {}) if strat else {}
+    dd = (strat.discovery_data or {}) if strat else {}
+    icp_industries = {str(x).lower() for x in (icp.get("industries") or [])}
+    for v in (dd.get("target_industries") or []):
+        icp_industries.add(str(v).lower())
+
     for acct in db.query(Account).filter(Account.strategy_id == strategy_id).all():
+        # Firmographic ICP-fit heuristic (no contacts required).
+        a_fit = 50.0
+        if acct.industry:
+            a_fit += 10
+            ind = acct.industry.lower()
+            if any(ci and (ci in ind or ind in ci) for ci in icp_industries):
+                a_fit += 20
+        if acct.employee_count:
+            a_fit += 5
+        if isinstance(acct.tech_stack_json, list) and acct.tech_stack_json:
+            a_fit += 5
+        a_heuristic = min(a_fit, 100)
+        sim = _semantic_fit(acct, None)
+        a_icp = (
+            round(min(a_heuristic * 0.5 + (sim * 100) * 0.5, 100), 1)
+            if sim is not None
+            else a_heuristic
+        )
+
+        sigs = signals_by_account.get(acct.id, [])
+        a_sig = min(sum((s.strength_score or 0) * 25 for s in sigs), 100)
+        a_sig_types = set(s.signal_type for s in sigs)
+        a_matched = 0
+        for cluster in clusters:
+            required = set(cluster.signal_combination_json or [])
+            if required and required.issubset(a_sig_types):
+                a_matched += 1
+        a_pattern = min(a_matched * 8.0, 20.0)
+
+        a_total = round(min(a_icp * 0.5 + a_sig * 0.5 + a_pattern, 100), 1)
+        if a_total >= 50:
+            acct_tier = 1
+        elif a_total >= 25:
+            acct_tier = 2
+        else:
+            acct_tier = 3
+
+        # Blend with contact-derived tier (lower number = better) when contacts exist.
         contact_tiers = [c.tier for c in contacts if c.account_id == acct.id and c.tier]
-        acct.tier = min(contact_tiers) if contact_tiers else 3
+        acct.tier = min(acct_tier, min(contact_tiers)) if contact_tiers else acct_tier
 
     db.commit()
 

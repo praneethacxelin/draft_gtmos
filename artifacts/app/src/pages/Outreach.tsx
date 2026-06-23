@@ -14,7 +14,8 @@ import {
 import { PageHeader } from "@/components/PageHeader";
 import { TierBadge, StatusPill } from "@/components/Pills";
 import { useActiveStrategy } from "@/hooks/useActiveStrategy";
-import { useContacts } from "@/hooks/useContacts";
+import { useContacts, useVerifyContactEmail } from "@/hooks/useContacts";
+import { useToast } from "@/hooks/use-toast";
 import {
   useSequenceByContact,
   useGenerateSequence,
@@ -22,7 +23,7 @@ import {
   useLaunchSequence,
   useUpdateSequenceStep,
 } from "@/hooks/useSequences";
-import { Mail, Linkedin, Phone, ShieldCheck, Send, Wand2, Pencil, X, FlaskConical, Check, Megaphone, Search } from "lucide-react";
+import { Mail, Linkedin, Phone, ShieldCheck, Send, Wand2, Pencil, X, FlaskConical, Check, Megaphone, Search, BadgeCheck, CheckCircle2, XCircle, HelpCircle, Loader2 } from "lucide-react";
 import { fmtDate } from "@/lib/format";
 import { ReasoningPanel, SourceBadge } from "@/components/ReasoningPanel";
 import { RetriggerBar, type RetriggerAction } from "@/components/RetriggerBar";
@@ -56,6 +57,8 @@ export function Outreach() {
   const check = useDeliverabilityCheck();
   const launch = useLaunchSequence();
   const patchStep = useUpdateSequenceStep();
+  const verifyEmail = useVerifyContactEmail();
+  const { toast } = useToast();
 
   const contact = contacts?.find((c) => c.id === selected);
 
@@ -373,6 +376,35 @@ export function Outreach() {
                     {contact.title} · {contact.company_name}
                   </div>
                 )}
+                {contact && (
+                  <div className="mt-1 flex items-center gap-1.5 text-xs">
+                    <Mail className="h-3.5 w-3.5 text-muted-foreground" />
+                    {contact.email &&
+                    contact.email !== "Not found" &&
+                    contact.email !== "(not revealed)" ? (
+                      <span className="font-mono text-foreground/80">{contact.email}</span>
+                    ) : (
+                      <span className="text-muted-foreground/60">
+                        No email yet — reveal it on the Prospects page first
+                      </span>
+                    )}
+                    {contact.email_verified === "valid" && (
+                      <span className="ml-0.5 inline-flex items-center gap-1 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-primary">
+                        <CheckCircle2 className="h-3 w-3" /> Valid
+                      </span>
+                    )}
+                    {contact.email_verified === "invalid" && (
+                      <span className="ml-0.5 inline-flex items-center gap-1 rounded bg-destructive/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-destructive">
+                        <XCircle className="h-3 w-3" /> Invalid
+                      </span>
+                    )}
+                    {contact.email_verified === "catch_all" && (
+                      <span className="ml-0.5 inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-500">
+                        <HelpCircle className="h-3 w-3" /> Catch-all
+                      </span>
+                    )}
+                  </div>
+                )}
                 {sequence && (
                   <div className="mt-2 flex items-center gap-2">
                     <StatusPill status={sequence.status} />
@@ -382,14 +414,73 @@ export function Outreach() {
                       </span>
                     )}
                     {sequence.status === "simulated" && (
-                      <span className="rounded bg-purple-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-purple-400">
-                        Simulated (no Instantly key)
+                      <span
+                        className="rounded bg-purple-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-purple-400"
+                        title="Test send — not pushed to Instantly. Happens when you use 'Simulate window' or when no Instantly key was set at launch time."
+                      >
+                        Simulated (test send)
                       </span>
                     )}
                   </div>
                 )}
               </div>
               <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={
+                    !contact ||
+                    !contact.email ||
+                    contact.email === "Not found" ||
+                    contact.email === "(not revealed)" ||
+                    verifyEmail.isPending
+                  }
+                  onClick={() =>
+                    selected &&
+                    verifyEmail.mutate(
+                      { id: selected, provider: "instantly" },
+                      {
+                        onSuccess: (data) => {
+                          const s = data.email_verified;
+                          toast({
+                            title:
+                              s === "valid"
+                                ? "Email verified — safe to send"
+                                : s === "invalid"
+                                  ? "Email is invalid"
+                                  : s === "catch_all"
+                                    ? "Catch-all domain — send with caution"
+                                    : "Verification pending",
+                            description:
+                              s === "valid"
+                                ? `${data.email} passed Instantly verification.`
+                                : s === "invalid"
+                                  ? `${data.email} would likely bounce. Re-reveal or skip this contact.`
+                                  : `Instantly returned "${s}" for ${data.email}.`,
+                            variant: s === "invalid" ? "destructive" : undefined,
+                          });
+                        },
+                        onError: (err: any) =>
+                          toast({
+                            title: "Verification failed",
+                            description:
+                              err.message ||
+                              "Configure Instantly (or Hunter) in Settings → Integrations.",
+                            variant: "destructive",
+                          }),
+                      },
+                    )
+                  }
+                  data-testid="button-verify-email"
+                  title="Verify the email with Instantly before generating the sequence"
+                >
+                  {verifyEmail.isPending ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <BadgeCheck className="mr-2 h-4 w-4" />
+                  )}
+                  {verifyEmail.isPending ? "Verifying…" : "Verify email"}
+                </Button>
                 <Button
                   size="sm"
                   variant="secondary"

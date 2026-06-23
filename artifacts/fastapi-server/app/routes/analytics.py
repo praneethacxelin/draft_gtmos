@@ -102,8 +102,10 @@ def outreach_analytics(
         seq_rows.append(
             {
                 "sequence_id": seq.id,
+                "contact_id": seq.contact_id,
                 "contact_name": c.full_name if c else "Unknown",
                 "contact_email": c.email if c else None,
+                "email_verified": c.email_verified if c else None,
                 "strategy_name": strategy_map.get(seq.strategy_id or "", ""),
                 "status": seq.status,
                 "instantly_campaign_id": seq.instantly_campaign_id,

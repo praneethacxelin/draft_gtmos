@@ -433,7 +433,7 @@ export function StrategyDetail() {
             </p>
           </div>
           <DiscoveryWizard 
-            strategyId={id} 
+            strategyId={id!} 
             initialData={strategy.discovery_data} 
             onComplete={() => setActiveTab("icp")}
           />
@@ -636,17 +636,17 @@ export function StrategyDetail() {
                   </div>
                 </Card>
               )}
-              {(strategy.tam_sam_som.sources ?? []).length > 0 && (
+              {(((strategy.tam_sam_som as any).sources ?? []) as any[]).length > 0 && (
                 <details className="group">
                   <summary className="flex cursor-pointer items-center gap-2 rounded-lg border border-card-border bg-card px-4 py-3 text-sm font-medium text-foreground transition-colors hover:bg-muted/40">
                     <svg className="h-4 w-4 text-muted-foreground transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
                     Sources & References
                     <span className="ml-1 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-mono text-primary">
-                      {strategy.tam_sam_som.sources.length}
+                      {((strategy.tam_sam_som as any).sources as any[]).length}
                     </span>
                   </summary>
                   <div className="mt-2 space-y-2">
-                    {strategy.tam_sam_som.sources.map((src: { title: string; link: string; snippet: string; verified: boolean }, i: number) => (
+                    {((strategy.tam_sam_som as any).sources as { title: string; link: string; snippet: string; verified: boolean }[]).map((src, i: number) => (
                       <Card key={i} className="border-card-border bg-card p-3">
                         <div className="flex items-start gap-2">
                           <div className="flex-1 min-w-0">

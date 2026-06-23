@@ -99,10 +99,13 @@ export function useRevealContactPhone() {
 export function useVerifyContactEmail() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) =>
-      apiFetch<Contact>(`/api/contacts/${id}/verify`, {
-        method: "POST",
-      }),
+    mutationFn: ({ id, provider }: { id: string; provider?: string }) =>
+      apiFetch<Contact>(
+        `/api/contacts/${id}/verify${provider ? `?provider=${provider}` : ""}`,
+        {
+          method: "POST",
+        },
+      ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["contacts"] });
     },
@@ -112,10 +115,16 @@ export function useVerifyContactEmail() {
 export function useVerifyBulkEmails() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (contact_ids: string[]) =>
+    mutationFn: ({
+      contact_ids,
+      provider,
+    }: {
+      contact_ids: string[];
+      provider?: string;
+    }) =>
       apiFetch<{ verified: number; invalid: number; catch_all: number; total: number }>(`/api/contacts/verify-bulk`, {
         method: "POST",
-        body: JSON.stringify({ contact_ids }),
+        body: JSON.stringify({ contact_ids, provider }),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["contacts"] });

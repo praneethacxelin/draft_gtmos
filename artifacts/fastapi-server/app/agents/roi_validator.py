@@ -51,6 +51,12 @@ SENDING_DAYS_PER_MONTH = 21
 EXPERIMENT_WINDOW_MONTHS = 1        # default learning window before phases begin
 DEFAULT_EXPERIMENT_COUNT = 3        # persona × segment hypotheses to test
 MIN_LEADS_PER_EXPERIMENT = 25       # statistically-useful floor per experiment
+# The learning loop only ever pulls a small *test* sample per variant to find
+# the best Apollo params cheaply; the winning params are then scaled. So the
+# real lead spend is (n_experiments × test sample) + (1 winner × scale target),
+# NOT n_experiments × scale target.
+TEST_SAMPLE_CAP = 25                # max leads actually pulled per variant in the test phase
+WINNERS_SCALED = 1                  # only the single best variant is scaled into Prospects
 # A single experiment teaches nothing — learning requires *comparing* at least
 # two persona × segment cells against each other. So we floor the count at 2 and
 # cap it so month-1 stays focused.
@@ -218,16 +224,22 @@ def _build_experiment_plan(
     window_capacity: int,
     personas: Optional[list[str]] = None,
     segments: Optional[list[str]] = None,
+    company_sizes: Optional[list[str]] = None,
+    seniorities: Optional[list[str]] = None,
+    industries: Optional[list[str]] = None,
+    technologies: Optional[list[str]] = None,
     experiment_window_months: int = EXPERIMENT_WINDOW_MONTHS,
 ) -> dict:
-    """Seed the month-1 experiment loop as a persona × segment grid.
+    """Seed the month-1 experiment loop as a one-factor-at-a-time (OFAT) design.
 
-    A single experiment can't teach anything — learning comes from *comparing*
-    distinct cells (e.g. "Customer Service Manager × India" vs "CFO × USA"). So
-    we build a grid of persona × segment hypotheses (floored at ``MIN_EXPERIMENTS``
-    so there is always something to compare), cap it by send capacity and by
-    ``MAX_EXPERIMENTS`` to keep month-1 focused, and split the window's sendable
-    volume evenly across the cells (each at a useful sample size).
+    Varying only persona × region can't tell you *which* Apollo facet actually
+    drives lead quality — if two cells differ on several axes at once, a quality
+    gap is unattributable. So instead we anchor a BASELINE cell (the most
+    probable ICP combination) and generate variant experiments that each change
+    exactly ONE facet — persona, region, company size, seniority, industry, or
+    technology. Comparing each variant against the shared baseline isolates that
+    single factor's effect, so month-1 learns which lever matters most before
+    you commit to phased execution.
     """
     sendable = max(0, int(window_capacity or 0))
 
@@ -248,20 +260,52 @@ def _build_experiment_plan(
 
     persona_list = _clean(personas) or ["Primary buyer persona"]
     segment_list = _clean(segments) or ["Core segment"]
+    size_list = _clean(company_sizes)
+    seniority_list = _clean(seniorities)
+    industry_list = _clean(industries)
+    technology_list = _clean(technologies)
 
-    # Build persona × segment cells, persona-fast so the earliest (and possibly
-    # capped) cells already vary the persona dimension for comparable learnings.
-    cells: list[dict] = []
-    for seg in segment_list:
-        for per in persona_list:
-            cells.append({"persona": per, "segment": seg, "angle": None})
+    # Baseline = the most-probable ICP combination (first value on each axis).
+    baseline = {
+        "persona": persona_list[0],
+        "segment": segment_list[0],
+        "company_size": size_list[0] if size_list else None,
+        "seniority": seniority_list[0] if seniority_list else None,
+        "industry": industry_list[0] if industry_list else None,
+        "technology": technology_list[0] if technology_list else None,
+    }
 
-    # If the profile only yields a single cell, split it into messaging-angle
-    # variants so there are still at least MIN_EXPERIMENTS to compare.
+    # OFAT variants: each changes exactly one axis from the baseline. The
+    # ``axes`` order is the learning priority (persona/region first because they
+    # usually move conversion most, then firmographics, then tooling signals).
+    axes: list[tuple[str, str, list[str]]] = [
+        ("persona", "persona", persona_list),
+        ("segment", "region/segment", segment_list),
+        ("company_size", "company size", size_list),
+        ("seniority", "seniority", seniority_list),
+        ("industry", "industry", industry_list),
+        ("technology", "technology", technology_list),
+    ]
+
+    cells: list[dict] = [dict(baseline, factor="baseline")]
+    # Round-robin across axes so the earliest (and possibly capacity-capped)
+    # variants already span several distinct factors rather than exhausting one.
+    axis_queues = [
+        (key, factor_label, values[1:]) for key, factor_label, values in axes if len(values) > 1
+    ]
+    idx = 0
+    while any(q[2] for q in axis_queues):
+        key, factor_label, values = axis_queues[idx % len(axis_queues)]
+        if values:
+            variant = values.pop(0)
+            cells.append(dict(baseline, **{key: variant}, factor=factor_label))
+        idx += 1
+
+    # If the profile only yields the baseline (no second value on any axis),
+    # split into messaging-angle variants so there are still cells to compare.
     if len(cells) < MIN_EXPERIMENTS:
-        base = cells[0]
         cells = [
-            {"persona": base["persona"], "segment": base["segment"], "angle": EXPERIMENT_ANGLES[i]}
+            dict(baseline, angle=EXPERIMENT_ANGLES[i], factor="messaging angle")
             for i in range(MIN_EXPERIMENTS)
         ]
 
@@ -269,8 +313,6 @@ def _build_experiment_plan(
     max_by_capacity = max(1, sendable // MIN_LEADS_PER_EXPERIMENT) if sendable > 0 else MAX_EXPERIMENTS
     n_experiments = min(len(cells), MAX_EXPERIMENTS, max_by_capacity)
     n_experiments = max(MIN_EXPERIMENTS, n_experiments)
-    # Never plan more cells than capacity can sample, but keep the >=2 floor so
-    # the comparison is meaningful even on a thin send budget.
     if sendable > 0:
         n_experiments = min(n_experiments, max(MIN_EXPERIMENTS, max_by_capacity))
 
@@ -281,32 +323,50 @@ def _build_experiment_plan(
     else:
         leads_per_experiment = MIN_LEADS_PER_EXPERIMENT
 
-    total_experiment_leads = n_experiments * leads_per_experiment
-    capacity_limited = sendable > 0 and total_experiment_leads >= sendable
+    # Two-phase reality: a cheap test sample per variant, then scale ONE winner.
+    # ``leads_per_experiment`` is the per-winner *scale target* (monthly volume);
+    # the test phase only pulls a capped sample per variant.
+    scale_target_leads = leads_per_experiment
+    test_sample_per_experiment = min(TEST_SAMPLE_CAP, scale_target_leads)
+    total_test_leads = n_experiments * test_sample_per_experiment
+    scale_phase_leads = WINNERS_SCALED * scale_target_leads
+    # Honest end-to-end lead spend of the learning loop: every variant's test
+    # sample plus the single scaled winner — NOT n_experiments × scale_target.
+    total_experiment_leads = total_test_leads + scale_phase_leads
+    capacity_limited = sendable > 0 and scale_phase_leads >= sendable
+
+    def _cell_label(cell: dict) -> str:
+        bits = [cell["persona"], cell["segment"]]
+        for k in ("company_size", "seniority", "industry", "technology"):
+            if cell.get(k):
+                bits.append(str(cell[k]))
+        base = " · ".join(b for b in bits if b)
+        if cell.get("angle"):
+            base += f" ({cell['angle']})"
+        return base
 
     hypotheses = []
     for i, cell in enumerate(selected):
-        if cell["angle"]:
-            label = f"{cell['persona']} · {cell['segment']} ({cell['angle']})"
-        else:
-            label = f"{cell['persona']} · {cell['segment']}"
+        factor = cell.get("factor", "baseline")
         hypotheses.append(
             {
                 "idx": i + 1,
                 "persona": cell["persona"],
                 "segment": cell["segment"],
-                "angle": cell["angle"],
-                "label": label,
-                "leads": leads_per_experiment,
+                "company_size": cell.get("company_size"),
+                "seniority": cell.get("seniority"),
+                "industry": cell.get("industry"),
+                "technology": cell.get("technology"),
+                "angle": cell.get("angle"),
+                "factor": factor,
+                "label": _cell_label(cell),
+                "leads": test_sample_per_experiment,
             }
         )
 
-    if len(segment_list) > 1 and len(persona_list) > 1:
-        variety = f"{len(persona_list)} persona(s) across {len(segment_list)} segment(s)"
-    elif len(persona_list) > 1:
-        variety = f"{len(persona_list)} personas in {segment_list[0]}"
-    elif len(segment_list) > 1:
-        variety = f"{persona_list[0]} across {len(segment_list)} segments"
+    factors_tested = list(dict.fromkeys(c.get("factor") for c in selected if c.get("factor") and c.get("factor") != "baseline"))
+    if factors_tested:
+        variety = "isolating " + ", ".join(factors_tested) + " against a shared ICP baseline"
     else:
         variety = f"{persona_list[0]} in {segment_list[0]} (messaging-angle variants)"
 
@@ -314,15 +374,25 @@ def _build_experiment_plan(
         "window_months": max(1, int(experiment_window_months or 1)),
         "n_experiments": n_experiments,
         "leads_per_experiment": leads_per_experiment,
+        "test_sample_per_experiment": test_sample_per_experiment,
+        "total_test_leads": total_test_leads,
+        "scale_target_leads": scale_target_leads,
+        "winners_scaled": WINNERS_SCALED,
         "total_experiment_leads": total_experiment_leads,
         "window_send_capacity": sendable,
         "capacity_limited": capacity_limited,
+        "design": "ofat",
+        "baseline": {k: v for k, v in baseline.items() if v},
+        "factors_tested": factors_tested,
         "hypotheses": hypotheses,
         "rationale": (
-            f"Run {n_experiments} parallel experiments ({variety}), {leads_per_experiment} leads each, "
-            f"in the {max(1, int(experiment_window_months or 1))}-month learning window. Comparing how "
-            "these distinct cells respond reveals which persona/segment converts before you commit to "
-            "phased execution — a single experiment would give nothing to compare against."
+            f"Run {n_experiments} one-factor-at-a-time experiments ({variety}), "
+            f"{test_sample_per_experiment} test leads each, then scale only the single "
+            f"winning variant to {scale_target_leads} leads/month, in the "
+            f"{max(1, int(experiment_window_months or 1))}-month learning window. Each variant changes "
+            "exactly one Apollo facet from the baseline, so a lead-quality difference is attributable to "
+            "that single factor — revealing which lever (persona, region, company size, seniority, "
+            "industry, or technology) actually drives fit before you scale."
         ),
     }
 
@@ -521,6 +591,10 @@ def _build_gtm_plan(
     email_account_type: str = DEFAULT_EMAIL_ACCOUNT_TYPE,
     experiment_personas: Optional[list[str]] = None,
     experiment_segments: Optional[list[str]] = None,
+    experiment_company_sizes: Optional[list[str]] = None,
+    experiment_seniorities: Optional[list[str]] = None,
+    experiment_industries: Optional[list[str]] = None,
+    experiment_technologies: Optional[list[str]] = None,
 ) -> dict:
     """Deterministic GTM planning layer built on top of the feasibility check.
 
@@ -587,6 +661,10 @@ def _build_gtm_plan(
         window_capacity=email_capacity["experiment_window_capacity"],
         personas=experiment_personas,
         segments=experiment_segments,
+        company_sizes=experiment_company_sizes,
+        seniorities=experiment_seniorities,
+        industries=experiment_industries,
+        technologies=experiment_technologies,
     )
 
     # ---- Reconciliation: does this plan reach the target, and how does the
@@ -1122,6 +1200,43 @@ async def validate_roi(
         if isinstance(icp_inds, list):
             experiment_segments.extend(str(s) for s in icp_inds if s)
 
+    # Additional Apollo facets so the experiment loop is one-factor-at-a-time
+    # (persona / region / company size / seniority / industry / technology),
+    # letting month-1 attribute lead quality to a SINGLE changed factor.
+    def _as_list(*candidates) -> list[str]:
+        out: list[str] = []
+        for val in candidates:
+            if isinstance(val, list):
+                out.extend(str(x) for x in val if x and str(x).strip() and str(x) != "__other__")
+            elif isinstance(val, str) and val.strip() and val != "__other__":
+                out.append(val.strip())
+        return out
+
+    experiment_company_sizes = _as_list(
+        icp.get("employee_ranges") if isinstance(icp, dict) else None,
+        icp.get("company_sizes") if isinstance(icp, dict) else None,
+        icp.get("org_size") if isinstance(icp, dict) else None,
+        dd.get("org_size") if isinstance(dd, dict) else None,
+        dd.get("company_size") if isinstance(dd, dict) else None,
+    )
+    experiment_seniorities = _as_list(
+        icp.get("seniorities") if isinstance(icp, dict) else None,
+    )
+    if not experiment_seniorities and isinstance(strategy.personas_json, dict):
+        for k in ("champion", "economic_buyer", "blocker"):
+            p = strategy.personas_json.get(k)
+            if isinstance(p, dict):
+                experiment_seniorities.extend(_as_list(p.get("seniority"), p.get("seniorities")))
+    experiment_industries = _as_list(
+        icp.get("industries") if isinstance(icp, dict) else None,
+        dd.get("target_industries") if isinstance(dd, dict) else None,
+    )
+    experiment_technologies = _as_list(
+        icp.get("technologies") if isinstance(icp, dict) else None,
+        icp.get("tech_stack") if isinstance(icp, dict) else None,
+        dd.get("technologies") if isinstance(dd, dict) else None,
+    )
+
     result["gtm_plan"] = _build_gtm_plan(
         revenue_target=(_money(revenue_target_usd) if revenue_target_usd is not None else expected_revenue),
         average_deal_size=_money(average_deal_size_usd),
@@ -1147,6 +1262,10 @@ async def validate_roi(
         email_account_type=email_account_type,
         experiment_personas=experiment_personas,
         experiment_segments=experiment_segments,
+        experiment_company_sizes=experiment_company_sizes,
+        experiment_seniorities=experiment_seniorities,
+        experiment_industries=experiment_industries,
+        experiment_technologies=experiment_technologies,
     )
 
     result["_provenance"] = stamp(

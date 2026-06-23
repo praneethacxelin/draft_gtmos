@@ -125,7 +125,7 @@ function PipelineNode({ entry }: { entry: AuditEntry }) {
   const hasDetails = hasInputs || hasOutputs;
 
   let customLabel = undefined;
-  if (iconType === "api" && (entry.decision?.toLowerCase().includes("serpapi") || entry.summary?.toLowerCase().includes("serpapi"))) {
+  if (iconType === "api" && (String(entry.request_params?.decision ?? "").toLowerCase().includes("serpapi") || entry.summary?.toLowerCase().includes("serpapi"))) {
     customLabel = "Serp API";
   }
 

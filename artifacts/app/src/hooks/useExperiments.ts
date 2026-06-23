@@ -52,6 +52,16 @@ export interface ExperimentResultSummary {
 
 export type ExperimentStatus = "draft" | "running" | "done" | "failed";
 
+export interface LiveMetrics {
+  contacted: number;
+  opened: number;
+  replied: number;
+  interested: number;
+  positive: number;
+  reply_rate_pct: number;
+  positive_rate_pct: number;
+}
+
 export interface Experiment {
   id: string;
   batch_id: string;
@@ -67,6 +77,9 @@ export interface Experiment {
   relevancy?: ExperimentRelevancy | null;
   score?: number | null;
   error?: string | null;
+  cohort_size?: number | null;
+  live_launched_at?: string | null;
+  live_metrics?: LiveMetrics | null;
   created_at?: string;
   updated_at?: string;
 }
@@ -82,6 +95,18 @@ export interface BatchAnalysis {
 
 export type BatchStatus = "draft" | "seeded" | "running" | "analyzed";
 
+export type LiveStatus = "drafted" | "running" | "completed" | null;
+
+export interface LiveAnalysis {
+  winner_experiment_id?: string | null;
+  winner_name?: string | null;
+  winner_metric?: string;
+  ranking?: ({ experiment_id: string; name?: string } & LiveMetrics)[];
+  any_positive?: boolean;
+  recommendations?: string[];
+  evaluated_at?: string;
+}
+
 export interface ExperimentBatch {
   id: string;
   strategy_id: string;
@@ -93,8 +118,33 @@ export interface ExperimentBatch {
   best_experiment_id?: string | null;
   analysis?: BatchAnalysis | null;
   experiments?: Experiment[];
+  live_status?: LiveStatus;
+  window_months?: number | null;
+  window_started_at?: string | null;
+  window_ends_at?: string | null;
+  live_winner_experiment_id?: string | null;
+  live_analysis?: LiveAnalysis | null;
   created_at?: string;
   updated_at?: string;
+}
+
+export interface LiveMetricsResponse {
+  batch_id: string;
+  live_status?: LiveStatus;
+  window_months?: number | null;
+  window_started_at?: string | null;
+  window_ends_at?: string | null;
+  window_closed?: boolean;
+  live_winner_experiment_id?: string | null;
+  winner_metric?: string;
+  variants: ({
+    experiment_id: string;
+    name?: string;
+    idx?: number;
+    cohort_size?: number;
+    launched?: boolean;
+  } & LiveMetrics)[];
+  analysis?: LiveAnalysis | null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -195,6 +245,76 @@ export function useAnalyzeBatch(strategyId: string) {
         `/api/strategies/${strategyId}/experiments/${batchId}/analyze`,
         { method: "POST" },
       ),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: experimentKeys.list(strategyId) }),
+  });
+}
+
+/* ----------------------- Live (closed-loop) test ----------------------- */
+
+export function useLiveMetrics(strategyId: string, batchId?: string, enabled = true) {
+  return useQuery<LiveMetricsResponse>({
+    queryKey: ["experiments", strategyId, batchId, "live"],
+    queryFn: () =>
+      apiFetch(`/api/strategies/${strategyId}/experiments/${batchId}/live`),
+    enabled: !!strategyId && !!batchId && enabled,
+    refetchInterval: 30000,
+  });
+}
+
+export function usePromoteLive(strategyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      batchId,
+      draftPerVariant,
+    }: {
+      batchId: string;
+      draftPerVariant?: number;
+    }) =>
+      apiFetch(`/api/strategies/${strategyId}/experiments/${batchId}/promote-live`, {
+        method: "POST",
+        body: JSON.stringify(
+          draftPerVariant != null ? { draft_per_variant: draftPerVariant } : {},
+        ),
+      }),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: experimentKeys.list(strategyId) }),
+  });
+}
+
+export function useLaunchVariant(strategyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (experimentId: string) =>
+      apiFetch(
+        `/api/strategies/${strategyId}/experiments/experiments/${experimentId}/launch`,
+        { method: "POST" },
+      ),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: experimentKeys.list(strategyId) }),
+  });
+}
+
+export function useEvaluateLive(strategyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (batchId: string) =>
+      apiFetch(`/api/strategies/${strategyId}/experiments/${batchId}/evaluate-live`, {
+        method: "POST",
+      }),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: experimentKeys.list(strategyId) }),
+  });
+}
+
+export function useSimulateWindow(strategyId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (batchId: string) =>
+      apiFetch(`/api/strategies/${strategyId}/experiments/${batchId}/simulate-window`, {
+        method: "POST",
+      }),
     onSuccess: () =>
       qc.invalidateQueries({ queryKey: experimentKeys.list(strategyId) }),
   });

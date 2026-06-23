@@ -12,6 +12,8 @@ import {
 import { apiFetch } from "@/lib/api";
 import { useStrategies } from "@/hooks/useStrategies";
 import { useActiveStrategy } from "@/hooks/useActiveStrategy";
+import { useVerifyBulkEmails } from "@/hooks/useContacts";
+import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import {
   Mail,
@@ -20,6 +22,10 @@ import {
   Send,
   AlertTriangle,
   BarChart3,
+  ShieldCheck,
+  Loader2,
+  CheckCircle2,
+  XCircle,
 } from "lucide-react";
 
 interface OutreachAnalytics {
@@ -38,8 +44,10 @@ interface OutreachAnalytics {
 
 interface SequenceRow {
   sequence_id: string;
+  contact_id: string | null;
   contact_name: string;
   contact_email: string | null;
+  email_verified: string | null;
   strategy_name: string;
   status: string;
   instantly_campaign_id: string | null;
@@ -124,6 +132,33 @@ function RateBar({ value }: { value: number }) {
   );
 }
 
+function VerificationBadge({ status }: { status: string | null }) {
+  const map: Record<string, { label: string; cls: string }> = {
+    valid: { label: "Valid", cls: "bg-primary/15 text-primary" },
+    invalid: { label: "Invalid", cls: "bg-destructive/15 text-destructive" },
+    catch_all: { label: "Catch-all", cls: "bg-amber-500/15 text-amber-500" },
+    pending: { label: "Pending", cls: "bg-muted text-muted-foreground" },
+  };
+  if (!status) {
+    return (
+      <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-muted-foreground">
+        Not verified
+      </span>
+    );
+  }
+  const m = map[status] ?? {
+    label: status,
+    cls: "bg-muted text-muted-foreground",
+  };
+  return (
+    <span
+      className={`rounded px-1.5 py-0.5 text-[10px] uppercase tracking-widest ${m.cls}`}
+    >
+      {m.label}
+    </span>
+  );
+}
+
 export function Analytics() {
   const { data: strategies } = useStrategies();
   const { activeId } = useActiveStrategy();
@@ -132,6 +167,31 @@ export function Analytics() {
   const filterStratId =
     strategyFilter === "all" ? undefined : strategyFilter;
   const { data, isLoading } = useOutreachAnalytics(filterStratId);
+
+  const verifyBulk = useVerifyBulkEmails();
+  const [verifyResult, setVerifyResult] = useState<{
+    verified: number;
+    invalid: number;
+    catch_all: number;
+    total: number;
+  } | null>(null);
+
+  const bouncedRows = (data?.sequences ?? []).filter(
+    (r) => r.bounced > 0 && r.contact_id && r.contact_email,
+  );
+
+  const handleVerifyBounced = () => {
+    const ids = bouncedRows
+      .map((r) => r.contact_id)
+      .filter((id): id is string => !!id);
+    if (ids.length === 0) return;
+    verifyBulk.mutate(
+      { contact_ids: ids, provider: "hunter" },
+      {
+        onSuccess: (res) => setVerifyResult(res),
+      },
+    );
+  };
 
   return (
     <>
@@ -200,6 +260,94 @@ export function Analytics() {
               icon={<AlertTriangle className="h-4 w-4" />}
             />
           </div>
+
+          {bouncedRows.length > 0 && (
+            <div className="mt-6">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-semibold">Bounced emails</h2>
+                  <p className="text-xs text-muted-foreground">
+                    Re-verify these addresses with Hunter.io or Instantly before
+                    re-sending. Verification runs after delivery so credits are
+                    only spent on addresses that actually bounced.
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  onClick={handleVerifyBounced}
+                  disabled={verifyBulk.isPending}
+                  data-testid="button-verify-bounced"
+                >
+                  {verifyBulk.isPending ? (
+                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="mr-1.5 h-3.5 w-3.5" />
+                  )}
+                  Verify {bouncedRows.length} bounced
+                </Button>
+              </div>
+
+              {verifyBulk.isError && (
+                <div className="mb-3 flex items-center gap-1.5 rounded border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  <XCircle className="h-3.5 w-3.5" />
+                  {(verifyBulk.error as Error)?.message ??
+                    "Verification failed. Configure Hunter.io or Instantly in Settings."}
+                </div>
+              )}
+              {verifyResult && (
+                <div className="mb-3 flex flex-wrap items-center gap-3 rounded border border-card-border bg-card px-3 py-2 text-xs">
+                  <span className="flex items-center gap-1 text-primary">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    {verifyResult.verified} valid
+                  </span>
+                  <span className="flex items-center gap-1 text-destructive">
+                    <XCircle className="h-3.5 w-3.5" />
+                    {verifyResult.invalid} invalid
+                  </span>
+                  <span className="flex items-center gap-1 text-amber-500">
+                    <AlertTriangle className="h-3.5 w-3.5" />
+                    {verifyResult.catch_all} catch-all
+                  </span>
+                  <span className="text-muted-foreground">
+                    of {verifyResult.total} checked
+                  </span>
+                </div>
+              )}
+
+              <Card className="border-card-border bg-card overflow-hidden p-0">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted/40">
+                    <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
+                      <th className="px-4 py-2">Contact</th>
+                      <th className="px-4 py-2">Email</th>
+                      <th className="px-4 py-2">Strategy</th>
+                      <th className="px-4 py-2 text-right">Bounced</th>
+                      <th className="px-4 py-2">Verification</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {bouncedRows.map((row) => (
+                      <tr key={row.sequence_id} className="hover:bg-muted/20">
+                        <td className="px-4 py-2 font-medium">{row.contact_name}</td>
+                        <td className="px-4 py-2 font-mono text-xs text-muted-foreground">
+                          {row.contact_email ?? "—"}
+                        </td>
+                        <td className="px-4 py-2 text-xs text-muted-foreground">
+                          {row.strategy_name || "—"}
+                        </td>
+                        <td className="px-4 py-2 text-right font-mono tabular-nums">
+                          {row.bounced}
+                        </td>
+                        <td className="px-4 py-2">
+                          <VerificationBadge status={row.email_verified} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Card>
+            </div>
+          )}
 
           {(data?.by_strategy?.length ?? 0) > 1 && (
             <div className="mt-6">
