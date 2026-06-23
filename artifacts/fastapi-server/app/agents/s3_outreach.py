@@ -50,6 +50,33 @@ def _normalize_merge_tags(text: str | None) -> str | None:
     return text
 
 
+def _replace_merge_tags_with_values(text: str | None, contact: Contact, account: Account | None) -> str | None:
+    if not text:
+        return text
+    # Normalize merge tags first
+    text = _normalize_merge_tags(text)
+    
+    first_name = ""
+    last_name = ""
+    company_name = ""
+    
+    if contact:
+        name_parts = (contact.full_name or "").split()
+        first_name = name_parts[0] if name_parts else ""
+        last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
+    if account:
+        company_name = account.company_name or ""
+        
+    if first_name:
+        text = text.replace("{{firstName}}", first_name)
+    if last_name:
+        text = text.replace("{{lastName}}", last_name)
+    if company_name:
+        text = text.replace("{{companyName}}", company_name)
+        
+    return text
+
+
 async def generate_sequence(db: Session, contact_id: str) -> dict:
     contact = db.query(Contact).filter(Contact.id == contact_id).first()
     if not contact:
@@ -120,8 +147,9 @@ async def generate_sequence(db: Session, contact_id: str) -> dict:
             "DELIVERABILITY RULES (strictly follow all): "
             "1. Subjects must be under 60 characters, conversational, no punctuation spam. "
             "2. Email bodies must be 75-150 words — concise, specific, zero filler. "
-            "3. MUST include the merge tag {{{{first_name}}}} in the opening line and "
-            "{{{{company_name}}}} at least once — never use generic openers. "
+            f"3. MUST include the contact's actual first name (use '{contact_first}') in the opening line, "
+            f"and the actual company name (use '{company_name}') at least once — write their actual names directly, "
+            "DO NOT use placeholders or merge tags like {{first_name}} or {{company_name}}. "
             "4. MAX 1 hyperlink per email body — use full URLs only (no bit.ly or URL shorteners). "
             "5. NEVER use these words/phrases: free, guarantee, act now, click here, "
             "buy now, limited time, exclusive deal, urgent, winner, prize, 100%%, "
@@ -197,8 +225,8 @@ async def generate_sequence(db: Session, contact_id: str) -> dict:
             sequence_id=seq.id,
             step_number=s["step"],
             channel=s["channel"],
-            subject=_normalize_merge_tags(m.get("subject")),
-            body=_normalize_merge_tags(m.get("body")),
+            subject=_replace_merge_tags_with_values(m.get("subject"), contact, account),
+            body=_replace_merge_tags_with_values(m.get("body"), contact, account),
             wait_days=s["wait_days"],
             send_at=send_at,
         ))
@@ -230,8 +258,8 @@ async def generate_sequence(db: Session, contact_id: str) -> dict:
                     sequence_id=seq.id,
                     step_number=s["step"],
                     channel=s["channel"],
-                    subject=_normalize_merge_tags(m.get("subject")),
-                    body=_normalize_merge_tags(m.get("body")),
+                    subject=_replace_merge_tags_with_values(m.get("subject"), contact, account),
+                    body=_replace_merge_tags_with_values(m.get("body"), contact, account),
                     wait_days=s["wait_days"],
                     send_at=send_at,
                 ))
@@ -455,7 +483,7 @@ def launch_sequence(
         result = clients.instantly_create_campaign(
             instantly_key,
             f"GTM-{seq.id[:8]}",
-            [{"channel": s.channel, "subject": _normalize_merge_tags(s.subject), "body": _normalize_merge_tags(s.body), "wait_days": s.wait_days} for s in campaign_steps],
+            [{"channel": s.channel, "subject": _replace_merge_tags_with_values(s.subject, contact, account), "body": _replace_merge_tags_with_values(s.body, contact, account), "wait_days": s.wait_days} for s in campaign_steps],
             _strategy_id=seq.strategy_id,
             _strategy_name=strategy.product_name if strategy else None,
             schedule=schedule,

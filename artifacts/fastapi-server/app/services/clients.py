@@ -629,55 +629,134 @@ _INSTANTLY_TZ_ALIASES: dict[str, str] = {
     "Etc/GMT+5":             "America/New_York",   # rough mapping
 }
 
-# Minimal set of timezone strings confirmed to be accepted by Instantly v2.
-# Any tz NOT in this set is mapped to UTC to avoid 400 errors.
-_INSTANTLY_KNOWN_GOOD_TZ: set[str] = {
-    "UTC",
-    "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles",
-    "America/Phoenix", "America/Anchorage", "Pacific/Honolulu", "America/Halifax",
-    "America/Sao_Paulo", "America/Buenos_Aires", "America/Santiago", "America/Bogota",
-    "America/Lima", "America/Mexico_City", "America/Caracas", "America/Indianapolis",
-    "America/Toronto", "America/Vancouver", "America/Edmonton", "America/Winnipeg",
-    "Europe/London", "Europe/Paris", "Europe/Berlin", "Europe/Rome", "Europe/Madrid",
-    "Europe/Amsterdam", "Europe/Brussels", "Europe/Vienna", "Europe/Zurich",
-    "Europe/Stockholm", "Europe/Oslo", "Europe/Copenhagen", "Europe/Helsinki",
-    "Europe/Warsaw", "Europe/Prague", "Europe/Budapest", "Europe/Bucharest",
-    "Europe/Athens", "Europe/Istanbul", "Europe/Moscow", "Europe/Kiev",
-    "Africa/Nairobi", "Africa/Lagos", "Africa/Cairo", "Africa/Johannesburg",
-    "Asia/Kolkata", "Asia/Colombo", "Asia/Dhaka", "Asia/Kathmandu",
-    "Asia/Dubai", "Asia/Riyadh", "Asia/Kuwait", "Asia/Bahrain", "Asia/Qatar",
-    "Asia/Jerusalem", "Asia/Karachi", "Asia/Tashkent", "Asia/Almaty",
-    "Asia/Bangkok", "Asia/Jakarta", "Asia/Singapore", "Asia/Kuala_Lumpur",
-    "Asia/Hong_Kong", "Asia/Shanghai", "Asia/Taipei", "Asia/Manila",
-    "Asia/Seoul", "Asia/Tokyo", "Asia/Vladivostok",
-    "Australia/Sydney", "Australia/Melbourne", "Australia/Brisbane",
-    "Australia/Adelaide", "Australia/Perth", "Australia/Darwin",
-    "Pacific/Auckland", "Pacific/Fiji", "Pacific/Guam",
+# The 26 timezones accepted by Instantly v2 API whitelist
+_INSTANTLY_ALLOWED_TZ: set[str] = {
+    "Australia/Darwin", "America/Santiago", "Asia/Kathmandu", "America/Bogota",
+    "Asia/Dhaka", "Asia/Colombo", "America/Chicago", "Australia/Adelaide",
+    "Australia/Brisbane", "Asia/Dubai", "Asia/Jerusalem", "Asia/Kolkata",
+    "Pacific/Auckland", "America/Anchorage", "America/Caracas", "Australia/Melbourne",
+    "Europe/Istanbul", "Pacific/Fiji", "Europe/Helsinki", "Asia/Karachi",
+    "Asia/Taipei", "Europe/Bucharest", "Africa/Cairo", "Australia/Perth",
+    "America/Sao_Paulo", "Asia/Hong_Kong"
+}
+
+# Map common standard IANA timezones to one of the 26 allowed timezones (grouped by GMT offset / proximity)
+_INSTANTLY_ALLOWED_TZ_MAP: dict[str, str] = {
+    "UTC": "Europe/Bucharest",
+    "America/New_York": "America/Bogota",
+    "America/Chicago": "America/Chicago",
+    "America/Denver": "America/Chicago",
+    "America/Los_Angeles": "America/Anchorage",
+    "America/Phoenix": "America/Chicago",
+    "America/Anchorage": "America/Anchorage",
+    "Pacific/Honolulu": "America/Anchorage",
+    "America/Halifax": "America/Bogota",
+    "America/Sao_Paulo": "America/Sao_Paulo",
+    "America/Buenos_Aires": "America/Santiago",
+    "America/Santiago": "America/Santiago",
+    "America/Bogota": "America/Bogota",
+    "America/Lima": "America/Bogota",
+    "America/Mexico_City": "America/Chicago",
+    "America/Caracas": "America/Caracas",
+    "America/Indianapolis": "America/Chicago",
+    "America/Toronto": "America/Bogota",
+    "America/Vancouver": "America/Anchorage",
+    "America/Edmonton": "America/Chicago",
+    "America/Winnipeg": "America/Chicago",
+    "Europe/London": "Europe/Bucharest",
+    "Europe/Paris": "Europe/Bucharest",
+    "Europe/Berlin": "Europe/Bucharest",
+    "Europe/Rome": "Europe/Bucharest",
+    "Europe/Madrid": "Europe/Bucharest",
+    "Europe/Amsterdam": "Europe/Bucharest",
+    "Europe/Brussels": "Europe/Bucharest",
+    "Europe/Vienna": "Europe/Bucharest",
+    "Europe/Zurich": "Europe/Bucharest",
+    "Europe/Stockholm": "Europe/Bucharest",
+    "Europe/Oslo": "Europe/Bucharest",
+    "Europe/Copenhagen": "Europe/Bucharest",
+    "Europe/Helsinki": "Europe/Helsinki",
+    "Europe/Warsaw": "Europe/Bucharest",
+    "Europe/Prague": "Europe/Bucharest",
+    "Europe/Budapest": "Europe/Bucharest",
+    "Europe/Bucharest": "Europe/Bucharest",
+    "Europe/Athens": "Europe/Bucharest",
+    "Europe/Istanbul": "Europe/Istanbul",
+    "Europe/Moscow": "Europe/Istanbul",
+    "Europe/Kiev": "Europe/Bucharest",
+    "Africa/Nairobi": "Europe/Istanbul",
+    "Africa/Lagos": "Africa/Cairo",
+    "Africa/Cairo": "Africa/Cairo",
+    "Africa/Johannesburg": "Africa/Cairo",
+    "Asia/Kolkata": "Asia/Kolkata",
+    "Asia/Colombo": "Asia/Colombo",
+    "Asia/Dhaka": "Asia/Dhaka",
+    "Asia/Kathmandu": "Asia/Kathmandu",
+    "Asia/Dubai": "Asia/Dubai",
+    "Asia/Riyadh": "Europe/Istanbul",
+    "Asia/Kuwait": "Europe/Istanbul",
+    "Asia/Bahrain": "Europe/Istanbul",
+    "Asia/Qatar": "Europe/Istanbul",
+    "Asia/Jerusalem": "Asia/Jerusalem",
+    "Asia/Karachi": "Asia/Karachi",
+    "Asia/Tashkent": "Asia/Karachi",
+    "Asia/Almaty": "Asia/Dhaka",
+    "Asia/Bangkok": "Asia/Dhaka",
+    "Asia/Jakarta": "Asia/Dhaka",
+    "Asia/Singapore": "Asia/Hong_Kong",
+    "Asia/Kuala_Lumpur": "Asia/Hong_Kong",
+    "Asia/Hong_Kong": "Asia/Hong_Kong",
+    "Asia/Shanghai": "Asia/Hong_Kong",
+    "Asia/Taipei": "Asia/Taipei",
+    "Asia/Manila": "Asia/Hong_Kong",
+    "Asia/Seoul": "Asia/Hong_Kong",
+    "Asia/Tokyo": "Asia/Hong_Kong",
+    "Asia/Vladivostok": "Australia/Melbourne",
+    "Australia/Sydney": "Australia/Melbourne",
+    "Australia/Melbourne": "Australia/Melbourne",
+    "Australia/Brisbane": "Australia/Brisbane",
+    "Australia/Adelaide": "Australia/Adelaide",
+    "Australia/Perth": "Australia/Perth",
+    "Australia/Darwin": "Australia/Darwin",
+    "Pacific/Auckland": "Pacific/Auckland",
+    "Pacific/Fiji": "Pacific/Fiji",
+    "Pacific/Guam": "Australia/Brisbane",
 }
 
 
 def _normalize_tz(tz: str | None) -> str:
-    """Return an Instantly-accepted IANA timezone string.
+    """Return an Instantly-accepted IANA timezone string from the whitelisted set.
 
     1. Map known deprecated/alias names to their canonical equivalents.
-    2. If the result is in the confirmed-good set, return it.
-    3. Otherwise fall back to 'UTC' so the campaign never gets a 400 error.
+    2. If the result is in the whitelisted set, return it.
+    3. If the result is in the allowed map, return the mapped zone.
+    4. Try a case-insensitive match against the whitelisted set.
+    5. Fall back to 'Asia/Kolkata' to prevent any 400 Bad Request campaign errors.
     """
     if not tz:
-        return "UTC"
+        return "Asia/Kolkata"
     tz = tz.strip()
     # Apply alias map first
     tz = _INSTANTLY_TZ_ALIASES.get(tz, tz)
-    # Accept if known-good
-    if tz in _INSTANTLY_KNOWN_GOOD_TZ:
+    
+    # Check whitelisted set directly
+    if tz in _INSTANTLY_ALLOWED_TZ:
         return tz
-    # Try a case-insensitive lookup as a last resort
+        
+    # Check allowed map
+    mapped = _INSTANTLY_ALLOWED_TZ_MAP.get(tz)
+    if mapped:
+        return mapped
+        
+    # Case-insensitive lookup as fallback
     tz_lower = tz.lower()
-    for good in _INSTANTLY_KNOWN_GOOD_TZ:
+    for good in _INSTANTLY_ALLOWED_TZ:
         if good.lower() == tz_lower:
             return good
-    log.warning("Unknown Instantly timezone '%s', falling back to UTC", tz)
-    return "UTC"
+            
+    log.warning("Unknown/unsupported Instantly timezone '%s', falling back to Asia/Kolkata", tz)
+    return "Asia/Kolkata"
+
 
 
 def _instantly_headers(api_key: str) -> dict:
@@ -721,11 +800,11 @@ def instantly_create_campaign(
             })
         instantly_sequences.append({"steps": steps})
 
-    # Default schedule: 24/7 UTC
+    # Default schedule: 24/7 (using Asia/Kolkata to avoid 400 error as UTC is not whitelisted)
     camp_schedule = {
         "name": "Default 24/7",
         "timing": {"from": "00:00", "to": "23:59"},
-        "timezone": "UTC",
+        "timezone": "Asia/Kolkata",
         "days": {"0": True, "1": True, "2": True, "3": True, "4": True, "5": True, "6": True}
     }
 
@@ -775,7 +854,9 @@ def instantly_create_campaign(
             campaign_id = result.get("id") or result.get("campaign_id")
             if campaign_id:
                 patch_url = f"https://api.instantly.ai/api/v2/campaigns/{campaign_id}"
-                patch_body = {}
+                patch_body = {
+                    "stop_on_reply": True
+                }
                 if schedule:
                     patch_body["campaign_schedule"] = {
                         "schedules": [camp_schedule]

@@ -786,11 +786,11 @@ export function Prospects() {
                               <Mail className="h-3 w-3 text-blue-400 shrink-0" />
                               <span className="truncate max-w-[140px]" title={c.email}>{c.email}</span>
                               {c.email_verified === "valid" ? (
-                                <CheckCircle2 className="h-3.5 w-3.5 text-green-500 shrink-0 ml-1" title="Verified (Valid)" />
+                                <CheckCircle2 className="h-3.5 w-3.5 text-green-500 shrink-0 ml-1" aria-label="Verified (Valid)" />
                               ) : c.email_verified === "invalid" ? (
-                                <XCircle className="h-3.5 w-3.5 text-red-500 shrink-0 ml-1" title="Invalid" />
+                                <XCircle className="h-3.5 w-3.5 text-red-500 shrink-0 ml-1" aria-label="Invalid" />
                               ) : c.email_verified === "catch_all" ? (
-                                <HelpCircle className="h-3.5 w-3.5 text-yellow-500 shrink-0 ml-1" title="Catch-all" />
+                                <HelpCircle className="h-3.5 w-3.5 text-yellow-500 shrink-0 ml-1" aria-label="Catch-all" />
                               ) : (
                                 <button 
                                   onClick={() => verifyEmail.mutate(c.id, {

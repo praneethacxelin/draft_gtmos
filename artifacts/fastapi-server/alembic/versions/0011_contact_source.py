@@ -4,15 +4,15 @@ Tracks where a contact entered the pipeline: ``discovery`` (normal lead
 search), ``experiment`` (seeded from a winning experiment batch) or
 ``campaign``. ``source_ref`` holds the originating batch/experiment id or a
 phase label. Both columns are additive and nullable so existing rows keep
-working; ``source`` defaults to ``discovery``.
+working; ``source`` defaults to ``discovery``.\
 """
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy import inspect
 
 
-revision = "0010_contact_source"
-down_revision = "0009_experiments"
+revision = "0011_contact_source"
+down_revision = "0010_ensure_columns"
 branch_labels = None
 depends_on = None
 

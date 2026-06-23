@@ -113,6 +113,7 @@ export interface TamSamSom extends WithProvenance {
   methodology?: string;
   confidence?: "low" | "medium" | "high";
   uses_live_data?: boolean;
+  sources?: Array<{ title: string; link: string; snippet: string; verified: boolean }>;
 }
 
 export type RoiVerdict =
