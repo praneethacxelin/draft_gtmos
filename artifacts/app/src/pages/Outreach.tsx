@@ -11,6 +11,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { PageHeader } from "@/components/PageHeader";
 import { TierBadge, StatusPill } from "@/components/Pills";
 import { useActiveStrategy } from "@/hooks/useActiveStrategy";
@@ -21,8 +28,15 @@ import {
   useDeliverabilityCheck,
   useLaunchSequence,
   useUpdateSequenceStep,
+  useSendingAccounts,
+  useConnectSendingAccount,
+  useToggleWarmup,
+  usePauseCampaign,
+  useResumeCampaign,
+  useDisconnectSendingAccount,
+  useContactReplies,
 } from "@/hooks/useSequences";
-import { Mail, Linkedin, Phone, ShieldCheck, Send, Wand2, Pencil, X, FlaskConical, Check, Megaphone, Search } from "lucide-react";
+import { Mail, Linkedin, Phone, ShieldCheck, Send, Wand2, Pencil, X, FlaskConical, Check, Megaphone, Search, Flame, Plus, Play, Pause, Heart, Loader2, Activity, RefreshCw, Trash2 } from "lucide-react";
 import { fmtDate } from "@/lib/format";
 import { ReasoningPanel, SourceBadge } from "@/components/ReasoningPanel";
 import { RetriggerBar, type RetriggerAction } from "@/components/RetriggerBar";
@@ -44,18 +58,21 @@ interface StepDraft {
 
 export function Outreach() {
   const { active, activeId } = useActiveStrategy();
-  const { data: contacts } = useContacts(activeId ?? undefined);
+  const { data: contacts, isFetching: isContactsFetching, refetch: refetchContacts } = useContacts(activeId ?? undefined);
   const [selected, setSelected] = useState<string | null>(null);
+  const [stepCount, setStepCount] = useState<number>(4);
 
   useEffect(() => {
     if (!selected && contacts && contacts[0]) setSelected(contacts[0].id);
   }, [contacts, selected]);
 
-  const { data: sequence } = useSequenceByContact(selected ?? undefined);
+  const { data: sequence, isFetching: isSequenceFetching, refetch: refetchSequence } = useSequenceByContact(selected ?? undefined);
   const generate = useGenerateSequence();
   const check = useDeliverabilityCheck();
   const launch = useLaunchSequence();
   const patchStep = useUpdateSequenceStep();
+  const pauseCampaign = usePauseCampaign();
+  const resumeCampaign = useResumeCampaign();
 
   const contact = contacts?.find((c) => c.id === selected);
 
@@ -156,7 +173,7 @@ export function Outreach() {
     {
       label: generate.isPending ? "Generating…" : "Regenerate sequence",
       icon: <Wand2 className="h-3 w-3" />,
-      onClick: () => selected && generate.mutate(selected),
+      onClick: () => selected && generate.mutate({ contactId: selected, stepCount }),
       isPending: generate.isPending,
     },
   ];
@@ -362,66 +379,90 @@ export function Outreach() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
-        <Card className="lg:col-span-4 border-card-border bg-card p-3">
-          <div className="mb-2 px-2 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
-            Contacts
-          </div>
-          <div className="space-y-3">
-            {SOURCE_ORDER.map((src) => {
-              const group = (contacts ?? []).filter(
-                (c) => (c.source ?? "discovery") === src,
-              );
-              if (group.length === 0) return null;
-              const meta = SOURCE_META[src];
-              const Icon = meta.icon;
-              return (
-                <div key={src} className="space-y-1">
-                  <div className="flex items-center gap-1.5 px-2 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
-                    <Icon className="h-3 w-3" />
-                    {meta.label}
-                    <span className="text-muted-foreground/70">({group.length})</span>
+        <div className="lg:col-span-3 space-y-4">
+          <Card className="border-card-border bg-card p-3">
+            <div className="mb-2 px-2 flex items-center justify-between text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+              <span>Contacts</span>
+              <button 
+                onClick={() => refetchContacts()} 
+                className="text-muted-foreground hover:text-foreground transition-colors p-0.5 rounded"
+                title="Refresh contacts"
+                disabled={isContactsFetching}
+              >
+                <RefreshCw className={`h-3 w-3 ${isContactsFetching ? "animate-spin" : ""}`} />
+              </button>
+            </div>
+            <div className="space-y-3">
+              {SOURCE_ORDER.map((src) => {
+                const group = (contacts ?? []).filter(
+                  (c) => (c.source ?? "discovery") === src,
+                );
+                if (group.length === 0) return null;
+                const meta = SOURCE_META[src];
+                const Icon = meta.icon;
+                return (
+                  <div key={src} className="space-y-1">
+                    <div className="flex items-center gap-1.5 px-2 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+                      <Icon className="h-3 w-3" />
+                      {meta.label}
+                      <span className="text-muted-foreground/70">({group.length})</span>
+                    </div>
+                    {group.map((c) => (
+                      <button
+                        key={c.id}
+                        onClick={() => {
+                          setSelected(c.id);
+                          setEditingStepId(null);
+                          setStepDirty(false);
+                        }}
+                        className={`flex w-full items-center justify-between rounded px-3 py-2 text-left text-sm hover-elevate ${
+                          selected === c.id ? "bg-sidebar-accent" : ""
+                        }`}
+                        data-testid={`contact-row-${c.id}`}
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-medium">
+                            {c.full_name}
+                          </div>
+                          <div className="truncate text-[11px] text-muted-foreground">
+                            {c.title} · {c.company_name}
+                          </div>
+                        </div>
+                        <TierBadge tier={c.tier} />
+                      </button>
+                    ))}
                   </div>
-                  {group.map((c) => (
-                    <button
-                      key={c.id}
-                      onClick={() => {
-                        setSelected(c.id);
-                        setEditingStepId(null);
-                        setStepDirty(false);
-                      }}
-                      className={`flex w-full items-center justify-between rounded px-3 py-2 text-left text-sm hover-elevate ${
-                        selected === c.id ? "bg-sidebar-accent" : ""
-                      }`}
-                      data-testid={`contact-row-${c.id}`}
-                    >
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-medium">
-                          {c.full_name}
-                        </div>
-                        <div className="truncate text-[11px] text-muted-foreground">
-                          {c.title} · {c.company_name}
-                        </div>
-                      </div>
-                      <TierBadge tier={c.tier} />
-                    </button>
-                  ))}
+                );
+              })}
+              {(!contacts || contacts.length === 0) && (
+                <div className="px-3 py-6 text-center text-xs text-muted-foreground">
+                  No contacts yet. Run lead discovery first.
                 </div>
-              );
-            })}
-            {(!contacts || contacts.length === 0) && (
-              <div className="px-3 py-6 text-center text-xs text-muted-foreground">
-                No contacts yet. Run lead discovery first.
-              </div>
-            )}
-          </div>
-        </Card>
+              )}
+            </div>
+          </Card>
 
-        <div className="lg:col-span-8 space-y-4">
+          <SendingAccounts />
+        </div>
+
+        <div className="lg:col-span-5 space-y-4">
           <Card className="border-card-border bg-card p-5">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <div className="text-base font-semibold">
-                  {contact?.full_name ?? "Select a contact"}
+                <div className="flex items-center gap-2">
+                  <span className="text-base font-semibold">
+                    {contact?.full_name ?? "Select a contact"}
+                  </span>
+                  {contact && (
+                    <button 
+                      onClick={() => refetchSequence()} 
+                      className="text-muted-foreground hover:text-foreground transition-colors p-0.5 rounded"
+                      title="Refresh sequence"
+                      disabled={isSequenceFetching}
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${isSequenceFetching ? "animate-spin" : ""}`} />
+                    </button>
+                  )}
                 </div>
                 {contact && (
                   <div className="mt-0.5 text-xs text-muted-foreground">
@@ -499,12 +540,21 @@ export function Outreach() {
                   </div>
                 )}
               </div>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-2 items-center">
+                <Select value={String(stepCount)} onValueChange={(v) => setStepCount(Number(v))}>
+                  <SelectTrigger className="h-9 w-[140px] text-xs">
+                    <SelectValue placeholder="Sequence Length" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="4">4 Steps (Default)</SelectItem>
+                    <SelectItem value="5">5 Steps (Extra Li)</SelectItem>
+                  </SelectContent>
+                </Select>
                 <Button
                   size="sm"
                   variant="secondary"
                   disabled={!selected || generate.isPending}
-                  onClick={() => selected && generate.mutate(selected)}
+                  onClick={() => selected && generate.mutate({ contactId: selected, stepCount })}
                   data-testid="button-generate-sequence"
                 >
                   <Wand2 className="mr-2 h-4 w-4" />
@@ -770,7 +820,628 @@ export function Outreach() {
             </div>
           )}
         </div>
+
+        <div className="lg:col-span-4 space-y-4">
+          <CampaignsListCard 
+            sequence={sequence} 
+            contactId={selected ?? undefined}
+            onPause={(id) => pauseCampaign.mutate(id)}
+            onResume={(id) => resumeCampaign.mutate(id)}
+            isPausing={pauseCampaign.isPending}
+            isResuming={resumeCampaign.isPending}
+            isFetching={isSequenceFetching}
+            onRefresh={() => refetchSequence()}
+          />
+        </div>
       </div>
     </>
   );
 }
+
+function SendingAccounts() {
+  const { data: accounts, isLoading, isFetching, refetch } = useSendingAccounts();
+  const connect = useConnectSendingAccount();
+  const toggleWarmup = useToggleWarmup();
+  const disconnect = useDisconnectSendingAccount();
+
+  const [showConnectModal, setShowConnectModal] = useState(false);
+  const [email, setEmail] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [providerCode, setProviderCode] = useState<number>(2); // Gmail default
+  const [appPassword, setAppPassword] = useState("");
+  
+  // Custom IMAP/SMTP details
+  const [imapHost, setImapHost] = useState("");
+  const [imapPort, setImapPort] = useState<number>(993);
+  const [smtpHost, setSmtpHost] = useState("");
+  const [smtpPort, setSmtpPort] = useState<number>(465);
+
+  const [connectError, setConnectError] = useState("");
+
+  const handleConnect = async (e: any) => {
+    e.preventDefault();
+    setConnectError("");
+    try {
+      await connect.mutateAsync({
+        email,
+        first_name: firstName,
+        last_name: lastName,
+        provider_code: providerCode,
+        app_password: appPassword,
+        ...(providerCode === 1 ? {
+          imap_host: imapHost,
+          imap_port: Number(imapPort),
+          smtp_host: smtpHost,
+          smtp_port: Number(smtpPort)
+        } : {})
+      });
+      // Reset form
+      setEmail("");
+      setFirstName("");
+      setLastName("");
+      setAppPassword("");
+      setImapHost("");
+      setImapPort(993);
+      setSmtpHost("");
+      setSmtpPort(465);
+      setShowConnectModal(false);
+      import("sonner").then(({ toast }) => {
+        toast.success("Account connected successfully!");
+      });
+    } catch (err: any) {
+      setConnectError(err.message || "Failed to connect account. Verify credentials.");
+    }
+  };
+
+  const handleToggleWarmup = async (accEmail: string, currentStatus: number) => {
+    const nextEnable = currentStatus === 0;
+    try {
+      await toggleWarmup.mutateAsync({ email: accEmail, enable: nextEnable });
+      import("sonner").then(({ toast }) => {
+        toast.success(`Warmup ${nextEnable ? "started" : "paused"} for ${accEmail}`);
+      });
+    } catch (err: any) {
+      import("sonner").then(({ toast }) => {
+        toast.error(err.message || "Failed to update warmup status.");
+      });
+    }
+  };
+
+  return (
+    <>
+      <Card className="border-card-border bg-card p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Mail className="h-4 w-4 text-primary" />
+            <span className="text-sm font-semibold">Sending Accounts</span>
+            <button 
+              onClick={() => refetch()} 
+              className="text-muted-foreground hover:text-foreground transition-colors p-0.5 rounded"
+              title="Refresh sending accounts"
+              disabled={isFetching}
+            >
+              <RefreshCw className={`h-3 w-3 ${isFetching ? "animate-spin" : ""}`} />
+            </button>
+          </div>
+          <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => setShowConnectModal(true)}>
+            <Plus className="mr-1 h-3.5 w-3.5" />
+            Connect
+          </Button>
+        </div>
+
+        {isLoading ? (
+          <div className="flex items-center justify-center py-6 text-xs text-muted-foreground">
+            <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+            Loading sending accounts...
+          </div>
+        ) : !accounts || accounts.length === 0 ? (
+          <div className="rounded border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
+            No sending accounts connected. Click Connect to link an email inbox via App Password.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {accounts.map((acc) => {
+              const warmupActive = acc.warmup_status === 1;
+              const health = acc.health_score ?? 100;
+              const isGmail = acc.provider_code === 2;
+              const isOutlook = acc.provider_code === 3;
+              
+              let providerLabel = "Custom";
+              if (isGmail) providerLabel = "Gmail";
+              if (isOutlook) providerLabel = "Outlook";
+
+              return (
+                <div key={acc.email} className="rounded border border-border bg-background/30 p-3 space-y-2.5 text-foreground">
+                  <div className="flex items-start justify-between gap-1">
+                    <div className="min-w-0 flex-1">
+                      <div className="font-semibold text-xs truncate" title={acc.email}>
+                        {acc.email}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground truncate">
+                        {acc.first_name} {acc.last_name} · <span className="underline">{providerLabel}</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <Button
+                        size="sm"
+                        variant={warmupActive ? "default" : "outline"}
+                        className={`h-7 px-2.5 ${warmupActive ? "bg-amber-500 hover:bg-amber-600 text-white border-transparent" : ""}`}
+                        onClick={() => handleToggleWarmup(acc.email, acc.warmup_status)}
+                        disabled={toggleWarmup.isPending}
+                      >
+                        {warmupActive ? (
+                          <>
+                            <Flame className="mr-1 h-3.5 w-3.5 animate-pulse text-red-100" />
+                            Warmup Active
+                          </>
+                        ) : (
+                          <>
+                            <Play className="mr-1 h-3.5 w-3.5 text-muted-foreground" />
+                            Start Warmup
+                          </>
+                        )}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                        onClick={async () => {
+                          if (confirm(`Are you sure you want to disconnect sending account ${acc.email}?`)) {
+                            try {
+                              await disconnect.mutateAsync(acc.email);
+                              import("sonner").then(({ toast }) => {
+                                toast.success("Account disconnected successfully!");
+                              });
+                            } catch (err: any) {
+                              import("sonner").then(({ toast }) => {
+                                toast.error(err.message || "Failed to disconnect account.");
+                              });
+                            }
+                          }
+                        }}
+                        disabled={disconnect.isPending}
+                        title="Disconnect account"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-4 gap-1 text-[11px] pt-1.5 border-t border-border/55 text-center">
+                    <div>
+                      <div className="text-muted-foreground text-[9px] uppercase font-semibold">Health</div>
+                      <div className={`font-semibold flex items-center justify-center gap-0.5 mt-0.5 ${health >= 90 ? "text-emerald-500" : health >= 70 ? "text-amber-500" : "text-destructive"}`}>
+                        <Heart className="h-3 w-3 fill-current text-rose-500" />
+                        {health}%
+                      </div>
+                    </div>
+                    <div className="border-l border-border/50">
+                      <div className="text-muted-foreground text-[9px] uppercase font-semibold">Sent</div>
+                      <div className="font-mono mt-0.5">{acc.sent_count}</div>
+                    </div>
+                    <div className="border-l border-border/50">
+                      <div className="text-muted-foreground text-[9px] uppercase font-semibold">Recv</div>
+                      <div className="font-mono mt-0.5">{acc.received_count}</div>
+                    </div>
+                    <div className="border-l border-border/50">
+                      <div className="text-muted-foreground text-[9px] uppercase font-semibold">Inbox</div>
+                      <div className="font-mono mt-0.5">{acc.landed_inbox}</div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+
+      {/* Connect Account Modal */}
+      <Dialog open={showConnectModal} onOpenChange={setShowConnectModal}>
+        <DialogContent className="sm:max-w-md bg-card border-card-border text-foreground">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-sm font-semibold">
+              <Mail className="h-4 w-4 text-primary" />
+              Connect Sending Account
+            </DialogTitle>
+          </DialogHeader>
+          
+          <form onSubmit={handleConnect} className="space-y-3.5 py-1">
+            {connectError && (
+              <div className="rounded border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                {connectError}
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label className="text-xs">First Name</Label>
+                <Input
+                  required
+                  placeholder="John"
+                  value={firstName}
+                  onChange={(e) => setFirstName(e.target.value)}
+                  className="h-8 text-xs bg-background"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Last Name</Label>
+                <Input
+                  required
+                  placeholder="Doe"
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                  className="h-8 text-xs bg-background"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs">Email Address</Label>
+              <Input
+                required
+                type="email"
+                placeholder="john.doe@yourcompany.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="h-8 text-xs bg-background"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs">Email Provider</Label>
+              <Select
+                value={String(providerCode)}
+                onValueChange={(v) => {
+                  const val = Number(v);
+                  setProviderCode(val);
+                  if (val === 2) {
+                    setImapHost("imap.gmail.com");
+                    setImapPort(993);
+                    setSmtpHost("smtp.gmail.com");
+                    setSmtpPort(465);
+                  } else if (val === 3) {
+                    setImapHost("outlook.office365.com");
+                    setImapPort(993);
+                    setSmtpHost("smtp.office365.com");
+                    setSmtpPort(587);
+                  } else {
+                    setImapHost("");
+                    setImapPort(993);
+                    setSmtpHost("");
+                    setSmtpPort(465);
+                  }
+                }}
+              >
+                <SelectTrigger className="h-8 text-xs bg-background">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="2">Google Workspace / Gmail (App Password)</SelectItem>
+                  <SelectItem value="3">Microsoft Outlook (App Password)</SelectItem>
+                  <SelectItem value="1">Custom IMAP/SMTP</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs">
+                {providerCode === 2 || providerCode === 3 ? "App Password" : "SMTP/IMAP Password"}
+              </Label>
+              <Input
+                required
+                type="password"
+                placeholder="••••••••••••••••"
+                value={appPassword}
+                onChange={(e) => setAppPassword(e.target.value)}
+                className="h-8 text-xs bg-background"
+              />
+              {(providerCode === 2 || providerCode === 3) && (
+                <p className="text-[10px] text-muted-foreground leading-normal">
+                  Generate a 16-character App Password in your account security settings. Do not use your primary sign-in password.
+                </p>
+              )}
+            </div>
+
+            {providerCode === 1 && (
+              <div className="rounded border border-border bg-background/25 p-3 space-y-3">
+                <div className="text-[11px] font-semibold text-muted-foreground border-b border-border/60 pb-1">
+                  IMAP/SMTP Server Settings
+                </div>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label className="text-[10px]">IMAP Host</Label>
+                    <Input
+                      required
+                      placeholder="imap.domain.com"
+                      value={imapHost}
+                      onChange={(e) => setImapHost(e.target.value)}
+                      className="h-7 text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[10px]">IMAP Port</Label>
+                    <Input
+                      required
+                      type="number"
+                      value={imapPort}
+                      onChange={(e) => setImapPort(Number(e.target.value))}
+                      className="h-7 text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[10px]">SMTP Host</Label>
+                    <Input
+                      required
+                      placeholder="smtp.domain.com"
+                      value={smtpHost}
+                      onChange={(e) => setSmtpHost(e.target.value)}
+                      className="h-7 text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-[10px]">SMTP Port</Label>
+                    <Input
+                      required
+                      type="number"
+                      value={smtpPort}
+                      onChange={(e) => setSmtpPort(Number(e.target.value))}
+                      className="h-7 text-xs"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <DialogFooter className="pt-2">
+              <Button type="button" variant="ghost" className="h-8 text-xs" onClick={() => setShowConnectModal(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={connect.isPending} className="h-8 text-xs">
+                {connect.isPending ? (
+                  <>
+                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    Connecting...
+                  </>
+                ) : (
+                  "Connect Account"
+                )}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+function CampaignsListCard({
+  sequence,
+  contactId,
+  onPause,
+  onResume,
+  isPausing,
+  isResuming,
+  isFetching,
+  onRefresh
+}: {
+  sequence?: any;
+  contactId?: string;
+  onPause: (campId: string) => void;
+  onResume: (campId: string) => void;
+  isPausing: boolean;
+  isResuming: boolean;
+  isFetching: boolean;
+  onRefresh: () => void;
+}) {
+  const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
+
+  const campaigns = sequence?.campaigns || [];
+  const { data: replies, isFetching: isRepliesFetching, refetch: refetchReplies } = useContactReplies(contactId);
+
+  // Automatically select the first campaign if none is selected
+  useEffect(() => {
+    if (campaigns.length > 0 && !selectedCampaignId) {
+      setSelectedCampaignId(campaigns[0].instantly_campaign_id);
+    }
+  }, [campaigns, selectedCampaignId]);
+
+  const selectedCampaign = campaigns.find(
+    (c: any) => c.instantly_campaign_id === selectedCampaignId
+  );
+
+  const loadingData = isFetching || isRepliesFetching;
+
+  return (
+    <Card className="border-card-border bg-card p-4 flex flex-col h-[550px]">
+      <div className="mb-3 flex items-center justify-between border-b border-border/60 pb-2">
+        <div className="flex items-center gap-2">
+          <Activity className="h-4 w-4 text-primary animate-pulse" />
+          <span className="text-sm font-semibold">Campaigns Board</span>
+          <button 
+            onClick={() => {
+              onRefresh();
+              refetchReplies();
+            }} 
+            className="text-muted-foreground hover:text-foreground transition-colors p-0.5 rounded"
+            title="Refresh campaigns and replies"
+            disabled={loadingData}
+          >
+            <RefreshCw className={`h-3 w-3 ${loadingData ? "animate-spin" : ""}`} />
+          </button>
+        </div>
+        {campaigns.length > 0 && (
+          <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary">
+            {campaigns.length} campaign(s)
+          </span>
+        )}
+      </div>
+
+      <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+        {campaigns.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-center p-6 text-xs text-muted-foreground gap-2">
+            <Activity className="h-8 w-8 text-muted-foreground/40" />
+            <span>No campaigns created yet. Click Launch to create one.</span>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {campaigns.map((camp: any) => {
+              const stats = camp.analytics || {
+                sent: 0,
+                open_rate: 0,
+                click_rate: 0,
+                reply_rate: 0,
+                opportunities: 0,
+                email_list: []
+              };
+              const isPaused = camp.status === "paused";
+              const isComplete = camp.status === "complete";
+              const isSelected = selectedCampaignId === camp.instantly_campaign_id;
+
+              return (
+                <div
+                  key={camp.instantly_campaign_id}
+                  onClick={() => setSelectedCampaignId(camp.instantly_campaign_id)}
+                  className={`cursor-pointer rounded-lg border p-3 space-y-2.5 transition-all ${
+                    isSelected
+                      ? "border-primary bg-primary/5 text-foreground"
+                      : "border-border bg-background/30 hover:bg-background/55 text-foreground"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-semibold text-xs truncate">
+                        Campaign: {camp.instantly_campaign_id.slice(0, 8)}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground">
+                        {camp.synced_at ? `Synced: ${fmtDate(camp.synced_at)}` : "Not synced"}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                      {!isComplete && (
+                        isPaused ? (
+                          <Button
+                            size="sm"
+                            className="h-6 px-2 text-[10px] bg-primary text-primary-foreground hover:bg-primary/95"
+                            onClick={() => onResume(camp.instantly_campaign_id)}
+                            disabled={isResuming}
+                          >
+                            <Play className="mr-1 h-3 w-3" />
+                            Start
+                          </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-6 px-2 text-[10px] border-amber-500/40 text-amber-500 hover:bg-amber-500/10"
+                            onClick={() => onPause(camp.instantly_campaign_id)}
+                            disabled={isPausing}
+                          >
+                            <Pause className="mr-1 h-3 w-3" />
+                            Stop
+                          </Button>
+                        )
+                      )}
+                      <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-medium ${
+                        isPaused 
+                          ? "bg-amber-500/15 text-amber-500" 
+                          : isComplete 
+                            ? "bg-emerald-500/15 text-emerald-500" 
+                            : "bg-primary/15 text-primary"
+                      }`}>
+                        {camp.status}
+                      </span>
+                    </div>
+                  </div>
+
+                  {isSelected && (
+                    <div className="space-y-3 pt-2 border-t border-border/50">
+                      <div className="grid grid-cols-4 gap-1 text-[11px] text-center">
+                        <div>
+                          <div className="text-muted-foreground text-[9px] uppercase font-semibold">Sent</div>
+                          <div className="font-mono mt-0.5 font-bold">{stats.sent}</div>
+                        </div>
+                        <div className="border-l border-border/50">
+                          <div className="text-muted-foreground text-[9px] uppercase font-semibold">Open %</div>
+                          <div className="font-mono mt-0.5 font-bold text-blue-400">{stats.open_rate}%</div>
+                        </div>
+                        <div className="border-l border-border/50">
+                          <div className="text-muted-foreground text-[9px] uppercase font-semibold">Click %</div>
+                          <div className="font-mono mt-0.5 font-bold text-amber-500">{stats.click_rate}%</div>
+                        </div>
+                        <div className="border-l border-border/50">
+                          <div className="text-muted-foreground text-[9px] uppercase font-semibold">Reply %</div>
+                          <div className="font-mono mt-0.5 font-bold text-emerald-500">{stats.reply_rate}%</div>
+                        </div>
+                      </div>
+
+                      {stats.email_list && stats.email_list.length > 0 && (
+                        <div className="text-[10px] text-left text-muted-foreground border-t border-border/40 pt-1.5 px-0.5 truncate">
+                          <span className="font-semibold text-foreground/80">Sender: </span>
+                          <span className="font-mono">{stats.email_list.join(", ")}</span>
+                        </div>
+                      )}
+
+                      <div className="border-t border-border/40 pt-2 text-left">
+                        <div className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground mb-1.5 px-0.5">
+                          Conversation Thread
+                        </div>
+                        
+                        {isRepliesFetching && !replies ? (
+                          <div className="flex items-center justify-center py-4 text-[10px] text-muted-foreground gap-1.5">
+                            <Loader2 className="h-3 w-3 animate-spin text-primary" />
+                            Loading replies...
+                          </div>
+                        ) : !replies || replies.length === 0 ? (
+                          <div className="text-[10px] italic text-muted-foreground px-1 py-2 bg-background/20 rounded border border-border/30 text-center">
+                            No emails sent or received yet.
+                          </div>
+                        ) : (
+                          <div className="space-y-2 max-h-[160px] overflow-y-auto pr-0.5 scrollbar-thin">
+                            {replies.map((reply: any) => {
+                              const isOutgoing = reply.ue_type === 1;
+                              return (
+                                <div 
+                                  key={reply.id} 
+                                  className={`p-2 rounded text-[11px] leading-normal border ${
+                                    isOutgoing 
+                                      ? "bg-muted/30 border-border/40 ml-4 mr-0.5 text-foreground/90" 
+                                      : "bg-primary/5 border-primary/20 mr-4 ml-0.5 text-foreground"
+                                  }`}
+                                >
+                                  <div className="flex items-center justify-between text-[9px] text-muted-foreground mb-1">
+                                    <span className="font-semibold truncate max-w-[140px]">
+                                      {isOutgoing 
+                                        ? `To: ${reply.to_address_email || "Lead"}` 
+                                        : `From: ${reply.from_address_name || reply.from_address_email || "Lead"}`
+                                      }
+                                    </span>
+                                    <span>{fmtDate(reply.timestamp_created)}</span>
+                                  </div>
+                                  {reply.subject && (
+                                    <div className="font-semibold text-[9.5px] mb-0.5 truncate text-foreground/80">
+                                      Subject: {reply.subject}
+                                    </div>
+                                  )}
+                                  <div className="whitespace-pre-wrap break-words text-foreground/75 text-[10px] font-sans">
+                                    {reply.body}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+

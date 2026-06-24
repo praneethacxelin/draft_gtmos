@@ -29,6 +29,28 @@ export interface DeliverabilityReport {
 
 import type { Provenance } from "./useStrategies";
 
+export interface CampaignStats {
+  sent: number;
+  opened: number;
+  clicked: number;
+  replied: number;
+  bounced: number;
+  opportunities: number;
+  opportunity_value: number;
+  open_rate: number;
+  click_rate: number;
+  reply_rate: number;
+  email_list?: string[];
+}
+
+export interface InstantlyCampaignInfo {
+  id: string;
+  instantly_campaign_id: string;
+  status: string;
+  analytics?: CampaignStats | null;
+  synced_at?: string | null;
+}
+
 export interface Sequence {
   id: string;
   status: string;
@@ -37,6 +59,7 @@ export interface Sequence {
   deliverability_score?: number;
   deliverability_report?: DeliverabilityReport | null;
   instantly_campaign_id?: string;
+  campaigns?: InstantlyCampaignInfo[];
   steps: SequenceStep[];
 }
 
@@ -51,9 +74,11 @@ export function useSequenceByContact(contactId?: string) {
 export function useGenerateSequence() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (contactId: string) =>
-      apiFetch(`/api/sequences/generate/${contactId}`, { method: "POST" }),
-    onSuccess: (_, contactId) => {
+    mutationFn: ({ contactId, stepCount }: { contactId: string; stepCount?: number }) => {
+      const q = stepCount ? `?step_count=${stepCount}` : "";
+      return apiFetch(`/api/sequences/generate/${contactId}${q}`, { method: "POST" });
+    },
+    onSuccess: (_, { contactId }) => {
       // Invalidate the specific contact sequence AND the broader query tree
       // so any components watching sequences all get fresh data.
       qc.invalidateQueries({ queryKey: ["sequence", "contact", contactId], refetchType: "all" });
@@ -139,3 +164,124 @@ export function useUpdateSequenceStep() {
     },
   });
 }
+
+export interface SendingAccount {
+  email: string;
+  first_name: string;
+  last_name: string;
+  provider_code: number;
+  status: number;
+  warmup_status: number;
+  health_score: number;
+  sent_count: number;
+  received_count: number;
+  landed_inbox: number;
+}
+
+export function useSendingAccounts() {
+  return useQuery<SendingAccount[]>({
+    queryKey: ["sendingAccounts"],
+    queryFn: () => apiFetch("/api/sequences/sending-accounts"),
+  });
+}
+
+export function useConnectSendingAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      email: string;
+      first_name: string;
+      last_name: string;
+      provider_code: number;
+      app_password: string;
+      imap_host?: string;
+      imap_port?: number;
+      smtp_host?: string;
+      smtp_port?: number;
+    }) =>
+      apiFetch("/api/sequences/sending-accounts/connect", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sendingAccounts"] });
+    },
+  });
+}
+
+export function useToggleWarmup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { email: string; enable: boolean }) =>
+      apiFetch("/api/sequences/sending-accounts/warmup/toggle", {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sendingAccounts"] });
+    },
+  });
+}
+
+export function useDisconnectSendingAccount() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (email: string) =>
+      apiFetch(`/api/sequences/sending-accounts/${email}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["sendingAccounts"] });
+    },
+  });
+}
+
+export interface Reply {
+  id: string;
+  subject: string;
+  body: string;
+  from_address_name?: string;
+  from_address_email?: string;
+  to_address_email?: string;
+  ue_type: number; // 1=sent, 2=received/reply
+  timestamp_created: string;
+}
+
+export function useContactReplies(contactId?: string) {
+  return useQuery<Reply[]>({
+    queryKey: ["sequence", "contact", contactId, "replies"],
+    queryFn: () => apiFetch(`/api/sequences/by-contact/${contactId}/replies`),
+    enabled: !!contactId,
+    // Poll every 10 seconds to keep replies fresh and live!
+    refetchInterval: 10000,
+  });
+}
+
+export function usePauseCampaign() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (campaignId: string) =>
+      apiFetch(`/api/sequences/campaigns/${campaignId}/pause`, {
+        method: "POST",
+      }),
+    onSuccess: (_, campaignId) => {
+      qc.invalidateQueries({ queryKey: ["sequence"] });
+      qc.invalidateQueries({ queryKey: ["analytics"] });
+    },
+  });
+}
+
+export function useResumeCampaign() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (campaignId: string) =>
+      apiFetch(`/api/sequences/campaigns/${campaignId}/resume`, {
+        method: "POST",
+      }),
+    onSuccess: (_, campaignId) => {
+      qc.invalidateQueries({ queryKey: ["sequence"] });
+      qc.invalidateQueries({ queryKey: ["analytics"] });
+    },
+  });
+}
+

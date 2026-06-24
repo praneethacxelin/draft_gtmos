@@ -793,7 +793,7 @@ def instantly_create_campaign(
                 "delay_unit": "days",
                 "variants": [
                     {
-                        "subject": s.get("subject", "Following up"),
+                        "subject": s.get("subject", "Following up") if i == 0 else "",
                         "body": s.get("body", "")
                     }
                 ]
@@ -1104,10 +1104,179 @@ def instantly_get_campaigns(api_key: str) -> Optional[list[dict]]:
         with httpx.Client(timeout=15.0) as c:
             r = c.get(url, headers=headers)
             r.raise_for_status()
-            return r.json().get("data", [])
+            res = r.json()
+            return res.get("items") or res.get("data") or []
     except Exception as e:
         log.warning("instantly_get_campaigns failed: %s", e)
         return None
+
+
+def instantly_get_accounts(api_key: str) -> Optional[list[dict]]:
+    """Retrieve connected sending accounts from Instantly v2 API."""
+    if not api_key: return None
+    _rl_consume("instantly")
+    url = "https://api.instantly.ai/api/v2/accounts"
+    headers = _instantly_headers(api_key)
+    try:
+        with httpx.Client(timeout=TIMEOUT) as c:
+            r = c.get(url, headers=headers)
+            r.raise_for_status()
+            return r.json().get("items", [])
+    except Exception as e:
+        log.warning("instantly_get_accounts failed: %s", e)
+        return None
+
+
+def instantly_create_account(api_key: str, data: dict) -> Optional[dict]:
+    """Connect a new sending account via Instantly v2 API."""
+    if not api_key:
+        return None
+    _rl_consume("instantly")
+    url = "https://api.instantly.ai/api/v2/accounts"
+    headers = _instantly_headers(api_key)
+    curl = _make_curl("POST", url, headers=headers, body=data)
+    t0 = time.perf_counter()
+    status = None
+    result: Optional[dict] = None
+    error_text: Optional[str] = None
+    raw_response_preview: Optional[str] = None
+    try:
+        with httpx.Client(timeout=TIMEOUT) as c:
+            r = c.post(url, json=data, headers=headers)
+            status = r.status_code
+            raw_response_preview = r.text[:1000]
+            r.raise_for_status()
+            result = r.json()
+            return result
+    except Exception as e:
+        error_text = str(e)
+        log.warning("instantly_create_account failed: %s", e)
+        if status == 400:
+            raise ValueError(raw_response_preview or error_text)
+        raise e
+    finally:
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        summary_payload: dict = {"email": data.get("email")}
+        if result:
+            summary_payload["account_id"] = result.get("id") or result.get("email", "")
+        if error_text:
+            summary_payload["error"] = error_text[:500]
+        if raw_response_preview and status and status >= 400:
+            summary_payload["response_body"] = raw_response_preview
+        audit_service.log_api_call(
+            service="instantly",
+            method="POST",
+            url=url,
+            request_params={"email": data.get("email")},
+            response_status=status,
+            latency_ms=latency_ms,
+            curl_command=curl,
+            strategy_id=None,
+            strategy_name=None,
+            is_live=True,
+            response_summary=summary_payload,
+            summary=f"Instantly: connect sending account {data.get('email')}",
+        )
+
+
+def instantly_toggle_warmup(api_key: str, emails: list[str], enable: bool = True) -> Optional[dict]:
+    """Enable or disable warmup for specified email accounts."""
+    if not api_key or not emails:
+        return None
+    _rl_consume("instantly")
+    action = "enable" if enable else "disable"
+    url = f"https://api.instantly.ai/api/v2/accounts/warmup/{action}"
+    headers = _instantly_headers(api_key)
+    body = {"emails": emails}
+    curl = _make_curl("POST", url, headers=headers, body=body)
+    t0 = time.perf_counter()
+    status = None
+    result: Optional[dict] = None
+    error_text: Optional[str] = None
+    raw_response_preview: Optional[str] = None
+    try:
+        with httpx.Client(timeout=TIMEOUT) as c:
+            r = c.post(url, json=body, headers=headers)
+            status = r.status_code
+            raw_response_preview = r.text[:1000]
+            r.raise_for_status()
+            result = r.json()
+            return result
+    except Exception as e:
+        error_text = str(e)
+        log.warning(f"instantly_toggle_warmup {action} failed: %s", e)
+        if status == 409:
+            raise ValueError("Conflict: A warmup update job is already in progress.")
+        raise e
+    finally:
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        summary_payload: dict = {"emails": emails, "enable": enable}
+        if error_text:
+            summary_payload["error"] = error_text[:500]
+        if raw_response_preview and status and status >= 400:
+            summary_payload["response_body"] = raw_response_preview
+        audit_service.log_api_call(
+            service="instantly",
+            method="POST",
+            url=url,
+            request_params={"emails": emails, "enable": enable},
+            response_status=status,
+            latency_ms=latency_ms,
+            curl_command=curl,
+            strategy_id=None,
+            strategy_name=None,
+            is_live=True,
+            response_summary=summary_payload,
+            summary=f"Instantly: {action} warmup for {', '.join(emails[:2])}",
+        )
+
+
+def instantly_get_warmup_analytics(api_key: str, emails: list[str]) -> Optional[dict]:
+    """Get warmup analytics for specified email accounts."""
+    if not api_key or not emails:
+        return None
+    _rl_consume("instantly")
+    url = "https://api.instantly.ai/api/v2/accounts/warmup-analytics"
+    headers = _instantly_headers(api_key)
+    body = {"emails": emails}
+    curl = _make_curl("POST", url, headers=headers, body=body)
+    t0 = time.perf_counter()
+    status = None
+    result: Optional[dict] = None
+    error_text: Optional[str] = None
+    raw_response_preview: Optional[str] = None
+    try:
+        with httpx.Client(timeout=TIMEOUT) as c:
+            r = c.post(url, json=body, headers=headers)
+            status = r.status_code
+            raw_response_preview = r.text[:1000]
+            r.raise_for_status()
+            result = r.json()
+            return result
+    except Exception as e:
+        error_text = str(e)
+        log.warning("instantly_get_warmup_analytics failed: %s", e)
+        return None
+    finally:
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        summary_payload: dict = {"emails": emails}
+        if error_text:
+            summary_payload["error"] = error_text[:500]
+        audit_service.log_api_call(
+            service="instantly",
+            method="POST",
+            url=url,
+            request_params={"emails": emails},
+            response_status=status,
+            latency_ms=latency_ms,
+            curl_command=curl,
+            strategy_id=None,
+            strategy_name=None,
+            is_live=True,
+            response_summary=summary_payload,
+            summary=f"Instantly: fetch warmup analytics for {', '.join(emails[:2])}",
+        )
+
 
 def instantly_get_analytics(api_key: str, campaign_id: Optional[str] = None) -> Optional[dict]:
     if not api_key: return None

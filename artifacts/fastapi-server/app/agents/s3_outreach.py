@@ -77,7 +77,103 @@ def _replace_merge_tags_with_values(text: str | None, contact: Contact, account:
     return text
 
 
-async def generate_sequence(db: Session, contact_id: str) -> dict:
+def _replace_sender_placeholders(text: str | None, db: Session, user_id: str | None, strategy_id: str | None) -> str | None:
+    if not text:
+        return text
+    
+    sender_email = "your-email@company.com"
+    sender_name = "Your Name"
+    sender_first_name = "Your Name"
+    sender_position = "GTM Specialist"
+    sender_linkedin = "https://www.linkedin.com/in/gtm-expert"
+    
+    if user_id:
+        instantly_key = settings_service.get_key(db, user_id, "instantly")
+        if instantly_key:
+            try:
+                accounts = clients.instantly_get_accounts(instantly_key) or []
+                active_accounts = [a for a in accounts if a.get("status") == 1]
+                account = active_accounts[0] if active_accounts else (accounts[0] if accounts else None)
+                if account:
+                    sender_email = account.get("email") or sender_email
+                    first = account.get("first_name") or ""
+                    last = account.get("last_name") or ""
+                    if first or last:
+                        sender_name = f"{first} {last}".strip()
+                        sender_first_name = first or sender_name
+                    else:
+                        part = sender_email.split("@")[0]
+                        sender_name = part.replace(".", " ").title()
+                        sender_first_name = part.split(".")[0].capitalize()
+            except Exception:
+                pass
+
+    if sender_email and sender_email != "your-email@company.com" and sender_first_name == "Your Name":
+        part = sender_email.split("@")[0]
+        sender_first_name = part.split(".")[0].capitalize()
+        sender_name = part.replace(".", " ").title()
+
+    if strategy_id:
+        strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+        product_name = strategy.product_name if strategy else "Our Company"
+    else:
+        product_name = "Our Company"
+        
+    mapping = {}
+    
+    def reg(patterns, replacement):
+        for p in patterns:
+            mapping[p.lower()] = replacement
+
+    # Name
+    reg([
+        "{{{your name}}}", "{{your name}}", "[your name]", "your name",
+        "{{{your first name}}}", "{{your first name}}", "[your first name]", "your first name"
+    ], sender_first_name)
+    
+    # Company
+    reg([
+        "{{{your company}}}", "{{your company}}", "[your company]", "your company",
+        "{{{company name}}}", "{{company name}}", "[company name]", "company name",
+        "{{{your company name}}}", "{{your company name}}", "[your company name]", "your company name"
+    ], product_name)
+    
+    # Contact Info
+    reg([
+        "{{{your contact information}}}", "{{your contact information}}", "[your contact information]", "your contact information",
+        "{{{your contact info}}}", "{{your contact info}}", "[your contact info]", "your contact info",
+        "{{{contact information}}}", "{{contact information}}", "[contact information]", "contact information",
+        "{{{your email}}}", "{{your email}}", "[your email]", "your email",
+        "{{{contact info}}}", "{{contact info}}", "[contact info]", "contact info"
+    ], sender_email)
+    
+    # Position
+    reg([
+        "{{{your position}}}", "{{your position}}", "[your position]", "your position",
+        "{{{your title}}}", "{{your title}}", "[your title]", "your title"
+    ], sender_position)
+    
+    # LinkedIn
+    reg([
+        "{{{your linkedin profile}}}", "{{your linkedin profile}}", "[your linkedin profile]", "your linkedin profile",
+        "{{{your linkedin}}}", "{{your linkedin}}", "[your linkedin]", "your linkedin",
+        "{{{linkedin profile}}}", "{{linkedin profile}}", "[linkedin profile]", "linkedin profile",
+        "{{{linkedin}}}", "{{linkedin}}", "[linkedin]", "linkedin"
+    ], sender_linkedin)
+
+    import re
+    sorted_keys = sorted(mapping.keys(), key=len, reverse=True)
+    pattern = re.compile("|".join(re.escape(k) for k in sorted_keys), re.IGNORECASE)
+
+    def replacer(match):
+        matched_text = match.group(0).lower()
+        return mapping.get(matched_text, match.group(0))
+
+    return pattern.sub(replacer, text)
+
+
+
+async def generate_sequence(db: Session, contact_id: str, step_count: int = 4) -> dict:
     contact = db.query(Contact).filter(Contact.id == contact_id).first()
     if not contact:
         return {"error": "Contact not found"}
@@ -96,22 +192,21 @@ async def generate_sequence(db: Session, contact_id: str) -> dict:
         ucs = strategy.use_cases_json.get("use_cases", []) if isinstance(strategy.use_cases_json, dict) else []
         use_cases = json.dumps(ucs[:3])[:600]
 
-    seniority = (contact.seniority or "").lower()
-    email_first = seniority in ("vp", "c_suite", "director", "head", "owner", "founder")
-    channel_plan = []
-    if email_first:
+    # Set default channel plan (always prioritises email first)
+    if step_count == 5:
         channel_plan = [
             {"step": 1, "channel": "email", "wait_days": 0},
-            {"step": 2, "channel": "email", "wait_days": 3},
-            {"step": 3, "channel": "linkedin", "wait_days": 4},
-            {"step": 4, "channel": "call", "wait_days": 5},
+            {"step": 2, "channel": "email", "wait_days": 1},
+            {"step": 3, "channel": "email", "wait_days": 2},
+            {"step": 4, "channel": "linkedin", "wait_days": 3},
+            {"step": 5, "channel": "linkedin", "wait_days": 4},
         ]
     else:
         channel_plan = [
-            {"step": 1, "channel": "linkedin", "wait_days": 0},
-            {"step": 2, "channel": "linkedin", "wait_days": 3},
-            {"step": 3, "channel": "email", "wait_days": 4},
-            {"step": 4, "channel": "email", "wait_days": 5},
+            {"step": 1, "channel": "email", "wait_days": 0},
+            {"step": 2, "channel": "email", "wait_days": 1},
+            {"step": 3, "channel": "email", "wait_days": 2},
+            {"step": 4, "channel": "linkedin", "wait_days": 3},
         ]
 
     # Log the channel plan decision
@@ -123,24 +218,29 @@ async def generate_sequence(db: Session, contact_id: str) -> dict:
         inputs={
             "contact_name": contact.full_name,
             "contact_title": contact.title,
-            "seniority": seniority,
             "persona_type": contact.persona_type,
+            "step_count": step_count,
         },
-        outputs={"channel_plan": channel_plan, "email_first": email_first},
-        decision=f"Seniority='{seniority}' → {'email-first' if email_first else 'linkedin-first'} sequence. VP/Director/C-suite get email first; others get LinkedIn first.",
-        summary=f"S3 → Channel Plan: {'Email' if email_first else 'LinkedIn'}-first for {contact.full_name} (seniority={seniority})",
+        outputs={"channel_plan": channel_plan},
+        decision=f"Generating default {step_count}-step sequence with 3 initial emails and subsequent LinkedIn step(s).",
+        summary=f"S3 → Channel Plan: {step_count}-step sequence for {contact.full_name}",
     )
 
     # Personalize messages — with strong deliverability constraints
     plan_str = ", ".join(f"step {s['step']} via {s['channel']}" for s in channel_plan)
     contact_first = (contact.full_name or "there").split()[0]
     company_name = account.company_name if account else "the company"
+    product_description = strategy.description if strategy else ""
+    contact_department = contact.department or "Unknown"
+    contact_seniority = contact.seniority or "Unknown"
+    contact_persona = contact.persona_type or "Unknown"
 
     def _build_msg_prompt(extra_guidance: str = "") -> str:
         return (
             f"Write personalized outreach messages for {contact.full_name}, {contact.title} at "
             f"{company_name}. "
-            f"Product: {strategy.product_name if strategy else ''}. "
+            f"Product Name: {strategy.product_name if strategy else ''}. "
+            f"Product Description: {product_description}. "
             f"Persona profile: {persona_block}. Top use cases: {use_cases}. "
             f"Sequence: {plan_str}. Return JSON with key 'messages' = array of "
             "{{step, subject, body}}. "
@@ -159,7 +259,10 @@ async def generate_sequence(db: Session, contact_id: str) -> dict:
             "6. No ALL-CAPS words. No '!!!', '???', or '$$$' patterns. "
             "7. For LinkedIn steps: 2-3 sentence DM, warm and human. "
             "8. For call steps: 3-bullet talking-points outline (no subject needed). "
-            f"9. Write as if you are a trusted peer of {contact_first}, not a salesperson."
+            f"9. Write as if you are a trusted peer of {contact_first}, not a salesperson. "
+            f"10. JOB-ROLE PROFILE ALIGNMENT: The outreach must be heavily tailored to their specific job role/profile (Title: {contact.title}, Department: {contact_department}, Seniority: {contact_seniority}, Persona Type: {contact_persona}). Adapt the tone, pain points, and use cases to directly address their specific department tasks, goals, and challenges. "
+            f"11. PRODUCT PROFILE BRIEF: You must mention a small, natural brief/context about the product ({strategy.product_name if strategy else ''}: {product_description}) in the body of the email so the lead understands exactly what the product is and how it solves their challenges. "
+            f"12. EMAIL THREADING FOLLOW-UPS: Step 1 is the initial email. Steps 2 and 3 are follow-up emails in the same thread (replies). Make sure the copy of Step 2 and Step 3 is written naturally as follow-ups to the preceding steps (e.g., refer back to the previous note, keep it shorter, check in on timing), rather than sounding like completely new, detached emails."
             f"{(' ' + extra_guidance) if extra_guidance else ''}"
         )
 
@@ -194,16 +297,14 @@ async def generate_sequence(db: Session, contact_id: str) -> dict:
     sequence_provenance = stamp(
         source="ai_generated",
         logic=(
-            "Picked an email-first or LinkedIn-first 4-step plan based on the "
-            "contact's seniority, then asked the model to write personalised "
-            "subject lines and bodies grounded in the persona profile and top use cases. "
-            "Deliverability rules enforced: no spam triggers, merge tags required, "
-            "75-150 word bodies, max 1 link."
+            f"Generated a {step_count}-step plan prioritizing 3 emails then {step_count - 3} LinkedIn step(s), "
+            "then asked the model to write personalised subject lines and bodies grounded in the lead's "
+            "job role/department, the product description/brief, and natural follow-up threading rules."
         ),
         steps=[
             "Read contact + strategy + persona profile",
-            f"Choose '{'email-first' if email_first else 'linkedin-first'}' plan based on seniority",
-            "Prompt model for per-step subject + body (deliverability-hardened)",
+            f"Choose '{step_count}-step email-first' priority layout",
+            "Prompt model for per-step subject + body with role personalization, product brief, and natural follow-up threading",
             "Auto deliverability check — re-prompt once if score < 70",
             "Schedule send_at timestamps",
         ],
@@ -217,16 +318,24 @@ async def generate_sequence(db: Session, contact_id: str) -> dict:
     base_time = datetime.utcnow().replace(hour=9, minute=0, second=0, microsecond=0)
     cumulative = 0
     msg_by_step = {m.get("step"): m for m in (msgs.get("messages", []) if isinstance(msgs, dict) else [])}
+    owner_id = strategy.user_id if strategy else "user_public"
     for s in channel_plan:
         m = msg_by_step.get(s["step"], {})
         cumulative += s["wait_days"]
         send_at = base_time + timedelta(days=cumulative, hours=random.randint(0, 4))
+        
+        subject = _replace_merge_tags_with_values(m.get("subject"), contact, account)
+        body = _replace_merge_tags_with_values(m.get("body"), contact, account)
+        
+        subject = _replace_sender_placeholders(subject, db, owner_id, contact.strategy_id)
+        body = _replace_sender_placeholders(body, db, owner_id, contact.strategy_id)
+        
         db.add(SequenceStep(
             sequence_id=seq.id,
             step_number=s["step"],
             channel=s["channel"],
-            subject=_replace_merge_tags_with_values(m.get("subject"), contact, account),
-            body=_replace_merge_tags_with_values(m.get("body"), contact, account),
+            subject=subject,
+            body=body,
             wait_days=s["wait_days"],
             send_at=send_at,
         ))
@@ -250,16 +359,24 @@ async def generate_sequence(db: Session, contact_id: str) -> dict:
             db.query(SequenceStep).filter(SequenceStep.sequence_id == seq.id).delete()
             cumulative = 0
             msg_by_step2 = {m.get("step"): m for m in msgs2["messages"]}
+            owner_id = strategy.user_id if strategy else "user_public"
             for s in channel_plan:
                 m = msg_by_step2.get(s["step"], {})
                 cumulative += s["wait_days"]
                 send_at = base_time + timedelta(days=cumulative, hours=random.randint(0, 4))
+                
+                subject = _replace_merge_tags_with_values(m.get("subject"), contact, account)
+                body = _replace_merge_tags_with_values(m.get("body"), contact, account)
+                
+                subject = _replace_sender_placeholders(subject, db, owner_id, contact.strategy_id)
+                body = _replace_sender_placeholders(body, db, owner_id, contact.strategy_id)
+                
                 db.add(SequenceStep(
                     sequence_id=seq.id,
                     step_number=s["step"],
                     channel=s["channel"],
-                    subject=_replace_merge_tags_with_values(m.get("subject"), contact, account),
-                    body=_replace_merge_tags_with_values(m.get("body"), contact, account),
+                    subject=subject,
+                    body=body,
                     wait_days=s["wait_days"],
                     send_at=send_at,
                 ))
