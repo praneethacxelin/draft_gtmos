@@ -86,6 +86,55 @@ def put_fetch_limits(
     }
 
 
+@router.get("/sender-status")
+def get_sender_status(
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    instantly_key = settings_service.get_key(db, user.id, "instantly")
+    if not instantly_key:
+        return {
+            "connected": False,
+            "email": None,
+            "provider": "Instantly",
+            "status": "Not Configured",
+            "warmup_info": "Warmup information unavailable."
+        }
+
+    accounts_data = clients.instantly_get_accounts(instantly_key)
+    if not accounts_data or not isinstance(accounts_data, dict):
+        return {
+            "connected": False,
+            "email": None,
+            "provider": "Instantly",
+            "status": "Error Fetching Accounts",
+            "warmup_info": "Warmup information unavailable."
+        }
+
+    items = accounts_data.get("items", [])
+    if not items or len(items) == 0:
+        return {
+            "connected": True,
+            "email": None,
+            "provider": "Instantly",
+            "status": "Connected (No Sender Accounts)",
+            "warmup_info": "Warmup information unavailable."
+        }
+
+    first_acc = items[0]
+    email = first_acc.get("email")
+    status_code = first_acc.get("status")
+    status_str = "Connected" if status_code == 1 else "Inactive"
+
+    return {
+        "connected": True,
+        "email": email,
+        "provider": "Instantly",
+        "status": status_str,
+        "warmup_info": "Warmup information unavailable."
+    }
+
+
 @router.get("/rate-limits/status")
 def rate_limit_status(
     user: User = Depends(current_user),

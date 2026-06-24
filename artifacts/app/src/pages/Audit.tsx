@@ -124,8 +124,9 @@ function PipelineNode({ entry }: { entry: AuditEntry }) {
   const hasOutputs = entry.response_summary && Object.keys(entry.response_summary).length > 0;
   const hasDetails = hasInputs || hasOutputs;
 
-  let customLabel = undefined;
-  if (iconType === "api" && (entry.decision?.toLowerCase().includes("serpapi") || entry.summary?.toLowerCase().includes("serpapi"))) {
+  let customLabel: string | undefined = undefined;
+  const decisionStr = entry.request_params?.decision ? String(entry.request_params.decision) : "";
+  if (iconType === "api" && (decisionStr.toLowerCase().includes("serpapi") || entry.summary?.toLowerCase().includes("serpapi"))) {
     customLabel = "Serp API";
   }
 

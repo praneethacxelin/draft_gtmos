@@ -514,9 +514,9 @@ def init_db() -> None:
     ChromaDB (``app/services/vector_store.py``), which keeps the stack
     portable to Windows where compiling pgvector is painful.
     """
-    db_url_str = os.environ.get("DATABASE_URL", "")
-    if db_url_str.startswith("sqlite"):
+    if is_sqlite:
         with engine.begin() as conn:
+            conn.execute(text("PRAGMA journal_mode=WAL"))
             conn.execute(text("DROP TABLE IF EXISTS competitors"))
     else:
         with engine.begin() as conn:
@@ -526,15 +526,26 @@ def init_db() -> None:
     # Additive column migrations for already-existing tables (create_all only
     # creates missing tables, it never alters existing ones). Postgres supports
     # IF NOT EXISTS so these are safe to run on every startup.
-    with engine.begin() as conn:
-        conn.execute(text(
-            "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS source VARCHAR DEFAULT 'discovery'"
-        ))
-        conn.execute(text(
-            "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS source_ref VARCHAR"
-        ))
+    if is_sqlite:
+        with engine.begin() as conn:
+            columns = {
+                row[1]
+                for row in conn.execute(text("PRAGMA table_info(contacts)"))
+            }
+            if "source" not in columns:
+                conn.execute(text("ALTER TABLE contacts ADD COLUMN source VARCHAR DEFAULT 'discovery'"))
+            if "source_ref" not in columns:
+                conn.execute(text("ALTER TABLE contacts ADD COLUMN source_ref VARCHAR"))
+    else:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS source VARCHAR DEFAULT 'discovery'"
+            ))
+            conn.execute(text(
+                "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS source_ref VARCHAR"
+            ))
 
-    if db_url_str.startswith("sqlite"):
+    if is_sqlite:
         # Older demo databases may predate the Instantly analytics fields.
         # Add them in-place so startup does not fail when the poller queries
         # the model using the current ORM definition.

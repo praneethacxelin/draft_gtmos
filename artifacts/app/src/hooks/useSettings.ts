@@ -77,3 +77,18 @@ export function useTestIntegration() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["integrations"] }),
   });
 }
+
+export interface SenderStatus {
+  connected: boolean;
+  email: string | null;
+  provider: string;
+  status: string;
+  warmup_info: string;
+}
+
+export function useSenderStatus() {
+  return useQuery<SenderStatus>({
+    queryKey: ["sender-status"],
+    queryFn: () => apiFetch("/api/settings/sender-status"),
+  });
+}

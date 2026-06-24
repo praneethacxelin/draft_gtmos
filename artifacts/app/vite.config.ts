@@ -52,8 +52,8 @@ export default defineConfig({
     host: "0.0.0.0",
     allowedHosts: true,
     proxy: {
-      "/api": { target: "http://localhost:8080", changeOrigin: true },
-      "/healthz": { target: "http://localhost:8080", changeOrigin: true },
+      "/api": { target: `http://localhost:${process.env.BACKEND_PORT || "8000"}`, changeOrigin: true },
+      "/healthz": { target: `http://localhost:${process.env.BACKEND_PORT || "8000"}`, changeOrigin: true },
     },
     fs: {
       strict: true,

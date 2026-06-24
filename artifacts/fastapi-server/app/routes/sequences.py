@@ -52,11 +52,13 @@ def by_contact(
     else:
         channel_plan = raw_plan
         provenance = None
+    last_launch = raw_plan.get("_last_launch") if isinstance(raw_plan, dict) else None
     return {
         "id": seq.id,
         "status": seq.status,
         "channel_plan": channel_plan,
         "provenance": provenance,
+        "last_launch": last_launch,
         "deliverability_score": seq.deliverability_score,
         "deliverability_report": seq.deliverability_report_json,
         "instantly_campaign_id": seq.instantly_campaign_id,

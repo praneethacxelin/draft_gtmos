@@ -106,6 +106,13 @@ export interface WithProvenance {
   _provenance?: Provenance;
 }
 
+export interface TamSamSomSource {
+  title: string;
+  link: string;
+  snippet: string;
+  verified: boolean;
+}
+
 export interface TamSamSom extends WithProvenance {
   tam?: MoneyBlock;
   sam?: MoneyBlock;
@@ -113,6 +120,7 @@ export interface TamSamSom extends WithProvenance {
   methodology?: string;
   confidence?: "low" | "medium" | "high";
   uses_live_data?: boolean;
+  sources?: TamSamSomSource[];
 }
 
 export type RoiVerdict =

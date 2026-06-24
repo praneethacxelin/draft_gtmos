@@ -38,6 +38,12 @@ export interface Sequence {
   deliverability_report?: DeliverabilityReport | null;
   instantly_campaign_id?: string;
   steps: SequenceStep[];
+  last_launch?: {
+    status: string;
+    recipient: string | null;
+    sender: string | null;
+    timestamp: string;
+  } | null;
 }
 
 export function useSequenceByContact(contactId?: string) {

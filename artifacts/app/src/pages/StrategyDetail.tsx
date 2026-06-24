@@ -433,7 +433,7 @@ export function StrategyDetail() {
             </p>
           </div>
           <DiscoveryWizard 
-            strategyId={id} 
+            strategyId={id || ""} 
             initialData={strategy.discovery_data} 
             onComplete={() => setActiveTab("icp")}
           />
@@ -636,7 +636,7 @@ export function StrategyDetail() {
                   </div>
                 </Card>
               )}
-              {(strategy.tam_sam_som.sources ?? []).length > 0 && (
+              {strategy.tam_sam_som.sources && strategy.tam_sam_som.sources.length > 0 && (
                 <details className="group">
                   <summary className="flex cursor-pointer items-center gap-2 rounded-lg border border-card-border bg-card px-4 py-3 text-sm font-medium text-foreground transition-colors hover:bg-muted/40">
                     <svg className="h-4 w-4 text-muted-foreground transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>

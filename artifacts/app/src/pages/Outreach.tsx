@@ -15,7 +15,8 @@ import {
 import { PageHeader } from "@/components/PageHeader";
 import { TierBadge, StatusPill } from "@/components/Pills";
 import { useActiveStrategy } from "@/hooks/useActiveStrategy";
-import { useContacts } from "@/hooks/useContacts";
+import { useContacts, useUpdateContact } from "@/hooks/useContacts";
+import { useSenderStatus } from "@/hooks/useSettings";
 import {
   useSequenceByContact,
   useGenerateSequence,
@@ -209,10 +210,13 @@ export function Outreach() {
   });
   const [stepDirty, setStepDirty] = useState(false);
 
-  // Test-mode email
-  const [testEmail, setTestEmail]               = useState<string>(() => localStorage.getItem("gtm_test_email") ?? "");
-  const [testEmailDraft, setTestEmailDraft]     = useState("");
-  const [editingTestEmail, setEditingTestEmail] = useState(false);
+  // Contact editing state
+  const [editingContactId, setEditingContactId] = useState<string | null>(null);
+  const [contactEditDraft, setContactEditDraft] = useState({ full_name: "", email: "" });
+  const updateContact = useUpdateContact();
+
+  // Instantly sender status
+  const { data: senderStatus } = useSenderStatus();
 
   // Bulk generation state
   const [isGeneratingBulk, setIsGeneratingBulk] = useState(false);
@@ -227,18 +231,6 @@ export function Outreach() {
     time_to: "17:00",
     days: { "0": false, "1": true, "2": true, "3": true, "4": true, "5": true, "6": false },
   });
-
-  // -------------------------------------------------------------------------
-  // Handlers (all preserved from previous version)
-  // -------------------------------------------------------------------------
-  function openTestEmailEdit() { setTestEmailDraft(testEmail); setEditingTestEmail(true); }
-  function saveTestEmail() {
-    const val = testEmailDraft.trim();
-    setTestEmail(val);
-    val ? localStorage.setItem("gtm_test_email", val) : localStorage.removeItem("gtm_test_email");
-    setEditingTestEmail(false);
-  }
-  function clearTestEmail() { setTestEmail(""); localStorage.removeItem("gtm_test_email"); }
 
   function startEditStep(stepId: string) {
     const step = sequence?.steps.find((s) => s.id === stepId);
@@ -417,6 +409,25 @@ export function Outreach() {
           </div>
         </Card>
 
+        {/* Launch Payload Verification */}
+        <Card className="border-card-border bg-card p-4 border-l-4 border-l-primary">
+          <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-3">Launch Payload Verification</div>
+          <div className="space-y-1.5 text-xs">
+            <div className="flex gap-2">
+              <span className="text-muted-foreground shrink-0 w-24">Recipient</span>
+              <span className="font-semibold text-foreground">{activeContact?.email || "No email configured"}</span>
+            </div>
+            <div className="flex gap-2">
+              <span className="text-muted-foreground shrink-0 w-24">Sender</span>
+              <span className="font-semibold text-foreground">{senderStatus?.email || "No sender email connected"}</span>
+            </div>
+            <div className="flex gap-2">
+              <span className="text-muted-foreground shrink-0 w-24">Sequence Steps</span>
+              <span className="font-semibold text-foreground">{sequence?.steps?.length || 0} Steps</span>
+            </div>
+          </div>
+        </Card>
+
         {/* Approval actions */}
         <div className="flex gap-3">
           <Button
@@ -434,17 +445,14 @@ export function Outreach() {
               sequence &&
               launch.mutate({
                 sequenceId: sequence.id,
-                testEmail: testEmail || undefined,
                 schedule,
               })
             }
-            title={testEmail ? `Will send to ${testEmail} (test mode)` : "Launch via Instantly"}
+            title="Launch via Instantly"
           >
             <Send className="mr-2 h-4 w-4" />
             {launch.isPending
               ? "Launching…"
-              : testEmail
-              ? "Approve & Launch → test inbox"
               : "Approve & Launch"}
           </Button>
         </div>
@@ -477,26 +485,27 @@ export function Outreach() {
           <FlaskConical className="h-4 w-4 shrink-0 text-amber-400" />
           <span className="text-sm font-semibold">Launch Settings</span>
         </div>
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
-          {/* Test email */}
-          <div className="space-y-2">
-            <Label className="text-xs text-muted-foreground">Test Email (Optional)</Label>
-            {editingTestEmail ? (
-              <div className="flex items-center gap-2">
-                <Input value={testEmailDraft} onChange={e => setTestEmailDraft(e.target.value)} placeholder="you@yourcompany.com" className="h-8 text-xs" autoFocus
-                  onKeyDown={e => { if (e.key === "Enter") saveTestEmail(); if (e.key === "Escape") setEditingTestEmail(false); }} />
-                <Button size="sm" className="h-8 px-2" onClick={saveTestEmail}><Check className="h-4 w-4" /></Button>
-                <Button size="sm" variant="ghost" className="h-8 px-2" onClick={() => setEditingTestEmail(false)}><X className="h-4 w-4" /></Button>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 h-8">
-                {testEmail
-                  ? <span className="rounded bg-amber-500/15 px-2 py-1 font-mono text-xs text-amber-500">{testEmail}</span>
-                  : <span className="text-xs italic text-muted-foreground">Live sending mode</span>}
-                <button onClick={openTestEmailEdit} className="text-muted-foreground hover:text-foreground"><Pencil className="h-3.5 w-3.5" /></button>
-                {testEmail && <button onClick={clearTestEmail} className="text-muted-foreground hover:text-destructive"><X className="h-3.5 w-3.5" /></button>}
-              </div>
-            )}
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-3 lg:grid-cols-5">
+          {/* Sender Email */}
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">Sender Email</Label>
+            <div className="text-xs font-semibold truncate pt-1" title={senderStatus?.email || "No account connected"}>
+              {senderStatus?.email || "No sender email connected"}
+            </div>
+            <div className="text-[10px] text-muted-foreground">
+              Provider: {senderStatus?.provider || "Instantly"}
+            </div>
+          </div>
+          {/* Connection Status */}
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">Connection Status</Label>
+            <div className="flex items-center gap-1.5 pt-1">
+              <span className={`h-2 w-2 rounded-full ${senderStatus?.status === "Connected" ? "bg-green-500" : "bg-red-500"}`} />
+              <span className="text-xs font-semibold">{senderStatus?.status || "Checking..."}</span>
+            </div>
+            <div className="text-[10px] text-muted-foreground">
+              {senderStatus?.warmup_info || "Warmup info unavailable."}
+            </div>
           </div>
           {/* Timezone */}
           <div className="space-y-2">
@@ -560,16 +569,91 @@ export function Outreach() {
                 </div>
                 {group.items.map(c => (
                   <div key={c.id}
-                    className={`flex w-full items-center justify-between rounded px-3 py-2 text-left text-sm hover-elevate cursor-pointer ${activeContactId === c.id ? "bg-sidebar-accent border-l-2 border-primary" : ""} ${selectedIds.has(c.id) ? "bg-muted/30" : ""}`}
+                    className={`flex flex-col w-full rounded px-3 py-2 text-left text-sm hover-elevate cursor-pointer ${activeContactId === c.id ? "bg-sidebar-accent border-l-2 border-primary" : ""} ${selectedIds.has(c.id) ? "bg-muted/30" : ""}`}
                     onClick={() => { setActiveContactId(c.id); setEditingStepId(null); setStepDirty(false); }}>
-                    <div className="flex items-center gap-3 min-w-0 flex-1">
-                      <Checkbox checked={selectedIds.has(c.id)} onCheckedChange={() => toggleSelect(c.id)} onClick={e => e.stopPropagation()} className="w-4 h-4" />
-                      <div className="min-w-0">
-                        <div className="truncate text-sm font-medium">{c.full_name}</div>
-                        <div className="truncate text-[11px] text-muted-foreground">{c.title} · {c.company_name}</div>
+                    {editingContactId === c.id ? (
+                      <div className="w-full space-y-2 py-1" onClick={e => e.stopPropagation()}>
+                        <div className="space-y-1">
+                          <Label className="text-[10px] text-muted-foreground font-semibold uppercase">Full Name</Label>
+                          <Input
+                            value={contactEditDraft.full_name}
+                            onChange={e => setContactEditDraft({ ...contactEditDraft, full_name: e.target.value })}
+                            className="h-7 text-xs bg-background"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-[10px] text-muted-foreground font-semibold uppercase">Email Address</Label>
+                          <Input
+                            value={contactEditDraft.email}
+                            onChange={e => setContactEditDraft({ ...contactEditDraft, email: e.target.value })}
+                            className="h-7 text-xs bg-background"
+                            type="email"
+                          />
+                        </div>
+                        <div className="flex gap-2 justify-end pt-1">
+                          <Button
+                            size="sm"
+                            className="h-6 px-2 text-[10px]"
+                            variant="ghost"
+                            onClick={() => setEditingContactId(null)}
+                          >
+                            Cancel
+                          </Button>
+                          <Button
+                            size="sm"
+                            className="h-6 px-2 text-[10px]"
+                            onClick={async () => {
+                              try {
+                                await updateContact.mutateAsync({
+                                  id: c.id,
+                                  data: {
+                                    full_name: contactEditDraft.full_name,
+                                    email: contactEditDraft.email || undefined,
+                                  }
+                                });
+                                setEditingContactId(null);
+                                toast({
+                                  title: "Contact updated",
+                                  description: "Changes saved successfully.",
+                                });
+                              } catch (err) {
+                                toast({
+                                  title: "Save failed",
+                                  description: "Failed to update contact.",
+                                  variant: "destructive",
+                                });
+                              }
+                            }}
+                            disabled={updateContact.isPending}
+                          >
+                            {updateContact.isPending ? "Saving..." : "Save"}
+                          </Button>
+                        </div>
                       </div>
-                    </div>
-                    <TierBadge tier={c.tier} />
+                    ) : (
+                      <div className="flex w-full items-center justify-between">
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                          <Checkbox checked={selectedIds.has(c.id)} onCheckedChange={() => toggleSelect(c.id)} onClick={e => e.stopPropagation()} className="w-4 h-4" />
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-medium">{c.full_name}</div>
+                            <div className="truncate text-[11px] text-muted-foreground">{c.title} · {c.company_name}</div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
+                          <TierBadge tier={c.tier} />
+                          <button
+                            onClick={() => {
+                              setContactEditDraft({ full_name: c.full_name, email: c.email || "" });
+                              setEditingContactId(c.id);
+                            }}
+                            className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
+                            title="Edit contact"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -707,10 +791,10 @@ export function Outreach() {
                   </Button>
                   {panelView === "sequence" && (
                     <Button size="sm" variant="secondary" disabled={!sequence || launch.isPending}
-                      onClick={() => sequence && launch.mutate({ sequenceId: sequence.id, testEmail: testEmail || undefined, schedule })}
-                      title={testEmail ? `Will send to ${testEmail} (test mode)` : "Launch via Instantly"}>
+                      onClick={() => sequence && launch.mutate({ sequenceId: sequence.id, schedule })}
+                      title="Launch via Instantly">
                       <Send className="mr-2 h-4 w-4" />
-                      {launch.isPending ? "Launching…" : testEmail ? "Launch → test inbox" : "Launch"}
+                      {launch.isPending ? "Launching…" : "Launch"}
                     </Button>
                   )}
                 </div>
@@ -743,6 +827,43 @@ export function Outreach() {
               <div className="font-semibold mb-1">AI Generation Failed</div>
               <div>Failed to generate sequence. Ensure your API keys and model limits are configured correctly.</div>
             </div>
+          )}
+
+          {/* Delivery Troubleshooting Diagnostics */}
+          {sequence?.last_launch && (
+            <Card className="border-card-border bg-card p-4 border-l-4 border-l-green-500">
+              <div className="flex items-center justify-between mb-3">
+                <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground flex items-center gap-1.5">
+                  <span className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
+                  Delivery Diagnostics
+                </div>
+                <span className="text-[10px] text-muted-foreground">
+                  {sequence.last_launch.timestamp
+                    ? new Date(sequence.last_launch.timestamp).toLocaleString()
+                    : "—"}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+                <div className="space-y-0.5">
+                  <div className="text-muted-foreground font-medium text-[10px] uppercase tracking-wider">Last Status</div>
+                  <div className="font-semibold text-foreground text-sm">
+                    {sequence.last_launch.status || "—"}
+                  </div>
+                </div>
+                <div className="space-y-0.5">
+                  <div className="text-muted-foreground font-medium text-[10px] uppercase tracking-wider">Sender</div>
+                  <div className="font-mono text-foreground font-semibold truncate animate-fade-in" title={sequence.last_launch.sender || ""}>
+                    {sequence.last_launch.sender || "—"}
+                  </div>
+                </div>
+                <div className="space-y-0.5">
+                  <div className="text-muted-foreground font-medium text-[10px] uppercase tracking-wider">Recipient</div>
+                  <div className="font-mono text-foreground font-semibold truncate animate-fade-in" title={sequence.last_launch.recipient || ""}>
+                    {sequence.last_launch.recipient || "—"}
+                  </div>
+                </div>
+              </div>
+            </Card>
           )}
 
           {/* ── Panel: Builder or Review ── */}

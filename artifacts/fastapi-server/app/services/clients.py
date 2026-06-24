@@ -884,6 +884,22 @@ def instantly_verify_email(
         )
 
 
+def instantly_get_accounts(api_key: str) -> Optional[dict]:
+    """Retrieve connected sender accounts from Instantly v2 API."""
+    if not api_key: return None
+    _rl_consume("instantly")
+    url = "https://api.instantly.ai/api/v2/accounts"
+    headers = _instantly_headers(api_key)
+    try:
+        with httpx.Client(timeout=15.0) as c:
+            r = c.get(url, headers=headers)
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:
+        log.warning("instantly_get_accounts failed: %s", e)
+        return None
+
+
 def instantly_get_campaigns(api_key: str) -> Optional[list[dict]]:
     if not api_key: return None
     _rl_consume("instantly")

@@ -954,10 +954,17 @@ async def validate_roi(
     if expected_revenue is None or expected_revenue < 0:
         return {"_error": "Expected revenue must be a non-negative number"}
 
+    # Extract required fields and immediately commit to release database transaction locks
+    product_name = strategy.product_name
+    description = strategy.description
     icp = strategy.icp_json or {}
     naics = strategy.naics_json or {}
     tam_sam_som = strategy.tam_sam_som_json or {}
     dd = strategy.discovery_data or {}
+    personas_json = strategy.personas_json
+    user_id = strategy.user_id
+
+    db.commit()
 
     tam = _tier_value(tam_sam_som, "tam")
     sam = _tier_value(tam_sam_som, "sam")
@@ -993,8 +1000,8 @@ async def validate_roi(
         "You are a B2B GTM finance strategist validating whether a company's ROI "
         "expectation for a specific product is realistic. Be rigorous and honest — "
         "if the expectation is wildly off, say so and propose a corrected target.\n\n"
-        f"PRODUCT: {strategy.product_name}\n"
-        f"DESCRIPTION: {(strategy.description or '')[:600]}\n"
+        f"PRODUCT: {product_name}\n"
+        f"DESCRIPTION: {(description or '')[:600]}\n"
         f"ICP: {json.dumps(icp)[:1000]}\n"
         f"NAICS segments: {json.dumps(naics)[:700]}\n"
         f"Market sizing for THIS profile (use as the ceiling): {json.dumps(market_ctx, default=str)}\n"
@@ -1096,9 +1103,9 @@ async def validate_roi(
     # Persona titles + target segments seed the persona × segment experiment grid
     # (so month-1 tests e.g. "Customer Service Manager × India" vs "CFO × USA").
     experiment_personas: list[str] = []
-    if isinstance(strategy.personas_json, dict):
+    if isinstance(personas_json, dict):
         for k in ("champion", "economic_buyer", "blocker"):
-            p = strategy.personas_json.get(k)
+            p = personas_json.get(k)
             if isinstance(p, dict) and p.get("title"):
                 experiment_personas.append(str(p["title"]))
     if not experiment_personas and isinstance(dd, dict):
@@ -1171,6 +1178,10 @@ async def validate_roi(
         model=MODEL_NAME,
     )
 
+    # Re-fetch strategy in a fresh transaction to commit results
+    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    if not strategy:
+        return {"_error": "Strategy not found"}
     strategy.roi_json = result
     db.commit()
 

@@ -408,6 +408,13 @@ def launch_sequence(db: Session, sequence_id: str, test_email: str | None = None
         seq.instantly_campaign_id = campaign_id
         lead_email: str | None = None
 
+        sender_email = "no-sender@instantly.com"
+        accounts_data = clients.instantly_get_accounts(instantly_key)
+        if accounts_data and isinstance(accounts_data, dict):
+            items = accounts_data.get("items", [])
+            if items and len(items) > 0:
+                sender_email = items[0].get("email") or sender_email
+
         if campaign_id:
             db.add(InstantlyCampaign(
                 sequence_id=seq.id,
@@ -415,8 +422,8 @@ def launch_sequence(db: Session, sequence_id: str, test_email: str | None = None
                 status="active",
             ))
 
-            # Determine recipient: test_email overrides contact's email for demo testing
-            lead_email = test_email or (contact.email if contact else None)
+            # Determine recipient: always use contact.email, ignoring test_email overrides
+            lead_email = contact.email if contact else None
             if lead_email:
                 name_parts = (contact.full_name if contact else "Test User").split()
                 clients.instantly_add_leads(
@@ -451,16 +458,45 @@ def launch_sequence(db: Session, sequence_id: str, test_email: str | None = None
                     event_type="sent",
                     raw_data_json={"instantly_campaign_id": campaign_id},
                 ))
+
+            # Record launch metadata details inside channel_plan_json
+            last_launch_info = {
+                "status": "Launch Successful",
+                "recipient": lead_email,
+                "sender": sender_email,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+            if seq.channel_plan_json is None:
+                seq.channel_plan_json = {}
+            if isinstance(seq.channel_plan_json, dict):
+                plan_data = dict(seq.channel_plan_json)
+                plan_data["_last_launch"] = last_launch_info
+                seq.channel_plan_json = plan_data
+
         db.commit()
         return {
             "status": "active",
             "instantly_pushed": True,
             "campaign_id": campaign_id,
             "lead_email": lead_email,
-            "is_test_mode": bool(test_email),
+            "is_test_mode": False,
         }
     else:
         seq.status = "simulated"
+        lead_email = contact.email if contact else None
+        last_launch_info = {
+            "status": "Launch Simulated",
+            "recipient": lead_email,
+            "sender": "simulated@gtmfactory.com",
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+        if seq.channel_plan_json is None:
+            seq.channel_plan_json = {}
+        if isinstance(seq.channel_plan_json, dict):
+            plan_data = dict(seq.channel_plan_json)
+            plan_data["_last_launch"] = last_launch_info
+            seq.channel_plan_json = plan_data
+
         db.commit()
         ingested = simulate_engagement_timeline(db, seq.id)
-        return {"status": "simulated", "instantly_pushed": False, "events": ingested}
+        return {"status": "simulated", "instantly_pushed": False, "events": ingested, "lead_email": lead_email}
