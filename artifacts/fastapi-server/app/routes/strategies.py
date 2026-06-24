@@ -238,6 +238,108 @@ def patch_discovery(
     return _serialize(s)
 
 
+@router.post("/{strategy_id}/discovery/document")
+def generate_discovery_document(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+):
+    """Generate a markdown document summarizing the strategy's discovery data,
+    save it to the workspace, and return it for download.
+    """
+    import datetime
+    import io
+    import os
+    from fastapi.responses import StreamingResponse
+
+    own_strategy(db, strategy_id, user)
+    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    if not strategy:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+
+    dd = strategy.discovery_data or {}
+
+    # Format the document beautifully
+    doc_lines = []
+    doc_lines.append(f"# Discovery Brief: {strategy.product_name}")
+    now_str = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    doc_lines.append(f"Generated at: {now_str}\n")
+
+    doc_lines.append("## Product & Company")
+    doc_lines.append(f"**What is your product or service?**\n{dd.get('product_description') or strategy.description or 'Unspecified'}\n")
+    doc_lines.append(f"**What type of company are you?**\n{dd.get('company_type') or 'Unspecified'}\n")
+    doc_lines.append(f"**What pain points does your product solve?**\n{dd.get('pain_points') or strategy.pain_points_raw or 'Unspecified'}\n")
+
+    doc_lines.append("## Ideal Customer")
+
+    org_size_val = dd.get('org_size')
+    org_size_str = ", ".join(org_size_val) if isinstance(org_size_val, list) else (org_size_val or 'Unspecified')
+    doc_lines.append(f"**What org size are you targeting?**\n{org_size_str}\n")
+
+    geos_val = dd.get('target_geos')
+    geos_str = ", ".join(geos_val) if isinstance(geos_val, list) else (geos_val or 'Unspecified')
+    doc_lines.append(f"**What geographies are you targeting?**\n{geos_str}\n")
+
+    doc_lines.append(f"**Describe your perfect customer:**\n{dd.get('perfect_customer') or 'Unspecified'}\n")
+
+    doc_lines.append("## Buying Committee")
+    doc_lines.append(f"**Who is the Economic Buyer?**\n{dd.get('economic_buyer') or 'Unspecified'}\n")
+    doc_lines.append(f"**Who is the Champion?**\n{dd.get('champion') or 'Unspecified'}\n")
+
+    blockers_val = dd.get('deal_blockers')
+    blockers_str = ", ".join(blockers_val) if isinstance(blockers_val, list) else (blockers_val or 'Unspecified')
+    doc_lines.append(f"**What typically blocks deals?**\n{blockers_str}\n")
+
+    doc_lines.append("## Signals & Competition")
+
+    signals_val = dd.get('buying_signals')
+    signals_str = ", ".join(signals_val) if isinstance(signals_val, list) else (signals_val or 'Unspecified')
+    doc_lines.append(f"**What buying signals should we look for?**\n{signals_str}\n")
+
+    doc_lines.append(f"**What triggers a purchase?**\n{dd.get('triggers') or 'Unspecified'}\n")
+    doc_lines.append(f"**What tools / methods do they currently use?**\n{dd.get('alternatives') or 'Unspecified'}\n")
+    doc_lines.append(f"**What is your unique value proposition?**\n{dd.get('uvp') or 'Unspecified'}\n")
+    doc_lines.append(f"**What is the typical sales cycle?**\n{dd.get('sales_cycle') or 'Unspecified'}\n")
+
+    doc_lines.append("## Investment & ROI")
+    doc_lines.append(f"**What is your planned GTM investment?**\n{dd.get('planned_investment') or 'Unspecified'}\n")
+    doc_lines.append(f"**What revenue / return do you expect from it?**\n{dd.get('expected_revenue') or 'Unspecified'}\n")
+    doc_lines.append(f"**Over what timeframe?**\n{dd.get('roi_timeframe') or 'Unspecified'}\n")
+
+    doc_content = "\n".join(doc_lines)
+
+    # Save the document to the workspace directories
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    filename = f"discovery_{strategy_id}.md"
+
+    # Save in fastapi-server folder
+    file_path = os.path.join(base_dir, filename)
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(doc_content)
+    except Exception as e:
+        print(f"Failed to save document to workspace path {file_path}: {e}")
+
+    # Save in workspace root folder
+    workspace_root = os.path.dirname(base_dir)
+    workspace_file_path = os.path.join(workspace_root, filename)
+    try:
+        with open(workspace_file_path, "w", encoding="utf-8") as f:
+            f.write(doc_content)
+    except Exception as e:
+        print(f"Failed to save document to workspace root {workspace_file_path}: {e}")
+
+    # Return as streaming file download
+    headers = {
+        'Content-Disposition': f'attachment; filename="{filename}"'
+    }
+    return StreamingResponse(
+        io.BytesIO(doc_content.encode("utf-8")),
+        media_type="text/markdown",
+        headers=headers
+    )
+
+
 @router.patch("/{strategy_id}/personas")
 def patch_personas(
     strategy_id: str,

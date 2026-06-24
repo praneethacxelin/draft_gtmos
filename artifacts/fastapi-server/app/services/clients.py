@@ -703,6 +703,167 @@ def clay_enrich(api_key: str, contacts: list[dict]) -> Optional[list[dict]]:
     return contacts
 
 
+# ---------------------------------------------------------------------------
+# Timezone normalisation for Instantly v2
+# Instantly only accepts specific IANA timezone strings. Windows (and some
+# browsers) emit deprecated aliases like "Asia/Calcutta" or legacy zone IDs
+# like "US/Eastern". This map converts known bad values to accepted ones and
+# we fall back to "UTC" for anything we can't recognise.
+# ---------------------------------------------------------------------------
+_INSTANTLY_TZ_ALIASES: dict[str, str] = {
+    # Indian subcontinent
+    "Asia/Calcutta":         "Asia/Kolkata",
+    # US legacy zones
+    "US/Eastern":            "America/New_York",
+    "US/Central":            "America/Chicago",
+    "US/Mountain":           "America/Denver",
+    "US/Pacific":            "America/Los_Angeles",
+    "US/Alaska":             "America/Anchorage",
+    "US/Hawaii":             "Pacific/Honolulu",
+    "US/Arizona":            "America/Phoenix",
+    # Other common aliases
+    "America/Indiana/Indianapolis": "America/Indianapolis",
+    "Atlantic/Reykjavik":    "UTC",
+    "Etc/UTC":               "UTC",
+    "Etc/GMT":               "UTC",
+    "GMT":                   "UTC",
+    "GB":                    "Europe/London",
+    "Japan":                 "Asia/Tokyo",
+    "Singapore":             "Asia/Singapore",
+    "Australia/ACT":         "Australia/Sydney",
+    "Australia/Queensland":  "Australia/Brisbane",
+    "Etc/GMT+5":             "America/New_York",   # rough mapping
+}
+
+# The 26 timezones accepted by Instantly v2 API whitelist
+_INSTANTLY_ALLOWED_TZ: set[str] = {
+    "Australia/Darwin", "America/Santiago", "Asia/Kathmandu", "America/Bogota",
+    "Asia/Dhaka", "Asia/Colombo", "America/Chicago", "Australia/Adelaide",
+    "Australia/Brisbane", "Asia/Dubai", "Asia/Jerusalem", "Asia/Kolkata",
+    "Pacific/Auckland", "America/Anchorage", "America/Caracas", "Australia/Melbourne",
+    "Europe/Istanbul", "Pacific/Fiji", "Europe/Helsinki", "Asia/Karachi",
+    "Asia/Taipei", "Europe/Bucharest", "Africa/Cairo", "Australia/Perth",
+    "America/Sao_Paulo", "Asia/Hong_Kong"
+}
+
+# Map common standard IANA timezones to one of the 26 allowed timezones (grouped by GMT offset / proximity)
+_INSTANTLY_ALLOWED_TZ_MAP: dict[str, str] = {
+    "UTC": "Europe/Bucharest",
+    "America/New_York": "America/Bogota",
+    "America/Chicago": "America/Chicago",
+    "America/Denver": "America/Chicago",
+    "America/Los_Angeles": "America/Anchorage",
+    "America/Phoenix": "America/Chicago",
+    "America/Anchorage": "America/Anchorage",
+    "Pacific/Honolulu": "America/Anchorage",
+    "America/Halifax": "America/Bogota",
+    "America/Sao_Paulo": "America/Sao_Paulo",
+    "America/Buenos_Aires": "America/Santiago",
+    "America/Santiago": "America/Santiago",
+    "America/Bogota": "America/Bogota",
+    "America/Lima": "America/Bogota",
+    "America/Mexico_City": "America/Chicago",
+    "America/Caracas": "America/Caracas",
+    "America/Indianapolis": "America/Chicago",
+    "America/Toronto": "America/Bogota",
+    "America/Vancouver": "America/Anchorage",
+    "America/Edmonton": "America/Chicago",
+    "America/Winnipeg": "America/Chicago",
+    "Europe/London": "Europe/Bucharest",
+    "Europe/Paris": "Europe/Bucharest",
+    "Europe/Berlin": "Europe/Bucharest",
+    "Europe/Rome": "Europe/Bucharest",
+    "Europe/Madrid": "Europe/Bucharest",
+    "Europe/Amsterdam": "Europe/Bucharest",
+    "Europe/Brussels": "Europe/Bucharest",
+    "Europe/Vienna": "Europe/Bucharest",
+    "Europe/Zurich": "Europe/Bucharest",
+    "Europe/Stockholm": "Europe/Bucharest",
+    "Europe/Oslo": "Europe/Bucharest",
+    "Europe/Copenhagen": "Europe/Bucharest",
+    "Europe/Helsinki": "Europe/Helsinki",
+    "Europe/Warsaw": "Europe/Bucharest",
+    "Europe/Prague": "Europe/Bucharest",
+    "Europe/Budapest": "Europe/Bucharest",
+    "Europe/Bucharest": "Europe/Bucharest",
+    "Europe/Athens": "Europe/Bucharest",
+    "Europe/Istanbul": "Europe/Istanbul",
+    "Europe/Moscow": "Europe/Istanbul",
+    "Europe/Kiev": "Europe/Bucharest",
+    "Africa/Nairobi": "Europe/Istanbul",
+    "Africa/Lagos": "Africa/Cairo",
+    "Africa/Cairo": "Africa/Cairo",
+    "Africa/Johannesburg": "Africa/Cairo",
+    "Asia/Kolkata": "Asia/Kolkata",
+    "Asia/Colombo": "Asia/Colombo",
+    "Asia/Dhaka": "Asia/Dhaka",
+    "Asia/Kathmandu": "Asia/Kathmandu",
+    "Asia/Dubai": "Asia/Dubai",
+    "Asia/Riyadh": "Europe/Istanbul",
+    "Asia/Kuwait": "Europe/Istanbul",
+    "Asia/Bahrain": "Europe/Istanbul",
+    "Asia/Qatar": "Europe/Istanbul",
+    "Asia/Jerusalem": "Asia/Jerusalem",
+    "Asia/Karachi": "Asia/Karachi",
+    "Asia/Tashkent": "Asia/Karachi",
+    "Asia/Almaty": "Asia/Dhaka",
+    "Asia/Bangkok": "Asia/Dhaka",
+    "Asia/Jakarta": "Asia/Dhaka",
+    "Asia/Singapore": "Asia/Hong_Kong",
+    "Asia/Kuala_Lumpur": "Asia/Hong_Kong",
+    "Asia/Hong_Kong": "Asia/Hong_Kong",
+    "Asia/Shanghai": "Asia/Hong_Kong",
+    "Asia/Taipei": "Asia/Taipei",
+    "Asia/Manila": "Asia/Hong_Kong",
+    "Asia/Seoul": "Asia/Hong_Kong",
+    "Asia/Tokyo": "Asia/Hong_Kong",
+    "Asia/Vladivostok": "Australia/Melbourne",
+    "Australia/Sydney": "Australia/Melbourne",
+    "Australia/Melbourne": "Australia/Melbourne",
+    "Australia/Brisbane": "Australia/Brisbane",
+    "Australia/Adelaide": "Australia/Adelaide",
+    "Australia/Perth": "Australia/Perth",
+    "Australia/Darwin": "Australia/Darwin",
+    "Pacific/Auckland": "Pacific/Auckland",
+    "Pacific/Fiji": "Pacific/Fiji",
+    "Pacific/Guam": "Australia/Brisbane",
+}
+
+
+def _normalize_tz(tz: str | None) -> str:
+    """Return an Instantly-accepted IANA timezone string from the whitelisted set.
+
+    1. Map known deprecated/alias names to their canonical equivalents.
+    2. If the result is in the whitelisted set, return it.
+    3. If the result is in the allowed map, return the mapped zone.
+    4. Try a case-insensitive match against the whitelisted set.
+    5. Fall back to 'Asia/Kolkata' to prevent any 400 Bad Request campaign errors.
+    """
+    if not tz:
+        return "Asia/Kolkata"
+    tz = tz.strip()
+    # Apply alias map first
+    tz = _INSTANTLY_TZ_ALIASES.get(tz, tz)
+
+    # Check whitelisted set directly
+    if tz in _INSTANTLY_ALLOWED_TZ:
+        return tz
+
+    # Check allowed map
+    mapped = _INSTANTLY_ALLOWED_TZ_MAP.get(tz)
+    if mapped:
+        return mapped
+
+    # Case-insensitive lookup as fallback
+    tz_lower = tz.lower()
+    for good in _INSTANTLY_ALLOWED_TZ:
+        if good.lower() == tz_lower:
+            return good
+
+    log.warning("Unknown/unsupported Instantly timezone '%s', falling back to Asia/Kolkata", tz)
+    return "Asia/Kolkata"
+
+
 def _instantly_headers(api_key: str) -> dict:
     """Build standard headers for Instantly v2 API calls."""
     return {
@@ -731,9 +892,22 @@ def instantly_create_campaign(
     if sequence_steps:
         steps = []
         for i, s in enumerate(sequence_steps):
+            delay_val = s.get("wait_days")
+            if delay_val is None:
+                delay_val = 1 if i > 0 else 0
+            else:
+                try:
+                    delay_val = int(delay_val)
+                except Exception:
+                    delay_val = 1 if i > 0 else 0
+
+            # Ensure follow-up steps have at least 1 day delay to prevent immediate sending
+            if i > 0 and delay_val <= 0:
+                delay_val = 1
+
             steps.append({
                 "type": "email",
-                "delay": s.get("wait_days", 0) if i > 0 else 0,
+                "delay": delay_val,
                 "delay_unit": "days",
                 "variants": [
                     {
@@ -744,19 +918,20 @@ def instantly_create_campaign(
             })
         instantly_sequences.append({"steps": steps})
 
-    # Default schedule: 24/7 UTC
+    # Default schedule: 24/7 (using Asia/Kolkata to avoid 400 error as UTC is not whitelisted)
     camp_schedule = {
         "name": "Default 24/7",
         "timing": {"from": "00:00", "to": "23:59"},
-        "timezone": "UTC",
+        "timezone": "Asia/Kolkata",
         "days": {"0": True, "1": True, "2": True, "3": True, "4": True, "5": True, "6": True}
     }
 
     if schedule:
+        raw_tz = schedule.get("timezone", "UTC")
         camp_schedule = {
             "name": "Custom UI Schedule",
             "timing": {"from": schedule.get("time_from", "09:00"), "to": schedule.get("time_to", "17:00")},
-            "timezone": schedule.get("timezone", "UTC"),
+            "timezone": _normalize_tz(raw_tz),
             "days": schedule.get("days", camp_schedule["days"])
         }
 
@@ -780,6 +955,55 @@ def instantly_create_campaign(
             raw_response_preview = r.text[:1000]
             r.raise_for_status()
             result = r.json()
+
+            # Fetch accounts to assign as senders in email_list
+            email_list = []
+            try:
+                accts_url = "https://api.instantly.ai/api/v2/accounts"
+                accts_headers = _instantly_headers(api_key)
+                r_accts = c.get(accts_url, headers=accts_headers)
+                if r_accts.status_code == 200:
+                    items = r_accts.json().get("items", [])
+                    email_list = [item["email"] for item in items if item.get("status") == 1]
+            except Exception as e:
+                log.warning("Failed to fetch Instantly accounts for email_list assignment: %s", e)
+
+            # PATCH campaign to set schedule and assign accounts
+            campaign_id = result.get("id") or result.get("campaign_id")
+            if campaign_id:
+                patch_url = f"https://api.instantly.ai/api/v2/campaigns/{campaign_id}"
+                patch_body = {
+                    "stop_on_reply": True
+                }
+                if schedule:
+                    patch_body["campaign_schedule"] = {
+                        "schedules": [camp_schedule]
+                    }
+                if email_list:
+                    patch_body["email_list"] = email_list
+
+                if patch_body:
+                    try:
+                        patch_curl = _make_curl("PATCH", patch_url, headers=headers, body=patch_body)
+                        r_patch = c.patch(patch_url, json=patch_body, headers=headers)
+                        r_patch.raise_for_status()
+                        audit_service.log_api_call(
+                            service="instantly",
+                            method="PATCH",
+                            url=patch_url,
+                            request_params={"campaign_id": campaign_id},
+                            response_status=r_patch.status_code,
+                            latency_ms=0,
+                            curl_command=patch_curl,
+                            strategy_id=_strategy_id,
+                            strategy_name=_strategy_name,
+                            is_live=True,
+                            response_summary=r_patch.json(),
+                            summary=f"Instantly: patch campaign schedule/accounts {campaign_id[:12]}",
+                        )
+                    except Exception as e:
+                        log.warning("Failed to patch Instantly campaign schedule/accounts: %s", e)
+
             return result
     except Exception as e:
         error_text = str(e)
@@ -1067,7 +1291,26 @@ def hunter_verify_email(
         )
 
 
-def instantly_get_campaigns(api_key: str) -> Optional[list[dict]]:
+class InstantlyAPIError(Exception):
+    """Raised when the Instantly v2 API rejects a request (e.g. 402 no active plan)."""
+    def __init__(self, status_code: int, message: str):
+        self.status_code = status_code
+        self.message = message
+        super().__init__(f"Instantly API {status_code}: {message}")
+
+
+def _instantly_error_from(exc: "httpx.HTTPStatusError") -> InstantlyAPIError:
+    status = exc.response.status_code
+    message = exc.response.reason_phrase or "Request failed"
+    try:
+        body = exc.response.json()
+        message = body.get("message") or body.get("error") or message
+    except Exception:
+        pass
+    return InstantlyAPIError(status, message)
+
+
+def instantly_get_campaigns(api_key: str, raise_on_error: bool = False) -> Optional[list[dict]]:
     if not api_key: return None
     _rl_consume("instantly")
     url = "https://api.instantly.ai/api/v2/campaigns"
@@ -1076,10 +1319,189 @@ def instantly_get_campaigns(api_key: str) -> Optional[list[dict]]:
         with httpx.Client(timeout=15.0) as c:
             r = c.get(url, headers=headers)
             r.raise_for_status()
-            return r.json().get("data", [])
+            res = r.json()
+            return res.get("items") or res.get("data") or []
+    except httpx.HTTPStatusError as e:
+        log.warning("instantly_get_campaigns failed: %s", e)
+        if raise_on_error:
+            raise _instantly_error_from(e) from e
+        return None
     except Exception as e:
         log.warning("instantly_get_campaigns failed: %s", e)
         return None
+
+
+def instantly_get_accounts(api_key: str, raise_on_error: bool = False) -> Optional[list[dict]]:
+    """Retrieve connected sending accounts from Instantly v2 API."""
+    if not api_key: return None
+    _rl_consume("instantly")
+    url = "https://api.instantly.ai/api/v2/accounts"
+    headers = _instantly_headers(api_key)
+    try:
+        with httpx.Client(timeout=TIMEOUT) as c:
+            r = c.get(url, headers=headers)
+            r.raise_for_status()
+            return r.json().get("items", [])
+    except httpx.HTTPStatusError as e:
+        log.warning("instantly_get_accounts failed: %s", e)
+        if raise_on_error:
+            raise _instantly_error_from(e) from e
+        return None
+    except Exception as e:
+        log.warning("instantly_get_accounts failed: %s", e)
+        return None
+
+
+def instantly_create_account(api_key: str, data: dict) -> Optional[dict]:
+    """Connect a new sending account via Instantly v2 API."""
+    if not api_key:
+        return None
+    _rl_consume("instantly")
+    url = "https://api.instantly.ai/api/v2/accounts"
+    headers = _instantly_headers(api_key)
+    curl = _make_curl("POST", url, headers=headers, body=data)
+    t0 = time.perf_counter()
+    status = None
+    result: Optional[dict] = None
+    error_text: Optional[str] = None
+    raw_response_preview: Optional[str] = None
+    try:
+        with httpx.Client(timeout=TIMEOUT) as c:
+            r = c.post(url, json=data, headers=headers)
+            status = r.status_code
+            raw_response_preview = r.text[:1000]
+            r.raise_for_status()
+            result = r.json()
+            return result
+    except Exception as e:
+        error_text = str(e)
+        log.warning("instantly_create_account failed: %s", e)
+        if status == 400:
+            raise ValueError(raw_response_preview or error_text)
+        raise e
+    finally:
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        summary_payload: dict = {"email": data.get("email")}
+        if result:
+            summary_payload["account_id"] = result.get("id") or result.get("email", "")
+        if error_text:
+            summary_payload["error"] = error_text[:500]
+        if raw_response_preview and status and status >= 400:
+            summary_payload["response_body"] = raw_response_preview
+        audit_service.log_api_call(
+            service="instantly",
+            method="POST",
+            url=url,
+            request_params={"email": data.get("email")},
+            response_status=status,
+            latency_ms=latency_ms,
+            curl_command=curl,
+            strategy_id=None,
+            strategy_name=None,
+            is_live=True,
+            response_summary=summary_payload,
+            summary=f"Instantly: connect sending account {data.get('email')}",
+        )
+
+
+def instantly_toggle_warmup(api_key: str, emails: list[str], enable: bool = True) -> Optional[dict]:
+    """Enable or disable warmup for specified email accounts."""
+    if not api_key or not emails:
+        return None
+    _rl_consume("instantly")
+    action = "enable" if enable else "disable"
+    url = f"https://api.instantly.ai/api/v2/accounts/warmup/{action}"
+    headers = _instantly_headers(api_key)
+    body = {"emails": emails}
+    curl = _make_curl("POST", url, headers=headers, body=body)
+    t0 = time.perf_counter()
+    status = None
+    result: Optional[dict] = None
+    error_text: Optional[str] = None
+    raw_response_preview: Optional[str] = None
+    try:
+        with httpx.Client(timeout=TIMEOUT) as c:
+            r = c.post(url, json=body, headers=headers)
+            status = r.status_code
+            raw_response_preview = r.text[:1000]
+            r.raise_for_status()
+            result = r.json()
+            return result
+    except Exception as e:
+        error_text = str(e)
+        log.warning(f"instantly_toggle_warmup {action} failed: %s", e)
+        if status == 409:
+            raise ValueError("Conflict: A warmup update job is already in progress.")
+        raise e
+    finally:
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        summary_payload: dict = {"emails": emails, "enable": enable}
+        if error_text:
+            summary_payload["error"] = error_text[:500]
+        if raw_response_preview and status and status >= 400:
+            summary_payload["response_body"] = raw_response_preview
+        audit_service.log_api_call(
+            service="instantly",
+            method="POST",
+            url=url,
+            request_params={"emails": emails, "enable": enable},
+            response_status=status,
+            latency_ms=latency_ms,
+            curl_command=curl,
+            strategy_id=None,
+            strategy_name=None,
+            is_live=True,
+            response_summary=summary_payload,
+            summary=f"Instantly: {action} warmup for {', '.join(emails[:2])}",
+        )
+
+
+def instantly_get_warmup_analytics(api_key: str, emails: list[str]) -> Optional[dict]:
+    """Get warmup analytics for specified email accounts."""
+    if not api_key or not emails:
+        return None
+    _rl_consume("instantly")
+    url = "https://api.instantly.ai/api/v2/accounts/warmup-analytics"
+    headers = _instantly_headers(api_key)
+    body = {"emails": emails}
+    curl = _make_curl("POST", url, headers=headers, body=body)
+    t0 = time.perf_counter()
+    status = None
+    result: Optional[dict] = None
+    error_text: Optional[str] = None
+    raw_response_preview: Optional[str] = None
+    try:
+        with httpx.Client(timeout=TIMEOUT) as c:
+            r = c.post(url, json=body, headers=headers)
+            status = r.status_code
+            raw_response_preview = r.text[:1000]
+            r.raise_for_status()
+            result = r.json()
+            return result
+    except Exception as e:
+        error_text = str(e)
+        log.warning("instantly_get_warmup_analytics failed: %s", e)
+        return None
+    finally:
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        summary_payload: dict = {"emails": emails}
+        if error_text:
+            summary_payload["error"] = error_text[:500]
+        audit_service.log_api_call(
+            service="instantly",
+            method="POST",
+            url=url,
+            request_params={"emails": emails},
+            response_status=status,
+            latency_ms=latency_ms,
+            curl_command=curl,
+            strategy_id=None,
+            strategy_name=None,
+            is_live=True,
+            response_summary=summary_payload,
+            summary=f"Instantly: fetch warmup analytics for {', '.join(emails[:2])}",
+        )
+
 
 def instantly_get_analytics(api_key: str, campaign_id: Optional[str] = None) -> Optional[dict]:
     if not api_key: return None
