@@ -35,6 +35,8 @@ import {
   useResumeCampaign,
   useDisconnectSendingAccount,
   useContactReplies,
+  useCampaignLeads,
+  useLeadReplies,
 } from "@/hooks/useSequences";
 import { Mail, Linkedin, Phone, ShieldCheck, Send, Wand2, Pencil, X, FlaskConical, Check, Megaphone, Search, Flame, Plus, Play, Pause, Heart, Loader2, Activity, RefreshCw, Trash2 } from "lucide-react";
 import { fmtDate } from "@/lib/format";
@@ -1235,9 +1237,11 @@ function CampaignsListCard({
   onRefresh: () => void;
 }) {
   const [selectedCampaignId, setSelectedCampaignId] = useState<string | null>(null);
+  const [modalCampaignId, setModalCampaignId] = useState<string | null>(null);
+  const [selectedLeadEmail, setSelectedLeadEmail] = useState<string | null>(null);
+  const [leadSearch, setLeadSearch] = useState("");
 
   const campaigns = sequence?.campaigns || [];
-  const { data: replies, isFetching: isRepliesFetching, refetch: refetchReplies } = useContactReplies(contactId);
 
   // Automatically select the first campaign if none is selected
   useEffect(() => {
@@ -1250,7 +1254,83 @@ function CampaignsListCard({
     (c: any) => c.instantly_campaign_id === selectedCampaignId
   );
 
-  const loadingData = isFetching || isRepliesFetching;
+  const modalCampaign = campaigns.find(
+    (c: any) => c.instantly_campaign_id === modalCampaignId
+  );
+
+  const { data: leads, isLoading: isLoadingLeads } = useCampaignLeads(modalCampaignId ?? undefined);
+  const { data: leadReplies, isFetching: isLeadRepliesFetching, isLoading: isLoadingReplies, refetch: refetchLeadReplies } = useLeadReplies(selectedLeadEmail ?? undefined);
+
+  const getLeadStatusLabel = (status: number | string | undefined | null) => {
+    if (status === undefined || status === null) return "Uploaded";
+    
+    const normalized = String(status).toLowerCase().trim();
+    if (normalized === "uploaded") return "Uploaded";
+    if (normalized === "contacted") return "Contacted";
+    if (normalized === "bounced") return "Bounced";
+    if (normalized === "reply received" || normalized === "replied" || normalized === "reply_received") return "Reply Received";
+    if (normalized === "completed") return "Completed";
+    if (normalized === "unsubscribed") return "Unsubscribed";
+    if (normalized === "interested") return "Interested";
+    if (normalized === "meeting booked" || normalized === "meeting_booked") return "Meeting Booked";
+
+    const s = Number(status);
+    if (!isNaN(s)) {
+      switch (s) {
+        case 0: return "Uploaded";
+        case 1: return "Contacted";
+        case 2: return "Bounced";
+        case 3: return "Reply Received";
+        case 4: return "Completed";
+        case 5: return "Unsubscribed";
+        case 6: return "Interested";
+        case 7: return "Meeting Booked";
+      }
+    }
+    
+    return String(status).charAt(0).toUpperCase() + String(status).slice(1);
+  };
+
+  const getLeadStatusStyle = (status: number | string | undefined | null) => {
+    if (status === undefined || status === null) return "bg-muted text-muted-foreground";
+    
+    const normalized = String(status).toLowerCase().trim();
+    if (normalized === "uploaded") return "bg-muted text-muted-foreground";
+    if (normalized === "contacted") return "bg-blue-500/10 text-blue-400 border border-blue-500/20";
+    if (normalized === "bounced") return "bg-destructive/10 text-destructive border border-destructive/20";
+    if (normalized === "reply received" || normalized === "replied" || normalized === "reply_received") return "bg-purple-500/10 text-purple-400 border border-purple-500/20";
+    if (normalized === "completed") return "bg-gray-500/10 text-gray-400 border border-gray-500/20";
+    if (normalized === "unsubscribed") return "bg-amber-500/10 text-amber-500 border border-amber-500/20";
+    if (normalized === "interested") return "bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 font-semibold";
+    if (normalized === "meeting booked" || normalized === "meeting_booked") return "bg-emerald-600 text-white font-bold";
+
+    const s = Number(status);
+    if (!isNaN(s)) {
+      switch (s) {
+        case 0: return "bg-muted text-muted-foreground";
+        case 1: return "bg-blue-500/10 text-blue-400 border border-blue-500/20";
+        case 2: return "bg-destructive/10 text-destructive border border-destructive/20";
+        case 3: return "bg-purple-500/10 text-purple-400 border border-purple-500/20";
+        case 4: return "bg-gray-500/10 text-gray-400 border border-gray-500/20";
+        case 5: return "bg-amber-500/10 text-amber-500 border border-amber-500/20";
+        case 6: return "bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 font-semibold";
+        case 7: return "bg-emerald-600 text-white font-bold";
+      }
+    }
+    
+    return "bg-muted text-muted-foreground";
+  };
+
+  const filteredLeads = (leads ?? []).filter(lead => {
+    const term = leadSearch.toLowerCase().trim();
+    if (!term) return true;
+    const name = `${lead.first_name || ""} ${lead.last_name || ""}`.toLowerCase();
+    const email = (lead.email || "").toLowerCase();
+    const company = (lead.company_name || "").toLowerCase();
+    return name.includes(term) || email.includes(term) || company.includes(term);
+  });
+
+  const modalStats = modalCampaign?.analytics;
 
   return (
     <Card className="border-card-border bg-card p-4 flex flex-col h-[550px]">
@@ -1261,13 +1341,12 @@ function CampaignsListCard({
           <button 
             onClick={() => {
               onRefresh();
-              refetchReplies();
             }} 
             className="text-muted-foreground hover:text-foreground transition-colors p-0.5 rounded"
-            title="Refresh campaigns and replies"
-            disabled={loadingData}
+            title="Refresh campaigns"
+            disabled={isFetching}
           >
-            <RefreshCw className={`h-3 w-3 ${loadingData ? "animate-spin" : ""}`} />
+            <RefreshCw className={`h-3 w-3 ${isFetching ? "animate-spin" : ""}`} />
           </button>
         </div>
         {campaigns.length > 0 && (
@@ -1288,25 +1367,22 @@ function CampaignsListCard({
             {campaigns.map((camp: any) => {
               const stats = camp.analytics || {
                 sent: 0,
-                open_rate: 0,
-                click_rate: 0,
                 reply_rate: 0,
-                opportunities: 0,
                 email_list: []
               };
               const isPaused = camp.status === "paused";
               const isComplete = camp.status === "complete";
-              const isSelected = selectedCampaignId === camp.instantly_campaign_id;
 
               return (
                 <div
                   key={camp.instantly_campaign_id}
-                  onClick={() => setSelectedCampaignId(camp.instantly_campaign_id)}
-                  className={`cursor-pointer rounded-lg border p-3 space-y-2.5 transition-all ${
-                    isSelected
-                      ? "border-primary bg-primary/5 text-foreground"
-                      : "border-border bg-background/30 hover:bg-background/55 text-foreground"
-                  }`}
+                  onClick={() => {
+                    setModalCampaignId(camp.instantly_campaign_id);
+                    setSelectedCampaignId(camp.instantly_campaign_id);
+                    setSelectedLeadEmail(null);
+                    setLeadSearch("");
+                  }}
+                  className="cursor-pointer rounded-lg border border-border bg-background/30 hover:bg-background/55 hover:border-primary/50 text-foreground p-3 space-y-2.5 transition-all animate-fade-in"
                 >
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0">
@@ -1355,92 +1431,229 @@ function CampaignsListCard({
                     </div>
                   </div>
 
-                  {isSelected && (
-                    <div className="space-y-3 pt-2 border-t border-border/50">
-                      <div className="grid grid-cols-4 gap-1 text-[11px] text-center">
-                        <div>
-                          <div className="text-muted-foreground text-[9px] uppercase font-semibold">Sent</div>
-                          <div className="font-mono mt-0.5 font-bold">{stats.sent}</div>
-                        </div>
-                        <div className="border-l border-border/50">
-                          <div className="text-muted-foreground text-[9px] uppercase font-semibold">Open %</div>
-                          <div className="font-mono mt-0.5 font-bold text-blue-400">{stats.open_rate}%</div>
-                        </div>
-                        <div className="border-l border-border/50">
-                          <div className="text-muted-foreground text-[9px] uppercase font-semibold">Click %</div>
-                          <div className="font-mono mt-0.5 font-bold text-amber-500">{stats.click_rate}%</div>
-                        </div>
-                        <div className="border-l border-border/50">
-                          <div className="text-muted-foreground text-[9px] uppercase font-semibold">Reply %</div>
-                          <div className="font-mono mt-0.5 font-bold text-emerald-500">{stats.reply_rate}%</div>
-                        </div>
+                  <div className="space-y-2 pt-2 border-t border-border/50">
+                    <div className="grid grid-cols-2 gap-1 text-[11px] text-center">
+                      <div>
+                        <div className="text-muted-foreground text-[9px] uppercase font-semibold">Sent</div>
+                        <div className="font-mono mt-0.5 font-bold">{stats.sent}</div>
                       </div>
-
-                      {stats.email_list && stats.email_list.length > 0 && (
-                        <div className="text-[10px] text-left text-muted-foreground border-t border-border/40 pt-1.5 px-0.5 truncate">
-                          <span className="font-semibold text-foreground/80">Sender: </span>
-                          <span className="font-mono">{stats.email_list.join(", ")}</span>
-                        </div>
-                      )}
-
-                      <div className="border-t border-border/40 pt-2 text-left">
-                        <div className="text-[9px] font-bold uppercase tracking-wider text-muted-foreground mb-1.5 px-0.5">
-                          Conversation Thread
-                        </div>
-                        
-                        {isRepliesFetching && !replies ? (
-                          <div className="flex items-center justify-center py-4 text-[10px] text-muted-foreground gap-1.5">
-                            <Loader2 className="h-3 w-3 animate-spin text-primary" />
-                            Loading replies...
-                          </div>
-                        ) : !replies || replies.length === 0 ? (
-                          <div className="text-[10px] italic text-muted-foreground px-1 py-2 bg-background/20 rounded border border-border/30 text-center">
-                            No emails sent or received yet.
-                          </div>
-                        ) : (
-                          <div className="space-y-2 max-h-[160px] overflow-y-auto pr-0.5 scrollbar-thin">
-                            {replies.map((reply: any) => {
-                              const isOutgoing = reply.ue_type === 1;
-                              return (
-                                <div 
-                                  key={reply.id} 
-                                  className={`p-2 rounded text-[11px] leading-normal border ${
-                                    isOutgoing 
-                                      ? "bg-muted/30 border-border/40 ml-4 mr-0.5 text-foreground/90" 
-                                      : "bg-primary/5 border-primary/20 mr-4 ml-0.5 text-foreground"
-                                  }`}
-                                >
-                                  <div className="flex items-center justify-between text-[9px] text-muted-foreground mb-1">
-                                    <span className="font-semibold truncate max-w-[140px]">
-                                      {isOutgoing 
-                                        ? `To: ${reply.to_address_email || "Lead"}` 
-                                        : `From: ${reply.from_address_name || reply.from_address_email || "Lead"}`
-                                      }
-                                    </span>
-                                    <span>{fmtDate(reply.timestamp_created)}</span>
-                                  </div>
-                                  {reply.subject && (
-                                    <div className="font-semibold text-[9.5px] mb-0.5 truncate text-foreground/80">
-                                      Subject: {reply.subject}
-                                    </div>
-                                  )}
-                                  <div className="whitespace-pre-wrap break-words text-foreground/75 text-[10px] font-sans">
-                                    {reply.body}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
+                      <div className="border-l border-border/50">
+                        <div className="text-muted-foreground text-[9px] uppercase font-semibold">Reply %</div>
+                        <div className="font-mono mt-0.5 font-bold text-emerald-500">{stats.reply_rate}%</div>
                       </div>
                     </div>
-                  )}
+
+                    {stats.email_list && stats.email_list.length > 0 && (
+                      <div className="text-[10px] text-left text-muted-foreground border-t border-border/40 pt-1.5 px-0.5 truncate">
+                        <span className="font-semibold text-foreground/80">Sender: </span>
+                        <span className="font-mono">{stats.email_list.join(", ")}</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
               );
             })}
           </div>
         )}
       </div>
+
+      {/* 70%+ Screen Width Modal/Popup Dialog */}
+      <Dialog open={!!modalCampaignId} onOpenChange={(open) => {
+        if (!open) {
+          setModalCampaignId(null);
+          setSelectedLeadEmail(null);
+        }
+      }}>
+        <DialogContent className="max-w-[80vw] w-[80vw] h-[80vh] max-h-[80vh] flex flex-col bg-card border-card-border text-foreground p-6">
+          <DialogHeader className="border-b border-border/50 pb-3">
+            <DialogTitle className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Activity className="h-5 w-5 text-primary" />
+                <span className="text-base font-semibold">
+                  Campaign: {modalCampaignId?.slice(0, 8)}
+                </span>
+                {modalCampaign && (
+                  <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                    modalCampaign.status === "paused"
+                      ? "bg-amber-500/15 text-amber-500"
+                      : modalCampaign.status === "complete"
+                        ? "bg-emerald-500/15 text-emerald-500"
+                        : "bg-primary/15 text-primary"
+                  }`}>
+                    {modalCampaign.status}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-4 text-xs font-normal text-muted-foreground mr-6">
+                {modalStats && (
+                  <div className="flex items-center gap-3 bg-muted/30 px-3 py-1.5 rounded-md border border-border/45">
+                    <div>
+                      <span className="font-semibold text-foreground">{modalStats.sent}</span> Sent
+                    </div>
+                    <div className="h-3 w-px bg-border/50" />
+                    <div>
+                      <span className="font-semibold text-emerald-500">{modalStats.reply_rate}%</span> Reply Rate
+                    </div>
+                  </div>
+                )}
+                {modalStats?.email_list && modalStats.email_list.length > 0 && (
+                  <div className="max-w-[200px] truncate">
+                    <span className="font-semibold text-foreground/80">Sender: </span>
+                    <span className="font-mono">{modalStats.email_list.join(", ")}</span>
+                  </div>
+                )}
+              </div>
+            </DialogTitle>
+          </DialogHeader>
+
+          {/* Dialog Main Content - Split Screen */}
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-6 flex-1 min-h-0 overflow-hidden pt-4">
+            {/* Left side: Leads list */}
+            <div className="md:col-span-5 flex flex-col h-full overflow-hidden border-r border-border/50 pr-4">
+              <div className="mb-3">
+                <Label className="text-xs text-muted-foreground font-semibold uppercase tracking-wider">
+                  Leads in Campaign
+                </Label>
+                <div className="relative mt-1">
+                  <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+                  <Input
+                    placeholder="Search leads by name, email..."
+                    value={leadSearch}
+                    onChange={(e) => setLeadSearch(e.target.value)}
+                    className="h-8 text-xs pl-8 bg-background"
+                  />
+                </div>
+              </div>
+
+              {isLoadingLeads ? (
+                <div className="flex-1 flex items-center justify-center text-xs text-muted-foreground">
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin text-primary" />
+                  Loading leads...
+                </div>
+              ) : filteredLeads.length === 0 ? (
+                <div className="flex-1 flex items-center justify-center text-xs text-muted-foreground italic">
+                  No leads found.
+                </div>
+              ) : (
+                <div className="flex-1 overflow-y-auto space-y-2 pr-1 scrollbar-thin">
+                  {filteredLeads.map((lead) => {
+                    const isLeadSelected = selectedLeadEmail === lead.email;
+                    const statusLabel = getLeadStatusLabel(lead.status);
+                    const statusStyle = getLeadStatusStyle(lead.status);
+
+                    return (
+                      <div
+                        key={lead.email}
+                        onClick={() => setSelectedLeadEmail(lead.email)}
+                        className={`cursor-pointer rounded-lg border p-3 flex items-center justify-between transition-all ${
+                          isLeadSelected
+                            ? "border-primary bg-primary/5"
+                            : "border-border bg-background/20 hover:bg-background/45"
+                        }`}
+                      >
+                        <div className="min-w-0 flex-1 pr-3">
+                          <div className="font-semibold text-xs text-foreground truncate">
+                            {lead.first_name || lead.last_name
+                              ? `${lead.first_name || ""} ${lead.last_name || ""}`.trim()
+                              : "Unknown Name"}
+                          </div>
+                          <div className="text-[10px] text-muted-foreground font-mono truncate">
+                            {lead.email}
+                          </div>
+                          {lead.company_name && (
+                            <div className="text-[10px] text-muted-foreground truncate mt-0.5">
+                              {lead.company_name}
+                            </div>
+                          )}
+                        </div>
+                        <span className={`rounded-full px-2 py-0.5 text-[9px] font-medium shrink-0 ${statusStyle}`}>
+                          {statusLabel}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Right side: Lead Conversation thread */}
+            <div className="md:col-span-7 flex flex-col h-full overflow-hidden">
+              {selectedLeadEmail ? (
+                <div className="flex flex-col h-full overflow-hidden">
+                  <div className="mb-3 flex items-center justify-between border-b border-border/40 pb-2">
+                    <div className="min-w-0">
+                      <div className="text-xs text-muted-foreground font-semibold uppercase tracking-wider">
+                        Conversation Thread
+                      </div>
+                      <div className="text-xs font-semibold text-foreground truncate mt-0.5 font-mono">
+                        {selectedLeadEmail}
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => refetchLeadReplies()}
+                      className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+                      disabled={isLeadRepliesFetching}
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${isLeadRepliesFetching ? "animate-spin" : ""}`} />
+                    </Button>
+                  </div>
+
+                  {isLoadingReplies ? (
+                    <div className="flex-1 flex items-center justify-center text-xs text-muted-foreground">
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin text-primary" />
+                      Loading replies...
+                    </div>
+                  ) : !leadReplies || leadReplies.length === 0 ? (
+                    <div className="flex-1 flex items-center justify-center text-xs text-muted-foreground italic border border-dashed border-border rounded-lg bg-background/10">
+                      No emails sent or replies received for this lead yet.
+                    </div>
+                  ) : (
+                    <div className="flex-1 overflow-y-auto space-y-3 pr-1 scrollbar-thin">
+                      {leadReplies.map((reply) => {
+                        const isOutgoing = reply.ue_type === 1;
+                        return (
+                          <div
+                            key={reply.id}
+                            className={`p-3 rounded-lg text-xs leading-normal border ${
+                              isOutgoing
+                                ? "bg-muted/30 border-border/40 ml-8 text-foreground/90"
+                                : "bg-primary/5 border-primary/20 mr-8 text-foreground font-medium"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between text-[10px] text-muted-foreground mb-1.5">
+                              <span className="font-semibold truncate">
+                                {isOutgoing
+                                  ? `To: ${reply.to_address_email || "Lead"}`
+                                  : `From: ${reply.from_address_name || reply.from_address_email || "Lead"}`}
+                              </span>
+                              <span>{fmtDate(reply.timestamp_created)}</span>
+                            </div>
+                            {reply.subject && (
+                              <div className="font-semibold text-xs mb-1 truncate text-foreground/80">
+                                Subject: {reply.subject}
+                              </div>
+                            )}
+                            <div className="whitespace-pre-wrap break-words text-foreground/85 font-sans leading-relaxed">
+                              {reply.body}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="flex-1 flex flex-col items-center justify-center text-center p-6 text-xs text-muted-foreground border border-dashed border-border rounded-lg bg-background/10 gap-2">
+                  <Mail className="h-8 w-8 text-muted-foreground/30" />
+                  <span>Select a lead from the list to view their email thread history.</span>
+                </div>
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

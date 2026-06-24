@@ -285,3 +285,28 @@ export function useResumeCampaign() {
   });
 }
 
+export interface LeadInfo {
+  email: string;
+  first_name?: string;
+  last_name?: string;
+  company_name?: string;
+  status?: number | string;
+}
+
+export function useCampaignLeads(campaignId?: string) {
+  return useQuery<LeadInfo[]>({
+    queryKey: ["campaign", campaignId, "leads"],
+    queryFn: () => apiFetch(`/api/sequences/campaigns/${campaignId}/leads`),
+    enabled: !!campaignId,
+  });
+}
+
+export function useLeadReplies(email?: string) {
+  return useQuery<Reply[]>({
+    queryKey: ["lead", email, "replies"],
+    queryFn: () => apiFetch(`/api/sequences/campaigns/leads/replies?email=${email}`),
+    enabled: !!email,
+    refetchInterval: 10000, // Poll every 10 seconds
+  });
+}
+

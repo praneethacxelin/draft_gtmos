@@ -787,13 +787,26 @@ def instantly_create_campaign(
     if sequence_steps:
         steps = []
         for i, s in enumerate(sequence_steps):
+            delay_val = s.get("wait_days")
+            if delay_val is None:
+                delay_val = 1 if i > 0 else 0
+            else:
+                try:
+                    delay_val = int(delay_val)
+                except Exception:
+                    delay_val = 1 if i > 0 else 0
+            
+            # Ensure follow-up steps have at least 1 day delay to prevent immediate sending
+            if i > 0 and delay_val <= 0:
+                delay_val = 1
+
             steps.append({
                 "type": "email",
-                "delay": s.get("wait_days", 0) if i > 0 else 0,
+                "delay": delay_val,
                 "delay_unit": "days",
                 "variants": [
                     {
-                        "subject": s.get("subject", "Following up") if i == 0 else "",
+                        "subject": s.get("subject", "Following up"),
                         "body": s.get("body", "")
                     }
                 ]
@@ -1331,7 +1344,7 @@ def instantly_get_leads(api_key: str, campaign_id: str, status: Optional[str] = 
     _rl_consume("instantly")
     url = "https://api.instantly.ai/api/v2/leads/list"
     headers = _instantly_headers(api_key)
-    payload: dict = {"campaign_id": campaign_id, "limit": 1000}
+    payload: dict = {"campaign": campaign_id, "limit": 100}
     if status:
         payload["status"] = status
     try:
@@ -1339,7 +1352,7 @@ def instantly_get_leads(api_key: str, campaign_id: str, status: Optional[str] = 
             r = c.post(url, json=payload, headers=headers)
             r.raise_for_status()
             data = r.json()
-            return data.get("data", [])
+            return data.get("items", [])
     except Exception as e:
         log.warning("instantly_get_leads failed: %s", e)
         return None

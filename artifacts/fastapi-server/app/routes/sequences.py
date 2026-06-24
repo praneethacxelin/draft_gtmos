@@ -686,3 +686,121 @@ def resume_campaign(
     db.commit()
     return {"status": "active"}
 
+
+@router.get("/campaigns/{campaign_id}/leads")
+def get_campaign_leads(
+    campaign_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> list[dict]:
+    instantly_key = settings_service.get_key(db, user.id, "instantly")
+    if not instantly_key or campaign_id.startswith("sim-"):
+        # Return mock leads for offline/simulated experience
+        return [
+            {
+                "email": "emily@techwave.com",
+                "first_name": "Emily",
+                "last_name": "Smith",
+                "company_name": "TechWave Solutions",
+                "status": 3, # Reply received
+            },
+            {
+                "email": "david@nexus.com",
+                "first_name": "David",
+                "last_name": "Miller",
+                "company_name": "Nexus Corp",
+                "status": 6, # Interested
+            },
+            {
+                "email": "sarah@apex.com",
+                "first_name": "Sarah",
+                "last_name": "Jones",
+                "company_name": "Apex Ltd",
+                "status": 4, # Completed
+            },
+            {
+                "email": "robert@vertex.com",
+                "first_name": "Robert",
+                "last_name": "Taylor",
+                "company_name": "Vertex Inc",
+                "status": 5, # Unsubscribed
+            }
+        ]
+    
+    leads = clients.instantly_get_leads(instantly_key, campaign_id)
+    if not leads:
+        return []
+    
+    return [{
+        "email": lead.get("email"),
+        "first_name": lead.get("first_name"),
+        "last_name": lead.get("last_name"),
+        "company_name": lead.get("company_name"),
+        "status": lead.get("status"),
+    } for lead in leads]
+
+
+@router.get("/campaigns/leads/replies")
+def get_lead_replies(
+    email: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> list[dict]:
+    instantly_key = settings_service.get_key(db, user.id, "instantly")
+    if not instantly_key or email.startswith("emily@") or email.startswith("david@") or email.startswith("sim-"):
+        # Return mock replies
+        if "emily" in email.lower():
+            return [
+                {
+                    "id": "sim-reply-1",
+                    "subject": "Re: Optimizing Support Operations",
+                    "body": "Hi there,\n\nI read your email and yes, we are trying to scale our support team. Can we schedule a quick call next Tuesday at 10 AM?\n\nThanks,\nEmily",
+                    "from_address_name": "Emily Smith",
+                    "from_address_email": "emily@techwave.com",
+                    "to_address_email": "sender@company.com",
+                    "ue_type": 2, # reply/received
+                    "timestamp_created": "2026-06-24T10:00:00Z",
+                }
+            ]
+        elif "david" in email.lower():
+            return [
+                {
+                    "id": "sim-reply-2",
+                    "subject": "Re: Automated Ticketing Solutions",
+                    "body": "Thank you for reaching out. What are the integration options for Jira?\n\nBest,\nDavid",
+                    "from_address_name": "David Miller",
+                    "from_address_email": "david@nexus.com",
+                    "to_address_email": "sender@company.com",
+                    "ue_type": 2,
+                    "timestamp_created": "2026-06-23T15:30:00Z",
+                }
+            ]
+        return []
+
+    import httpx
+    try:
+        url = f"https://api.instantly.ai/api/v2/emails?lead={email}"
+        headers = {"Authorization": f"Bearer {instantly_key}"}
+        r = httpx.get(url, headers=headers, timeout=10.0)
+        r.raise_for_status()
+        items = r.json().get("items", [])
+        
+        replies = []
+        for item in items:
+            replies.append({
+                "id": item.get("id"),
+                "subject": item.get("subject"),
+                "body": item.get("body", {}).get("text") or item.get("body", {}).get("html") or "",
+                "from_address_name": item.get("from_address_name"),
+                "from_address_email": item.get("from_address_email"),
+                "to_address_email": item.get("to_address_email"),
+                "ue_type": item.get("ue_type"), # 1=sent, 2=received/reply
+                "timestamp_created": item.get("timestamp_created"),
+            })
+        return replies
+    except Exception as e:
+        import logging
+        logging.getLogger("gtm.sequences").warning("Failed to fetch Instantly emails for lead %s: %s", email, e)
+        return []
+
+
