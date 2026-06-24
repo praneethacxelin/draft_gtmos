@@ -56,6 +56,20 @@ interface StepDraft {
   send_at?: string;
 }
 
+interface ReviewDraft {
+  full_name: string;
+  email: string;
+  title: string;
+  company_name: string;
+  industry: string;
+  department: string;
+  persona_type: string;
+  seniority: string;
+  pain_point: string;
+  recent_signal: string;
+  icebreaker: string;
+}
+
 type ViewMode = "template" | "preview";
 type PanelView = "sequence" | "review";
 
@@ -142,6 +156,84 @@ function channelBg(channel: string) {
   return "bg-amber-500/15 text-amber-400";
 }
 
+function ReviewField({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <Label className="text-xs">{label}</Label>
+      {children}
+    </div>
+  );
+}
+
+function ReviewInput({
+  label,
+  value,
+  onChange,
+  type = "text",
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  type?: string;
+}) {
+  return (
+    <ReviewField label={label}>
+      <Input value={value} onChange={(event) => onChange(event.target.value)} className="h-8 text-sm" type={type} />
+    </ReviewField>
+  );
+}
+
+function ReviewTextarea({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <ReviewField label={label}>
+      <Textarea value={value} onChange={(event) => onChange(event.target.value)} rows={3} className="text-sm" />
+    </ReviewField>
+  );
+}
+
+function ReviewSelect({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: string[];
+}) {
+  return (
+    <ReviewField label={label}>
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger className="h-8 text-xs">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((option) => (
+            <SelectItem key={option} value={option}>
+              {option}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </ReviewField>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
@@ -214,6 +306,19 @@ export function Outreach() {
   const [editingContactId, setEditingContactId] = useState<string | null>(null);
   const [contactEditDraft, setContactEditDraft] = useState({ full_name: "", email: "" });
   const updateContact = useUpdateContact();
+  const [reviewDraft, setReviewDraft] = useState<ReviewDraft>({
+    full_name: "",
+    email: "",
+    title: "",
+    company_name: "",
+    industry: "",
+    department: "",
+    persona_type: "",
+    seniority: "",
+    pain_point: "",
+    recent_signal: "",
+    icebreaker: "",
+  });
 
   // Instantly sender status
   const { data: senderStatus } = useSenderStatus();
@@ -293,6 +398,23 @@ export function Outreach() {
 
   const daysMap = [{ k:"1",label:"M"},{k:"2",label:"T"},{k:"3",label:"W"},{k:"4",label:"T"},{k:"5",label:"F"},{k:"6",label:"S"},{k:"0",label:"S"}];
 
+  useEffect(() => {
+    if (!activeContact) return;
+    setReviewDraft({
+      full_name: activeContact.full_name ?? "",
+      email: activeContact.email ?? "",
+      title: activeContact.title ?? "",
+      company_name: activeContact.company_name ?? "",
+      industry: activeContact.industry ?? "",
+      department: activeContact.department ?? "",
+      persona_type: activeContact.persona_type ?? "",
+      seniority: activeContact.seniority ?? "",
+      pain_point: activeContact.pain_point ?? "",
+      recent_signal: activeContact.recent_signal ?? "",
+      icebreaker: activeContact.icebreaker ?? "",
+    });
+  }, [activeContact]);
+
   // -------------------------------------------------------------------------
   // Guard: no active strategy
   // -------------------------------------------------------------------------
@@ -337,16 +459,91 @@ export function Outreach() {
 
     return (
       <div className="space-y-4">
+        <Card className="border-card-border bg-card p-4">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Approval Draft</div>
+              <div className="text-sm text-muted-foreground">
+                Edit contact and personalization inputs here before launch so the engineer can approve the exact payload.
+              </div>
+            </div>
+            <Button size="sm" variant="secondary" onClick={() => setPanelView("sequence")}>
+              <Pencil className="mr-2 h-4 w-4" /> Edit Sequence
+            </Button>
+          </div>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <ReviewInput label="Full Name" value={reviewDraft.full_name} onChange={(value) => setReviewDraft((draft) => ({ ...draft, full_name: value }))} />
+            <ReviewInput label="Email" value={reviewDraft.email} onChange={(value) => setReviewDraft((draft) => ({ ...draft, email: value }))} type="email" />
+            <ReviewInput label="Title" value={reviewDraft.title} onChange={(value) => setReviewDraft((draft) => ({ ...draft, title: value }))} />
+            <ReviewInput label="Company" value={reviewDraft.company_name} onChange={(value) => setReviewDraft((draft) => ({ ...draft, company_name: value }))} />
+            <ReviewInput label="Industry" value={reviewDraft.industry} onChange={(value) => setReviewDraft((draft) => ({ ...draft, industry: value }))} />
+            <ReviewInput label="Department" value={reviewDraft.department} onChange={(value) => setReviewDraft((draft) => ({ ...draft, department: value }))} />
+            <ReviewInput label="Persona Type" value={reviewDraft.persona_type} onChange={(value) => setReviewDraft((draft) => ({ ...draft, persona_type: value }))} />
+            <ReviewInput label="Seniority" value={reviewDraft.seniority} onChange={(value) => setReviewDraft((draft) => ({ ...draft, seniority: value }))} />
+          </div>
+          <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+            <ReviewTextarea label="Pain Point" value={reviewDraft.pain_point} onChange={(value) => setReviewDraft((draft) => ({ ...draft, pain_point: value }))} />
+            <ReviewTextarea label="Recent Signal" value={reviewDraft.recent_signal} onChange={(value) => setReviewDraft((draft) => ({ ...draft, recent_signal: value }))} />
+            <ReviewTextarea label="Icebreaker" value={reviewDraft.icebreaker} onChange={(value) => setReviewDraft((draft) => ({ ...draft, icebreaker: value }))} />
+          </div>
+          <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+            <ReviewSelect
+              label="Goal"
+              value={goal}
+              onChange={setGoal}
+              options={["Intro Call", "Product Demo", "Follow Up", "Re-engagement"]}
+            />
+            <ReviewSelect
+              label="Tone"
+              value={tone}
+              onChange={setTone}
+              options={["Professional", "Friendly", "Technical", "Executive"]}
+            />
+          </div>
+          <div className="mt-4 rounded border border-dashed border-border bg-background/40 p-3 text-xs text-muted-foreground">
+            The review form is the approval surface. Contact fields can be saved to the contact record; the other fields stay editable here so you can validate the payload before launch.
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              onClick={async () => {
+                if (!activeContact) return;
+                try {
+                  await updateContact.mutateAsync({
+                    id: activeContact.id,
+                    data: {
+                      full_name: reviewDraft.full_name,
+                      title: reviewDraft.title || undefined,
+                      email: reviewDraft.email || undefined,
+                      persona_type: reviewDraft.persona_type || undefined,
+                      seniority: reviewDraft.seniority || undefined,
+                    },
+                  });
+                  toast({ title: "Contact updated", description: "Saved the editable contact fields." });
+                } catch (err) {
+                  toast({ title: "Save failed", description: "Failed to update the contact.", variant: "destructive" });
+                }
+              }}
+              disabled={!activeContact || updateContact.isPending}
+            >
+              {updateContact.isPending ? "Saving…" : "Save contact fields"}
+            </Button>
+            <Button size="sm" variant="secondary" onClick={() => setPanelView("sequence")}>
+              Continue editing sequence
+            </Button>
+          </div>
+        </Card>
+
         {/* Contact Information */}
         <Card className="border-card-border bg-card p-4">
           <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-3">Contact Information</div>
           <div className="grid grid-cols-2 gap-x-6 gap-y-1.5">
             {[
-              ["Name",       activeContact?.full_name],
-              ["Title",      activeContact?.title],
-              ["Company",    activeContact?.company_name],
-              ["Industry",   activeContact?.industry],
-              ["Department", activeContact?.department],
+              ["Name",       reviewDraft.full_name],
+              ["Title",      reviewDraft.title],
+              ["Company",    reviewDraft.company_name],
+              ["Industry",   reviewDraft.industry],
+              ["Department", reviewDraft.department],
             ].map(([label, value]) => (
               <div key={label} className="flex gap-2 text-xs">
                 <span className="text-muted-foreground shrink-0 w-20">{label}</span>
@@ -361,14 +558,14 @@ export function Outreach() {
           <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-3">Personalization Inputs</div>
           <div className="space-y-1.5">
             {[
-              ["Pain Point",     activeContact?.pain_point],
-              ["Recent Signal",  activeContact?.recent_signal],
-              ["Icebreaker",     activeContact?.icebreaker],
+              ["Pain Point",     reviewDraft.pain_point],
+              ["Recent Signal",  reviewDraft.recent_signal],
+              ["Icebreaker",     reviewDraft.icebreaker],
               ["Goal",           goal],
               ["Tone",           tone],
               ["Channel",        sequenceChannelSummary],
-              ["Persona",        activeContact?.persona_type],
-              ["Seniority",      activeContact?.seniority],
+              ["Persona",        reviewDraft.persona_type],
+              ["Seniority",      reviewDraft.seniority],
             ].map(([label, value]) => (
               <div key={label} className="flex gap-2 text-xs">
                 <span className="text-muted-foreground shrink-0 w-28">{label}</span>
