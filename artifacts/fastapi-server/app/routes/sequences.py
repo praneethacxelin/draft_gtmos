@@ -17,11 +17,12 @@ router = APIRouter(prefix="/sequences", tags=["sequences"])
 async def generate(
     contact_id: str,
     step_count: int = 4,
+    dynamic: bool = False,
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ) -> dict:
     own_contact(db, contact_id, user)
-    return await generate_sequence(db, contact_id, step_count=step_count)
+    return await generate_sequence(db, contact_id, step_count=step_count, dynamic=dynamic)
 
 
 @router.get("/by-contact/{contact_id}")
@@ -319,6 +320,41 @@ def launch(
     return EventSourceResponse(gen())
 
 
+class GroupLaunchBody(BaseModel):
+    contact_ids: list[str]
+    template_sequence_id: Optional[str] = None
+    schedule: Optional[dict] = None
+    is_test: bool = False
+    test_email: Optional[str] = None
+    campaign_name: Optional[str] = None
+
+
+@router.post("/launch-group")
+def launch_group(
+    body: GroupLaunchBody,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    """Create ONE Instantly campaign containing every selected contact as a lead."""
+    if not body.contact_ids:
+        raise HTTPException(400, "No contacts selected")
+    for cid in body.contact_ids:
+        own_contact(db, cid, user)
+    from app.agents.s3_outreach import launch_group_sequence
+    result = launch_group_sequence(
+        db,
+        contact_ids=body.contact_ids,
+        template_sequence_id=body.template_sequence_id,
+        schedule=body.schedule,
+        campaign_name=body.campaign_name,
+        is_test=body.is_test,
+        test_email=body.test_email,
+    )
+    if isinstance(result, dict) and result.get("error"):
+        raise HTTPException(400, result["error"])
+    return result
+
+
 class StepPatch(BaseModel):
     subject: str | None = None
     body: str | None = None
@@ -427,7 +463,10 @@ def get_sending_accounts(
     if not instantly_key:
         return []
     
-    accounts = clients.instantly_get_accounts(instantly_key)
+    try:
+        accounts = clients.instantly_get_accounts(instantly_key, raise_on_error=True)
+    except clients.InstantlyAPIError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message)
     if not accounts:
         return []
     
@@ -619,6 +658,72 @@ def get_contact_replies(
         return []
 
 
+@router.get("/campaigns")
+def list_workspace_campaigns(
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> list[dict]:
+    """List every Instantly campaign in the user's workspace (not scoped to a
+    single contact) so existing and grouped campaigns show in the board."""
+    instantly_key = settings_service.get_key(db, user.id, "instantly")
+    if not instantly_key:
+        return []
+    try:
+        camps = clients.instantly_get_campaigns(instantly_key, raise_on_error=True) or []
+    except clients.InstantlyAPIError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message)
+
+    analytics_map: dict = {}
+    try:
+        analytics_res = clients.instantly_get_analytics(instantly_key)
+        analytics_list = []
+        if isinstance(analytics_res, dict):
+            analytics_list = analytics_res.get("data") or []
+        elif isinstance(analytics_res, list):
+            analytics_list = analytics_res
+        analytics_map = {a["campaign_id"]: a for a in analytics_list if isinstance(a, dict) and "campaign_id" in a}
+    except Exception:
+        pass
+
+    def _status_str(s) -> str:
+        return {1: "active", 2: "paused", 3: "complete", 0: "paused"}.get(s, "active")
+
+    out: list[dict] = []
+    for c in camps:
+        cid = c.get("id")
+        if not cid:
+            continue
+        anal = analytics_map.get(cid) or {}
+        sent = anal.get("emails_sent_count", 0) or 0
+        opened = anal.get("open_count", 0) or 0
+        clicked = anal.get("link_click_count", 0) or 0
+        replied = anal.get("reply_count", 0) or 0
+        out.append({
+            "instantly_campaign_id": cid,
+            "name": c.get("name"),
+            "status": _status_str(c.get("status")),
+            "analytics": {
+                "sent": sent,
+                "opened": opened,
+                "clicked": clicked,
+                "replied": replied,
+                "bounced": anal.get("bounced_count", 0) or 0,
+                "opportunities": anal.get("total_opportunities", 0) or 0,
+                "opportunity_value": anal.get("total_opportunity_value", 0) or 0,
+                "leads_count": anal.get("leads_count", 0) or 0,
+                "contacted_count": anal.get("contacted_count", 0) or 0,
+                "open_rate": round(opened / sent * 100, 1) if sent else 0.0,
+                "click_rate": round(clicked / sent * 100, 1) if sent else 0.0,
+                "reply_rate": round(replied / sent * 100, 1) if sent else 0.0,
+                "email_list": c.get("email_list") or [],
+                "timestamp_created": c.get("timestamp_created"),
+            },
+            "synced_at": None,
+        })
+    out.sort(key=lambda x: x["analytics"].get("timestamp_created") or "", reverse=True)
+    return out
+
+
 @router.post("/campaigns/{campaign_id}/pause")
 def pause_campaign(
     campaign_id: str,
@@ -627,16 +732,17 @@ def pause_campaign(
 ):
     from app.db import InstantlyCampaign
     instantly_key = settings_service.get_key(db, user.id, "instantly")
-    
+
+    # A local row may not exist for campaigns created outside GTM OS (e.g. an
+    # existing workspace campaign). The user's own Instantly key inherently
+    # scopes the action to their workspace, so we still allow the pause.
     db_camp = db.query(InstantlyCampaign).filter(InstantlyCampaign.instantly_campaign_id == campaign_id).first()
-    if not db_camp:
-        raise HTTPException(status_code=404, detail="Campaign not found")
-    
-    seq = db.query(Sequence).filter(Sequence.id == db_camp.sequence_id).first()
-    if not seq:
-        raise HTTPException(status_code=404, detail="Sequence not found")
-    own_contact(db, seq.contact_id, user)
-    
+    seq = None
+    if db_camp:
+        seq = db.query(Sequence).filter(Sequence.id == db_camp.sequence_id).first()
+        if seq:
+            own_contact(db, seq.contact_id, user)
+
     if instantly_key:
         import httpx
         try:
@@ -646,9 +752,11 @@ def pause_campaign(
             r.raise_for_status()
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Failed to pause campaign in Instantly: {str(e)}")
-            
-    db_camp.status = "paused"
-    seq.status = "paused"
+
+    if db_camp:
+        db_camp.status = "paused"
+    if seq:
+        seq.status = "paused"
     db.commit()
     return {"status": "paused"}
 
@@ -661,16 +769,14 @@ def resume_campaign(
 ):
     from app.db import InstantlyCampaign
     instantly_key = settings_service.get_key(db, user.id, "instantly")
-    
+
     db_camp = db.query(InstantlyCampaign).filter(InstantlyCampaign.instantly_campaign_id == campaign_id).first()
-    if not db_camp:
-        raise HTTPException(status_code=404, detail="Campaign not found")
-    
-    seq = db.query(Sequence).filter(Sequence.id == db_camp.sequence_id).first()
-    if not seq:
-        raise HTTPException(status_code=404, detail="Sequence not found")
-    own_contact(db, seq.contact_id, user)
-    
+    seq = None
+    if db_camp:
+        seq = db.query(Sequence).filter(Sequence.id == db_camp.sequence_id).first()
+        if seq:
+            own_contact(db, seq.contact_id, user)
+
     if instantly_key:
         import httpx
         try:
@@ -680,9 +786,11 @@ def resume_campaign(
             r.raise_for_status()
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Failed to activate campaign in Instantly: {str(e)}")
-            
-    db_camp.status = "active"
-    seq.status = "active"
+
+    if db_camp:
+        db_camp.status = "active"
+    if seq:
+        seq.status = "active"
     db.commit()
     return {"status": "active"}
 

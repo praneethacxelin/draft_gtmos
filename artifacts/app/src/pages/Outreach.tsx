@@ -1,9 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -33,12 +34,14 @@ import {
   useToggleWarmup,
   usePauseCampaign,
   useResumeCampaign,
+  useWorkspaceCampaigns,
+  useLaunchGroup,
   useDisconnectSendingAccount,
   useContactReplies,
   useCampaignLeads,
   useLeadReplies,
 } from "@/hooks/useSequences";
-import { Mail, Linkedin, Phone, ShieldCheck, Send, Wand2, Pencil, X, FlaskConical, Check, Megaphone, Search, Flame, Plus, Play, Pause, Heart, Loader2, Activity, RefreshCw, Trash2 } from "lucide-react";
+import { Mail, Linkedin, Phone, ShieldCheck, Send, Wand2, Pencil, X, FlaskConical, Check, Megaphone, Search, Flame, Plus, Play, Pause, Heart, Loader2, Activity, RefreshCw, Trash2, Code2, Eye, Users } from "lucide-react";
 import { fmtDate } from "@/lib/format";
 import { ReasoningPanel, SourceBadge } from "@/components/ReasoningPanel";
 import { RetriggerBar, type RetriggerAction } from "@/components/RetriggerBar";
@@ -49,6 +52,43 @@ const SOURCE_META: Record<string, { label: string; icon: typeof FlaskConical }> 
   discovery: { label: "From discovery", icon: Search },
 };
 const SOURCE_ORDER = ["experiment", "campaign", "discovery"] as const;
+
+type ViewMode = "template" | "preview";
+
+// Substitute lead merge tags ({{firstName}}, {{companyName}}, {{lastName}}) with a
+// specific contact's real values — used for the "Preview" view of a template sequence.
+function fillMergeTags(text: string, c?: { full_name?: string; company_name?: string } | null): string {
+  if (!text) return text;
+  const nameParts = (c?.full_name ?? "").trim().split(/\s+/).filter(Boolean);
+  const first = nameParts[0] ?? "";
+  const last = nameParts.length > 1 ? nameParts.slice(1).join(" ") : "";
+  const company = c?.company_name ?? "";
+  return text
+    .replace(/\{\{\s*(firstName|first_name)\s*\}\}/gi, first || "there")
+    .replace(/\{\{\s*(lastName|last_name)\s*\}\}/gi, last)
+    .replace(/\{\{\s*(companyName|company_name)\s*\}\}/gi, company || "your company");
+}
+
+// Highlight raw variable tokens (e.g. {{firstName}}) in template view
+function TemplateText({ text }: { text: string }) {
+  const parts = (text ?? "").split(/({{[^}]+}})/g);
+  return (
+    <span>
+      {parts.map((p, i) =>
+        /^{{/.test(p) ? (
+          <span
+            key={i}
+            className="rounded bg-primary/15 px-1 py-0.5 font-mono text-[11px] text-primary"
+          >
+            {p}
+          </span>
+        ) : (
+          <span key={i}>{p}</span>
+        ),
+      )}
+    </span>
+  );
+}
 
 interface StepDraft {
   subject: string;
@@ -63,6 +103,11 @@ export function Outreach() {
   const { data: contacts, isFetching: isContactsFetching, refetch: refetchContacts } = useContacts(activeId ?? undefined);
   const [selected, setSelected] = useState<string | null>(null);
   const [stepCount, setStepCount] = useState<number>(4);
+  const [viewMode, setViewMode] = useState<ViewMode>("preview");
+  const [groupByTitle, setGroupByTitle] = useState<boolean>(false);
+  // Multi-select for group generation (checkboxes)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isGeneratingBulk, setIsGeneratingBulk] = useState<boolean>(false);
 
   useEffect(() => {
     if (!selected && contacts && contacts[0]) setSelected(contacts[0].id);
@@ -75,8 +120,51 @@ export function Outreach() {
   const patchStep = useUpdateSequenceStep();
   const pauseCampaign = usePauseCampaign();
   const resumeCampaign = useResumeCampaign();
+  const workspaceCampaigns = useWorkspaceCampaigns();
+  const launchGroup = useLaunchGroup();
 
   const contact = contacts?.find((c) => c.id === selected);
+
+  // ── Multi-select helpers ──
+  function toggleSelect(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+  function setManySelected(ids: string[], on: boolean) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      ids.forEach((id) => (on ? next.add(id) : next.delete(id)));
+      return next;
+    });
+  }
+
+  // Generate a reusable template sequence (with {{firstName}} merge tags) for every
+  // checked contact — or, if none are checked, the currently focused contact.
+  async function handleGenerateGroup() {
+    const ids = selectedIds.size > 0 ? Array.from(selectedIds) : selected ? [selected] : [];
+    if (ids.length === 0) return;
+    const dynamic = ids.length > 1; // group → dynamic merge-tag template
+    setIsGeneratingBulk(true);
+    try {
+      for (const id of ids) {
+        await generate.mutateAsync({ contactId: id, stepCount, dynamic });
+      }
+      const { toast } = await import("sonner");
+      toast.success(
+        ids.length > 1
+          ? `Drafted dynamic-variable sequences for ${ids.length} contacts.`
+          : "Sequence drafted.",
+      );
+    } catch (err: any) {
+      const { toast } = await import("sonner");
+      toast.error(err?.message || "Failed to generate sequences.");
+    } finally {
+      setIsGeneratingBulk(false);
+    }
+  }
 
   const [editingStepId, setEditingStepId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<StepDraft>({
@@ -384,58 +472,127 @@ export function Outreach() {
         <div className="lg:col-span-3 space-y-4">
           <Card className="border-card-border bg-card p-3">
             <div className="mb-2 px-2 flex items-center justify-between text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
-              <span>Contacts</span>
-              <button 
-                onClick={() => refetchContacts()} 
-                className="text-muted-foreground hover:text-foreground transition-colors p-0.5 rounded"
-                title="Refresh contacts"
-                disabled={isContactsFetching}
-              >
-                <RefreshCw className={`h-3 w-3 ${isContactsFetching ? "animate-spin" : ""}`} />
-              </button>
+              <span>Contacts{selectedIds.size > 0 ? ` (${selectedIds.size} selected)` : ""}</span>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setGroupByTitle((v) => !v)}
+                  className={`flex items-center gap-1 rounded px-1.5 py-0.5 transition-colors ${
+                    groupByTitle
+                      ? "bg-primary/15 text-primary"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                  title="Group leads by similar job title"
+                >
+                  <Users className="h-3 w-3" /> Similar
+                </button>
+                <button
+                  onClick={() => refetchContacts()}
+                  className="text-muted-foreground hover:text-foreground transition-colors p-0.5 rounded"
+                  title="Refresh contacts"
+                  disabled={isContactsFetching}
+                >
+                  <RefreshCw className={`h-3 w-3 ${isContactsFetching ? "animate-spin" : ""}`} />
+                </button>
+              </div>
             </div>
             <div className="space-y-3">
-              {SOURCE_ORDER.map((src) => {
-                const group = (contacts ?? []).filter(
-                  (c) => (c.source ?? "discovery") === src,
-                );
-                if (group.length === 0) return null;
-                const meta = SOURCE_META[src];
-                const Icon = meta.icon;
-                return (
-                  <div key={src} className="space-y-1">
-                    <div className="flex items-center gap-1.5 px-2 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
-                      <Icon className="h-3 w-3" />
-                      {meta.label}
-                      <span className="text-muted-foreground/70">({group.length})</span>
+              {(() => {
+                const renderContactRow = (c: NonNullable<typeof contacts>[number]) => (
+                  <div
+                    key={c.id}
+                    onClick={() => {
+                      setSelected(c.id);
+                      setEditingStepId(null);
+                      setStepDirty(false);
+                    }}
+                    className={`flex w-full cursor-pointer items-center gap-2 rounded px-2 py-2 text-left text-sm hover-elevate ${
+                      selected === c.id ? "bg-sidebar-accent" : ""
+                    } ${selectedIds.has(c.id) ? "ring-1 ring-primary/40" : ""}`}
+                    data-testid={`contact-row-${c.id}`}
+                  >
+                    <Checkbox
+                      checked={selectedIds.has(c.id)}
+                      onCheckedChange={() => toggleSelect(c.id)}
+                      onClick={(e) => e.stopPropagation()}
+                      className="h-4 w-4 shrink-0"
+                      aria-label={`Select ${c.full_name}`}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-medium">
+                        {c.full_name}
+                      </div>
+                      <div className="truncate text-[11px] text-muted-foreground">
+                        {c.title} · {c.company_name}
+                      </div>
                     </div>
-                    {group.map((c) => (
-                      <button
-                        key={c.id}
-                        onClick={() => {
-                          setSelected(c.id);
-                          setEditingStepId(null);
-                          setStepDirty(false);
-                        }}
-                        className={`flex w-full items-center justify-between rounded px-3 py-2 text-left text-sm hover-elevate ${
-                          selected === c.id ? "bg-sidebar-accent" : ""
-                        }`}
-                        data-testid={`contact-row-${c.id}`}
-                      >
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-medium">
-                            {c.full_name}
-                          </div>
-                          <div className="truncate text-[11px] text-muted-foreground">
-                            {c.title} · {c.company_name}
-                          </div>
-                        </div>
-                        <TierBadge tier={c.tier} />
-                      </button>
-                    ))}
+                    <TierBadge tier={c.tier} />
                   </div>
                 );
-              })}
+
+                const groupHeader = (
+                  label: ReactNode,
+                  items: NonNullable<typeof contacts>,
+                ) => {
+                  const ids = items.map((c) => c.id);
+                  const allOn = ids.length > 0 && ids.every((id) => selectedIds.has(id));
+                  return (
+                    <div className="flex items-center gap-1.5 px-2 text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
+                      <Checkbox
+                        checked={allOn}
+                        onCheckedChange={(v) => setManySelected(ids, !!v)}
+                        className="h-3.5 w-3.5 shrink-0"
+                        aria-label="Select group"
+                      />
+                      {label}
+                      <span className="text-muted-foreground/70">({items.length})</span>
+                    </div>
+                  );
+                };
+
+                if (groupByTitle) {
+                  const titleGroups: Record<string, NonNullable<typeof contacts>> = {};
+                  for (const c of contacts ?? []) {
+                    const key = (c.title ?? "").trim() || "No title";
+                    (titleGroups[key] ??= []).push(c);
+                  }
+                  const entries = Object.entries(titleGroups).sort(
+                    (a, b) => b[1].length - a[1].length,
+                  );
+                  return entries.map(([title, items]) => (
+                    <div key={title} className="space-y-1">
+                      {groupHeader(
+                        <span className="flex items-center gap-1">
+                          <Users className="h-3 w-3" />
+                          {title}
+                        </span>,
+                        items,
+                      )}
+                      {items.map(renderContactRow)}
+                    </div>
+                  ));
+                }
+
+                return SOURCE_ORDER.map((src) => {
+                  const group = (contacts ?? []).filter(
+                    (c) => (c.source ?? "discovery") === src,
+                  );
+                  if (group.length === 0) return null;
+                  const meta = SOURCE_META[src];
+                  const Icon = meta.icon;
+                  return (
+                    <div key={src} className="space-y-1">
+                      {groupHeader(
+                        <span className="flex items-center gap-1">
+                          <Icon className="h-3 w-3" />
+                          {meta.label}
+                        </span>,
+                        group,
+                      )}
+                      {group.map(renderContactRow)}
+                    </div>
+                  );
+                });
+              })()}
               {(!contacts || contacts.length === 0) && (
                 <div className="px-3 py-6 text-center text-xs text-muted-foreground">
                   No contacts yet. Run lead discovery first.
@@ -443,8 +600,6 @@ export function Outreach() {
               )}
             </div>
           </Card>
-
-          <SendingAccounts />
         </div>
 
         <div className="lg:col-span-5 space-y-4">
@@ -555,12 +710,21 @@ export function Outreach() {
                 <Button
                   size="sm"
                   variant="secondary"
-                  disabled={!selected || generate.isPending}
-                  onClick={() => selected && generate.mutate({ contactId: selected, stepCount })}
+                  disabled={(selectedIds.size === 0 && !selected) || generate.isPending || isGeneratingBulk}
+                  onClick={handleGenerateGroup}
                   data-testid="button-generate-sequence"
+                  title={
+                    selectedIds.size > 1
+                      ? `Generate a reusable dynamic-variable template for ${selectedIds.size} selected contacts`
+                      : "Generate a sequence for the selected contact"
+                  }
                 >
                   <Wand2 className="mr-2 h-4 w-4" />
-                  {generate.isPending ? "Generating…" : "Generate"}
+                  {generate.isPending || isGeneratingBulk
+                    ? "Generating…"
+                    : selectedIds.size > 1
+                      ? `Generate (${selectedIds.size})`
+                      : "Generate"}
                 </Button>
                 <Button
                   size="sm"
@@ -605,6 +769,28 @@ export function Outreach() {
                   <Send className="mr-2 h-4 w-4" />
                   {launch.isPending ? "Launching…" : "Launch"}
                 </Button>
+                {/* Group Launch — ONE campaign with all selected contacts as leads */}
+                {selectedIds.size > 1 && (
+                  <Button
+                    size="sm"
+                    disabled={!sequence || launchGroup.isPending}
+                    onClick={() =>
+                      sequence &&
+                      launchGroup.mutate({
+                        contact_ids: Array.from(selectedIds),
+                        template_sequence_id: sequence.id,
+                        schedule,
+                        is_test: false,
+                      })
+                    }
+                    data-testid="button-launch-group"
+                    title={`Create ONE campaign with the ${selectedIds.size} selected contacts as leads (dynamic variables, schedule & sending accounts included)`}
+                    className="bg-emerald-600 text-white hover:bg-emerald-600/90"
+                  >
+                    <Users className="mr-2 h-4 w-4" />
+                    {launchGroup.isPending ? "Launching…" : `Launch Group (${selectedIds.size})`}
+                  </Button>
+                )}
               </div>
             </div>
 
@@ -657,6 +843,38 @@ export function Outreach() {
                   ],
                 }}
               />
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                  Sequence Preview
+                </div>
+                <div className="inline-flex overflow-hidden rounded border border-border text-[10px]">
+                  <button
+                    onClick={() => setViewMode("template")}
+                    className={`flex items-center gap-1 px-2.5 py-1.5 ${
+                      viewMode === "template"
+                        ? "bg-muted text-foreground"
+                        : "text-muted-foreground hover:bg-muted/50"
+                    }`}
+                  >
+                    <Code2 className="h-3 w-3" /> Template
+                  </button>
+                  <button
+                    onClick={() => setViewMode("preview")}
+                    className={`flex items-center gap-1 px-2.5 py-1.5 ${
+                      viewMode === "preview"
+                        ? "bg-muted text-foreground"
+                        : "text-muted-foreground hover:bg-muted/50"
+                    }`}
+                  >
+                    <Eye className="h-3 w-3" /> Preview
+                  </button>
+                </div>
+              </div>
+              {viewMode === "template" && (
+                <div className="rounded border border-dashed border-border bg-background/40 px-3 py-2 text-[11px] text-muted-foreground">
+                  <strong>Template View</strong> — raw variables shown. Switch to Preview to see personalized content.
+                </div>
+              )}
               {sequence.steps.map((s) => (
                 <Card
                   key={s.id}
@@ -690,10 +908,17 @@ export function Outreach() {
                       </div>
                       {editingStepId !== s.id && (
                         <div className="text-sm font-medium">
-                          {s.subject ||
-                            (s.channel === "call"
-                              ? "Call talking points"
-                              : "(no subject)")}
+                          {s.subject ? (
+                            viewMode === "template" ? (
+                              <TemplateText text={s.subject} />
+                            ) : (
+                              fillMergeTags(s.subject, contact)
+                            )
+                          ) : s.channel === "call" ? (
+                            "Call talking points"
+                          ) : (
+                            "(no subject)"
+                          )}
                         </div>
                       )}
                     </div>
@@ -810,7 +1035,11 @@ export function Outreach() {
                     </div>
                   ) : (
                     <div className="whitespace-pre-wrap rounded border border-border bg-background/40 p-3 text-sm text-foreground/90">
-                      {s.body || "—"}
+                      {viewMode === "template" ? (
+                        <TemplateText text={s.body || "—"} />
+                      ) : (
+                        fillMergeTags(s.body || "—", contact)
+                      )}
                     </div>
                   )}
                 </Card>
@@ -826,14 +1055,16 @@ export function Outreach() {
         <div className="lg:col-span-4 space-y-4">
           <CampaignsListCard 
             sequence={sequence} 
+            campaigns={workspaceCampaigns.data}
             contactId={selected ?? undefined}
             onPause={(id) => pauseCampaign.mutate(id)}
             onResume={(id) => resumeCampaign.mutate(id)}
             isPausing={pauseCampaign.isPending}
             isResuming={resumeCampaign.isPending}
-            isFetching={isSequenceFetching}
-            onRefresh={() => refetchSequence()}
+            isFetching={workspaceCampaigns.isFetching}
+            onRefresh={() => workspaceCampaigns.refetch()}
           />
+          <SendingAccounts />
         </div>
       </div>
     </>
@@ -841,7 +1072,7 @@ export function Outreach() {
 }
 
 function SendingAccounts() {
-  const { data: accounts, isLoading, isFetching, refetch } = useSendingAccounts();
+  const { data: accounts, isLoading, isFetching, refetch, error } = useSendingAccounts();
   const connect = useConnectSendingAccount();
   const toggleWarmup = useToggleWarmup();
   const disconnect = useDisconnectSendingAccount();
@@ -936,6 +1167,16 @@ function SendingAccounts() {
           <div className="flex items-center justify-center py-6 text-xs text-muted-foreground">
             <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
             Loading sending accounts...
+          </div>
+        ) : error ? (
+          <div className="rounded border border-destructive/40 bg-destructive/10 p-4 text-center text-xs text-destructive">
+            <div className="font-semibold">Instantly API error</div>
+            <div className="mt-1 text-destructive/90">{(error as Error).message}</div>
+            <div className="mt-2 text-[10px] text-muted-foreground">
+              The account/warmup/campaign features require an Instantly workspace with an
+              active paid plan (or active trial). The API key authenticates, but Instantly
+              rejects data access for this workspace.
+            </div>
           </div>
         ) : !accounts || accounts.length === 0 ? (
           <div className="rounded border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
@@ -1219,6 +1460,7 @@ function SendingAccounts() {
 
 function CampaignsListCard({
   sequence,
+  campaigns: providedCampaigns,
   contactId,
   onPause,
   onResume,
@@ -1228,6 +1470,7 @@ function CampaignsListCard({
   onRefresh
 }: {
   sequence?: any;
+  campaigns?: any[];
   contactId?: string;
   onPause: (campId: string) => void;
   onResume: (campId: string) => void;
@@ -1241,7 +1484,7 @@ function CampaignsListCard({
   const [selectedLeadEmail, setSelectedLeadEmail] = useState<string | null>(null);
   const [leadSearch, setLeadSearch] = useState("");
 
-  const campaigns = sequence?.campaigns || [];
+  const campaigns = providedCampaigns ?? sequence?.campaigns ?? [];
 
   // Automatically select the first campaign if none is selected
   useEffect(() => {
@@ -1387,7 +1630,7 @@ function CampaignsListCard({
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0">
                       <div className="font-semibold text-xs truncate">
-                        Campaign: {camp.instantly_campaign_id.slice(0, 8)}
+                        {camp.name || `Campaign: ${camp.instantly_campaign_id.slice(0, 8)}`}
                       </div>
                       <div className="text-[10px] text-muted-foreground">
                         {camp.synced_at ? `Synced: ${fmtDate(camp.synced_at)}` : "Not synced"}

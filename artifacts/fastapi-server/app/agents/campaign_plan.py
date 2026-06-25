@@ -146,9 +146,24 @@ def build_campaign_plan(db: Session, strategy_id: str) -> dict:
     exp_window = int((gtm.get("experiment_plan") or {}).get("window_months") or EXPERIMENT_WINDOW_MONTHS)
     campaign_start_month = _shift_month(roi_start, exp_window)
 
-    # ---- Front-loaded prospecting distribution across the phases ----
+    # ---- Front-loaded prospecting distribution, tilted by seasonality + carry-forward ----
     n_phases = len(phases)
-    weights = _frontload_weights(n_phases)
+    frontload = _frontload_weights(n_phases)
+    # Seasonality + carry-forward shape comes straight from the ROI revenue plan:
+    # each phase's required_prospects already bakes in its season factor and any
+    # revenue shortfall that rolled forward from an under-delivering earlier
+    # phase. We blend that with the front-load curve so pipeline still matures
+    # early, but the phase loads visibly shift toward the months that can
+    # actually convert (and absorb the carried-forward targets).
+    season_basis = [max(0, int(ph.get("required_prospects") or 0)) for ph in phases]
+    season_sum = sum(season_basis)
+    if season_sum > 0 and n_phases > 0:
+        season_weights = [b / season_sum for b in season_basis]
+        blended = [0.5 * frontload[i] + 0.5 * season_weights[i] for i in range(n_phases)]
+        bsum = sum(blended) or 1.0
+        weights = [b / bsum for b in blended]
+    else:
+        weights = frontload
     frontloaded = _distribute_counts(total_prospects, weights)
 
     winning_facets = _winning_facets(winner)
@@ -188,6 +203,14 @@ def build_campaign_plan(db: Session, strategy_id: str) -> dict:
                 "calendar_range": cal_range,
                 "quarter": f"Q{(first_cal - 1) // 3 + 1}",
                 "revenue_target_usd": ph.get("phase_target_usd", 0),
+                # Effective target = the phase's own base share PLUS any revenue
+                # that rolled forward from an earlier phase that under-delivered
+                # due to seasonality/capacity. This is the number the phase must
+                # actually cover, so the carry-forward is no longer invisible.
+                "base_target_usd": ph.get("base_target_usd", ph.get("phase_target_usd", 0)),
+                "carried_in_usd": ph.get("carried_in_usd", 0),
+                "effective_target_usd": ph.get("effective_target_usd", ph.get("phase_target_usd", 0)),
+                "carry_forward_usd": ph.get("carry_forward_usd", 0),
                 "required_closures": ph.get("required_closures", 0),
                 # Front-loaded prospecting load (overrides the flat ROI split).
                 "prospect_count": prospect_count,
@@ -195,6 +218,8 @@ def build_campaign_plan(db: Session, strategy_id: str) -> dict:
                 "baseline_prospects": ph.get("required_prospects", 0),
                 "persona_split": persona_split,
                 "season_factor": ph.get("season_factor"),
+                "season_notes": ph.get("season_notes") or [],
+                "projected_attainment_pct": ph.get("projected_attainment_pct"),
                 "confidence": ph.get("confidence"),
             }
         )

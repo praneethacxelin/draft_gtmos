@@ -114,6 +114,63 @@ def reveal_contact(
     company_name = a.company_name if a else None
     domain = a.domain if a else None
 
+    def _real_email(value: str | None) -> str | None:
+        """Reject Apollo's locked-email placeholders so we never store a fake address."""
+        if not value:
+            return None
+        low = value.strip().lower()
+        if not low or "@" not in low:
+            return None
+        if "not_unlocked" in low or low.startswith("email_not_unlocked") or low.split("@")[-1] == "domain.com":
+            return None
+        return value.strip()
+
+    # --- Fast path: reveal by the Apollo person id we captured at discovery. ---
+    # Matching by id via /people/bulk_match is far more reliable than re-matching
+    # by name, and returns the work email when the account's plan includes it.
+    if type == "email" and c.source_ref and str(c.source_ref).strip() and not c.is_demo:
+        revealed = clients.apollo_bulk_reveal(
+            apollo_key,
+            [str(c.source_ref).strip()],
+            reveal_personal=False,
+            _strategy_id=c.strategy_id,
+            _strategy_name=None,
+        )
+        person = revealed.get(str(c.source_ref).strip())
+        if person:
+            org = person.get("organization") or {}
+            if a and org:
+                d = clients.apollo_org_domain(org)
+                if d and not a.domain:
+                    a.domain = d
+                if org.get("industry") and not a.industry:
+                    a.industry = org.get("industry")
+                if org.get("estimated_num_employees") and not a.employee_count:
+                    a.employee_count = org.get("estimated_num_employees")
+            new_email = _real_email(person.get("email"))
+            before_email = c.email
+            c.email = new_email or "Not found"
+            c.is_demo = False
+            db.commit()
+            db.refresh(c)
+            audit_service.log_change(
+                event_type="contact_reveal",
+                entity_type="contact",
+                entity_id=c.id,
+                strategy_id=c.strategy_id,
+                change_field="email",
+                change_before=before_email,
+                change_after=c.email,
+                actor="user",
+                summary=(
+                    f"Revealed email for {c.full_name} via Apollo id"
+                    if new_email
+                    else f"Apollo matched {c.full_name} by id but had no unlocked email"
+                ),
+            )
+            return _serialize(c, a)
+        # If id-match yielded nothing, fall through to the name-based match below.
+
     # Call Apollo to match the person and reveal email/phone
     match_result = clients.apollo_match_person(
         apollo_key,
@@ -143,7 +200,7 @@ def reveal_contact(
             a.tech_stack_json = org.get("technologies")
 
     if type == "email":
-        new_email = match_result.get("email")
+        new_email = _real_email(match_result.get("email"))
         if new_email:
             before_email = c.email
             c.email = new_email
@@ -223,6 +280,7 @@ def reveal_contact(
 @router.post("/{contact_id}/verify")
 def verify_contact_email(
     contact_id: str,
+    provider: str | None = None,
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ) -> dict:
@@ -234,20 +292,17 @@ def verify_contact_email(
     if not c.email or c.email == "(not revealed)" or c.email == "Not found":
         raise HTTPException(400, "Contact has no valid email to verify")
 
+    hunter_key = settings_service.get_key(db, user.id, "hunter")
     instantly_key = settings_service.get_key(db, user.id, "instantly")
-    if not instantly_key:
-        raise HTTPException(400, "Instantly API key not configured")
+    if not hunter_key and not instantly_key:
+        raise HTTPException(400, "No email-verification provider configured (Hunter.io or Instantly)")
 
     try:
-        status = clients.instantly_verify_email(
-            instantly_key,
-            email=c.email,
-            _strategy_id=c.strategy_id,
-        )
+        status = _verify_one(clients, c.email, c.strategy_id, hunter_key, instantly_key, provider)
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 402:
-            raise HTTPException(402, "Instantly: Workspace does not have an active paid plan for email verification.")
-        raise HTTPException(400, f"Instantly API error: {e.response.text}")
+            raise HTTPException(402, "No configured verification provider has an active plan. Instantly free trials cannot verify — add a Hunter.io key in Settings → Integrations.")
+        raise HTTPException(400, f"Verification API error: {e.response.text}")
     except Exception as e:
         raise HTTPException(400, f"Verification failed: {str(e)}")
     if status:
@@ -258,8 +313,62 @@ def verify_contact_email(
     return _serialize(c, a)
 
 
+def _verify_one(
+    clients,
+    email: str,
+    strategy_id: str | None,
+    hunter_key: str | None,
+    instantly_key: str | None,
+    provider: str | None,
+) -> str | None:
+    """Verify a single email, honoring a preferred provider.
+
+    ``provider="instantly"`` → use Instantly first (pre-send checks).
+    ``provider="hunter"`` → use Hunter first (post-bounce re-checks).
+    Otherwise default to Hunter, then Instantly. Falls back to the other
+    provider when the preferred one isn't configured.
+    """
+    pref = (provider or "").lower()
+    if pref == "instantly":
+        order = [("instantly", instantly_key), ("hunter", hunter_key)]
+    elif pref == "hunter":
+        order = [("hunter", hunter_key), ("instantly", instantly_key)]
+    else:
+        order = [("hunter", hunter_key), ("instantly", instantly_key)]
+    last_error: Exception | None = None
+    inconclusive: str | None = None  # remember a non-definitive result (e.g. "pending")
+    for name, key in order:
+        if not key:
+            continue
+        try:
+            if name == "hunter":
+                result = clients.hunter_verify_email(key, email=email, _strategy_id=strategy_id)
+            else:
+                result = clients.instantly_verify_email(key, email=email, _strategy_id=strategy_id)
+            # A definitive verdict wins immediately. Instantly often returns an
+            # async "pending" — that's inconclusive, so try the next provider
+            # for a real valid/invalid/catch_all before settling for pending.
+            if result in ("valid", "invalid", "catch_all"):
+                return result
+            if result:
+                inconclusive = inconclusive or result
+        except Exception as e:  # noqa: BLE001 - try the next provider on any failure
+            # The preferred provider may not support verification on the
+            # current plan (e.g. an Instantly free trial returns HTTP 402).
+            # Remember the error but keep going so a second configured
+            # provider (e.g. Hunter) can still produce a result.
+            last_error = e
+            continue
+    if inconclusive is not None:
+        return inconclusive
+    if last_error is not None:
+        raise last_error
+    return None
+
+
 class BulkVerifyRequest(BaseModel):
     contact_ids: list[str]
+    provider: str | None = None
 
 
 @router.post("/verify-bulk")
@@ -270,9 +379,10 @@ def verify_bulk_emails(
 ) -> dict:
     import httpx
     from app.services import clients, settings_service
+    hunter_key = settings_service.get_key(db, user.id, "hunter")
     instantly_key = settings_service.get_key(db, user.id, "instantly")
-    if not instantly_key:
-        raise HTTPException(400, "Instantly API key not configured")
+    if not hunter_key and not instantly_key:
+        raise HTTPException(400, "No email-verification provider configured (Hunter.io or Instantly)")
 
     verified_count = 0
     invalid_count = 0
@@ -282,17 +392,13 @@ def verify_bulk_emails(
         c = own_contact(db, cid, user)
         if not c.email or c.email == "(not revealed)" or c.email == "Not found":
             continue
-            
+
         try:
-            status = clients.instantly_verify_email(
-                instantly_key,
-                email=c.email,
-                _strategy_id=c.strategy_id,
-            )
+            status = _verify_one(clients, c.email, c.strategy_id, hunter_key, instantly_key, body.provider)
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 402:
-                raise HTTPException(402, "Instantly: Workspace does not have an active paid plan for email verification.")
-            raise HTTPException(400, f"Instantly API error: {e.response.text}")
+                raise HTTPException(402, "No configured verification provider has an active plan. Instantly free trials cannot verify — add a Hunter.io key in Settings → Integrations.")
+            raise HTTPException(400, f"Verification API error: {e.response.text}")
         except Exception as e:
             raise HTTPException(400, f"Verification failed: {str(e)}")
         if status:

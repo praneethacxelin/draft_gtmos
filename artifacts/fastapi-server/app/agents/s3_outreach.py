@@ -173,7 +173,7 @@ def _replace_sender_placeholders(text: str | None, db: Session, user_id: str | N
 
 
 
-async def generate_sequence(db: Session, contact_id: str, step_count: int = 4) -> dict:
+async def generate_sequence(db: Session, contact_id: str, step_count: int = 4, dynamic: bool = False) -> dict:
     contact = db.query(Contact).filter(Contact.id == contact_id).first()
     if not contact:
         return {"error": "Contact not found"}
@@ -236,6 +236,19 @@ async def generate_sequence(db: Session, contact_id: str, step_count: int = 4) -
     contact_persona = contact.persona_type or "Unknown"
 
     def _build_msg_prompt(extra_guidance: str = "") -> str:
+        if dynamic:
+            rule3 = (
+                "3. This is a REUSABLE TEMPLATE for many similar leads — MUST greet the contact using "
+                "the literal merge tag {{firstName}} in the opening line, and reference their company "
+                "using the literal merge tag {{companyName}} at least once. Write these merge tags exactly "
+                "as shown (with double curly braces). DO NOT write any real first name or company name. "
+            )
+        else:
+            rule3 = (
+                f"3. MUST include the contact's actual first name (use '{contact_first}') in the opening line, "
+                f"and the actual company name (use '{company_name}') at least once — write their actual names directly, "
+                "DO NOT use placeholders or merge tags like {{first_name}} or {{company_name}}. "
+            )
         return (
             f"Write personalized outreach messages for {contact.full_name}, {contact.title} at "
             f"{company_name}. "
@@ -247,9 +260,7 @@ async def generate_sequence(db: Session, contact_id: str, step_count: int = 4) -
             "DELIVERABILITY RULES (strictly follow all): "
             "1. Subjects must be under 60 characters, conversational, no punctuation spam. "
             "2. Email bodies must be 75-150 words — concise, specific, zero filler. "
-            f"3. MUST include the contact's actual first name (use '{contact_first}') in the opening line, "
-            f"and the actual company name (use '{company_name}') at least once — write their actual names directly, "
-            "DO NOT use placeholders or merge tags like {{first_name}} or {{company_name}}. "
+            f"{rule3}"
             "4. MAX 1 hyperlink per email body — use full URLs only (no bit.ly or URL shorteners). "
             "5. NEVER use these words/phrases: free, guarantee, act now, click here, "
             "buy now, limited time, exclusive deal, urgent, winner, prize, 100%%, "
@@ -324,8 +335,12 @@ async def generate_sequence(db: Session, contact_id: str, step_count: int = 4) -
         cumulative += s["wait_days"]
         send_at = base_time + timedelta(days=cumulative, hours=random.randint(0, 4))
         
-        subject = _replace_merge_tags_with_values(m.get("subject"), contact, account)
-        body = _replace_merge_tags_with_values(m.get("body"), contact, account)
+        if dynamic:
+            subject = _normalize_merge_tags(m.get("subject"))
+            body = _normalize_merge_tags(m.get("body"))
+        else:
+            subject = _replace_merge_tags_with_values(m.get("subject"), contact, account)
+            body = _replace_merge_tags_with_values(m.get("body"), contact, account)
         
         subject = _replace_sender_placeholders(subject, db, owner_id, contact.strategy_id)
         body = _replace_sender_placeholders(body, db, owner_id, contact.strategy_id)
@@ -365,8 +380,12 @@ async def generate_sequence(db: Session, contact_id: str, step_count: int = 4) -
                 cumulative += s["wait_days"]
                 send_at = base_time + timedelta(days=cumulative, hours=random.randint(0, 4))
                 
-                subject = _replace_merge_tags_with_values(m.get("subject"), contact, account)
-                body = _replace_merge_tags_with_values(m.get("body"), contact, account)
+                if dynamic:
+                    subject = _normalize_merge_tags(m.get("subject"))
+                    body = _normalize_merge_tags(m.get("body"))
+                else:
+                    subject = _replace_merge_tags_with_values(m.get("subject"), contact, account)
+                    body = _replace_merge_tags_with_values(m.get("body"), contact, account)
                 
                 subject = _replace_sender_placeholders(subject, db, owner_id, contact.strategy_id)
                 body = _replace_sender_placeholders(body, db, owner_id, contact.strategy_id)
@@ -714,3 +733,146 @@ def launch_sequence(
         db.commit()
         ingested = simulate_engagement_timeline(db, seq.id)
         return {"status": seq.status, "instantly_pushed": False, "events": ingested, "is_test": is_test}
+
+
+def launch_group_sequence(
+    db: Session,
+    contact_ids: list[str],
+    template_sequence_id: str | None = None,
+    schedule: dict | None = None,
+    campaign_name: str | None = None,
+    is_test: bool = False,
+    test_email: str | None = None,
+) -> dict:
+    """Create ONE Instantly campaign containing MULTIPLE selected contacts as leads.
+
+    The steps of ``template_sequence_id`` (a generated sequence) are used as a
+    reusable, dynamic-variable template: recipient fields stay as
+    ``{{firstName}}`` / ``{{companyName}}`` so Instantly personalises each lead,
+    while sender placeholders are resolved up-front.  Every selected contact is
+    added as a lead with its real first/last/company values, sending accounts
+    are auto-assigned (the campaign "from"), the schedule (timezone / window /
+    days) is applied, and the campaign is activated.
+    """
+    if not contact_ids:
+        return {"error": "No contacts selected"}
+
+    seq = None
+    if template_sequence_id:
+        seq = db.query(Sequence).filter(Sequence.id == template_sequence_id).first()
+    if not seq:
+        seq = db.query(Sequence).filter(Sequence.contact_id == contact_ids[0]).first()
+    if not seq:
+        return {"error": "No sequence found to use as a template. Generate a sequence first."}
+
+    strategy = db.query(Strategy).filter(Strategy.id == seq.strategy_id).first() if seq.strategy_id else None
+    owner_id = strategy.user_id if strategy else None
+    instantly_key = settings_service.get_key(db, owner_id, "instantly")
+    if not instantly_key:
+        return {"error": "No Instantly key configured for this workspace."}
+
+    steps = db.query(SequenceStep).filter(SequenceStep.sequence_id == seq.id).order_by(SequenceStep.step_number).all()
+    email_steps = [s for s in steps if s.channel == "email"]
+    campaign_steps = email_steps if email_steps else steps
+    if not campaign_steps:
+        return {"error": "Template sequence has no steps to send."}
+
+    # Build dynamic merge-tag template steps. Recipient tags ({{firstName}} /
+    # {{companyName}}) are kept so Instantly fills them per lead; sender
+    # placeholders are resolved here.
+    template_steps = []
+    for s in campaign_steps:
+        subj = _replace_sender_placeholders(_normalize_merge_tags(s.subject), db, owner_id, seq.strategy_id)
+        body = _replace_sender_placeholders(_normalize_merge_tags(s.body), db, owner_id, seq.strategy_id)
+        template_steps.append({
+            "channel": s.channel,
+            "subject": subj,
+            "body": body,
+            "wait_days": s.wait_days,
+        })
+
+    name = campaign_name or f"GTM-Group-{seq.id[:8]}"
+    result = clients.instantly_create_campaign(
+        instantly_key,
+        name,
+        template_steps,
+        _strategy_id=seq.strategy_id,
+        _strategy_name=strategy.product_name if strategy else None,
+        schedule=schedule,
+    )
+    campaign_id = (result or {}).get("id") if isinstance(result, dict) else None
+    if not campaign_id:
+        instantly_error = (result or {}).get("error") if isinstance(result, dict) else None
+        return {"error": f"Instantly campaign creation failed: {str(instantly_error or 'no campaign id returned')[:300]}"}
+
+    contacts = db.query(Contact).filter(Contact.id.in_(contact_ids)).all()
+
+    leads: list[dict] = []
+    if is_test and test_email:
+        c0 = contacts[0] if contacts else None
+        name_parts = (c0.full_name if c0 else "Test User").split()
+        first = name_parts[0] if name_parts else "Test"
+        last = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
+        acct = db.query(Account).filter(Account.id == c0.account_id).first() if c0 and c0.account_id else None
+        leads.append({
+            "email": test_email,
+            "first_name": first,
+            "last_name": last,
+            "company_name": acct.company_name if acct else "",
+            "personalization": f"Hi {first}" if first else "Hi there",
+        })
+    else:
+        for c in contacts:
+            if not c.email:
+                continue
+            acct = db.query(Account).filter(Account.id == c.account_id).first() if c.account_id else None
+            name_parts = (c.full_name or "").split()
+            first = name_parts[0] if name_parts else ""
+            last = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
+            leads.append({
+                "email": c.email,
+                "first_name": first,
+                "last_name": last,
+                "company_name": acct.company_name if acct else "",
+                "personalization": f"Hi {first}" if first else "Hi there",
+            })
+
+    leads_added = 0
+    if leads:
+        add_res = clients.instantly_add_leads(
+            instantly_key,
+            campaign_id,
+            leads=leads,
+            _strategy_id=seq.strategy_id,
+            _strategy_name=strategy.product_name if strategy else None,
+        )
+        leads_added = (add_res or {}).get("total_new_leads", 0) if isinstance(add_res, dict) else 0
+
+    if not is_test:
+        clients.instantly_launch_campaign(
+            instantly_key,
+            campaign_id,
+            _strategy_id=seq.strategy_id,
+            _strategy_name=strategy.product_name if strategy else None,
+        )
+
+    db.add(InstantlyCampaign(
+        sequence_id=seq.id,
+        instantly_campaign_id=str(campaign_id),
+        status="test" if is_test else "active",
+    ))
+    if not is_test:
+        seq.status = "active"
+        if not seq.instantly_campaign_id:
+            seq.instantly_campaign_id = str(campaign_id)
+    db.commit()
+
+    return {
+        "status": "test" if is_test else "active",
+        "instantly_pushed": True,
+        "campaign_id": campaign_id,
+        "campaign_name": name,
+        "leads_added": leads_added,
+        "contacts_count": len(contact_ids),
+        "is_test": is_test,
+    }

@@ -5,7 +5,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, apiUrl } from "@/lib/api";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronRight,
@@ -18,6 +18,7 @@ import {
   Zap,
   DollarSign,
   Sparkles,
+  FileText,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -446,11 +447,54 @@ export function DiscoveryWizard({
     }
   };
 
+  const downloadDiscoveryDoc = async () => {
+    try {
+      await handleSave(false);
+      const res = await fetch(apiUrl(`/api/strategies/${strategyId}/discovery/document`), {
+        method: "POST"
+      });
+      if (!res.ok) throw new Error("Export failed");
+      const blob = await res.blob();
+      
+      const disposition = res.headers.get('Content-Disposition');
+      let filename = `discovery_${strategyId}.md`;
+      if (disposition && disposition.indexOf('attachment') !== -1) {
+        const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/;
+        const matches = filenameRegex.exec(disposition);
+        if (matches != null && matches[1]) { 
+          filename = matches[1].replace(/['"]/g, '');
+        }
+      }
+
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      
+      toast({
+        title: "Document Created",
+        description: `Successfully exported to workspace and downloaded: ${filename}`,
+      });
+    } catch (err) {
+      console.error(err);
+      toast({
+        title: "Export Failed",
+        description: "Could not create the discovery document.",
+        variant: "destructive",
+      });
+    }
+  };
+
   const handleNext = async () => {
     await handleSave(false);
     if (currentSection < SECTIONS.length - 1) {
       setCurrentSection((p) => p + 1);
     } else {
+      await downloadDiscoveryDoc();
       if (onComplete) onComplete();
       toast({
         title: "Discovery Complete",
@@ -633,6 +677,14 @@ export function DiscoveryWizard({
           >
             <Save className="w-4 h-4" />
             Save Draft
+          </Button>
+          <Button
+            variant="outline"
+            onClick={downloadDiscoveryDoc}
+            className="gap-2"
+          >
+            <FileText className="w-4 h-4" />
+            Create Document
           </Button>
           <Button
             onClick={handleNext}

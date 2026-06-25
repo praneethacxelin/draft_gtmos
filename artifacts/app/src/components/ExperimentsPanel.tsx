@@ -20,6 +20,11 @@ import {
   Users,
   Lock,
   TrendingUp,
+  Send,
+  Mail,
+  CheckCircle2,
+  Clock,
+  Beaker,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -35,10 +40,17 @@ import {
   useRunExperiment,
   useRunBatch,
   useAnalyzeBatch,
+  useLiveMetrics,
+  usePromoteLive,
+  useLaunchVariant,
+  useEvaluateLive,
+  useSimulateWindow,
   type Experiment,
   type ExperimentBatch,
   type ExperimentParams,
+  type LiveMetricsResponse,
 } from "@/hooks/useExperiments";
+import { useToast } from "@/hooks/use-toast";
 import type { Strategy } from "@/hooks/useStrategies";
 import { useCampaignPlan } from "@/hooks/useStrategies";
 
@@ -464,6 +476,11 @@ function BatchView({
         </div>
       )}
 
+      {/* Live (closed-loop) funnel test */}
+      {batch.status === "analyzed" && (
+        <LiveExperimentSection strategyId={strategyId} batch={batch} />
+      )}
+
       {/* Experiment cards */}
       <div className="mt-4 space-y-3">
         {experiments.map((e) => (
@@ -477,6 +494,292 @@ function BatchView({
         ))}
       </div>
     </Card>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Live (closed-loop) funnel test                                    */
+/* ------------------------------------------------------------------ */
+
+const LIVE_STAGE_COPY: Record<string, { label: string; tone: string }> = {
+  drafted: { label: "Drafted — ready to send", tone: "text-amber-500" },
+  running: { label: "Live window open", tone: "text-emerald-500" },
+  completed: { label: "Window closed", tone: "text-primary" },
+};
+
+function pct(n?: number): string {
+  return `${(n ?? 0).toFixed(0)}%`;
+}
+
+function LiveExperimentSection({
+  strategyId,
+  batch,
+}: {
+  strategyId: string;
+  batch: ExperimentBatch;
+}) {
+  const { toast } = useToast();
+  const live = batch.live_status ?? null;
+  const promote = usePromoteLive(strategyId);
+  const launch = useLaunchVariant(strategyId);
+  const evaluate = useEvaluateLive(strategyId);
+  const simulate = useSimulateWindow(strategyId);
+  const [promoteCount, setPromoteCount] = useState(5);
+  const { data: metrics } = useLiveMetrics(
+    strategyId,
+    batch.id,
+    live === "running" || live === "completed",
+  );
+
+  const experiments = batch.experiments ?? [];
+  const winnerId = batch.live_winner_experiment_id ?? batch.live_analysis?.winner_experiment_id;
+  const metricByExp = useMemo(() => {
+    const m = new Map<string, LiveMetricsResponse["variants"][number]>();
+    (metrics?.variants ?? []).forEach((v) => m.set(v.experiment_id, v));
+    return m;
+  }, [metrics]);
+
+  function onPromote() {
+    promote.mutate(
+      { batchId: batch.id, draftPerVariant: promoteCount },
+      {
+        onSuccess: (r: any) => {
+          const skipped = (r.skipped ?? []) as Array<{ name: string; reason: string }>;
+          toast({
+            title: "Promoted to live test",
+            description:
+              `${r.total_cohort ?? 0} contacts across ${(r.variants ?? []).length} variant(s) · ` +
+              `${r.total_drafted ?? 0} sequences drafted (sized by relevancy, winner +bonus).` +
+              (skipped.length
+                ? ` Skipped ${skipped.length} low-fit: ${skipped.map((s) => `${s.name} (${s.reason})`).join(", ")}.`
+                : ""),
+          });
+        },
+        onError: (e: any) =>
+          toast({ title: "Promote failed", description: String(e?.message ?? e), variant: "destructive" }),
+      },
+    );
+  }
+
+  function onLaunch(expId: string, name?: string) {
+    launch.mutate(expId, {
+      onSuccess: (r: any) =>
+        toast({
+          title: `Launched ${name ?? "variant"}`,
+          description: `${r.launched ?? 0} sent · ${r.skipped ?? 0} skipped. Live window ${r.window_ends_at ? `ends ${new Date(r.window_ends_at).toLocaleDateString()}` : "open"}.`,
+        }),
+      onError: (e: any) =>
+        toast({ title: "Launch failed", description: String(e?.message ?? e), variant: "destructive" }),
+    });
+  }
+
+  function onEvaluate() {
+    evaluate.mutate(batch.id, {
+      onSuccess: (r: any) =>
+        toast(
+          r?.pending
+            ? { title: "Window still open", description: r.reason }
+            : { title: "Live winner picked", description: r?.analysis?.winner_name ?? "No positive replies yet." },
+        ),
+      onError: (e: any) =>
+        toast({ title: "Evaluate failed", description: String(e?.message ?? e), variant: "destructive" }),
+    });
+  }
+
+  function onSimulate() {
+    simulate.mutate(batch.id, {
+      onSuccess: (r: any) =>
+        toast({
+          title: "Simulated full window",
+          description: `Winner: ${r?.analysis?.winner_name ?? "none"}. Funnel + replies synthesized so you can see the loop close.`,
+        }),
+      onError: (e: any) =>
+        toast({ title: "Simulate failed", description: String(e?.message ?? e), variant: "destructive" }),
+    });
+  }
+
+  const windowEnds = batch.window_ends_at ? new Date(batch.window_ends_at) : null;
+
+  return (
+    <div className="mt-5 rounded-lg border border-primary/30 bg-primary/5 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Beaker className="h-4 w-4 text-primary" />
+          <span className="text-sm font-semibold">Live funnel test</span>
+          {live && (
+            <Badge variant="secondary" className={`text-[10px] ${LIVE_STAGE_COPY[live]?.tone ?? ""}`}>
+              {LIVE_STAGE_COPY[live]?.label ?? live}
+            </Badge>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {(!live || live === "drafted") && (
+            <label className="flex items-center gap-1 text-xs text-muted-foreground" title="Max contacts to materialize per variant. Each variant's cohort is then scaled by its relevancy; the winner gets a small bonus.">
+              <span>Leads / variant</span>
+              <Input
+                type="number"
+                min={1}
+                max={25}
+                value={promoteCount}
+                onChange={(e) =>
+                  setPromoteCount(Math.max(1, Math.min(25, Number(e.target.value) || 1)))
+                }
+                className="h-7 w-16"
+              />
+            </label>
+          )}
+          {!live && (
+            <Button size="sm" onClick={onPromote} disabled={promote.isPending}>
+              {promote.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="mr-2 h-3.5 w-3.5" />}
+              Promote to live test
+            </Button>
+          )}
+          {live === "drafted" && (
+            <Button size="sm" variant="outline" onClick={onPromote} disabled={promote.isPending}>
+              {promote.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <Pencil className="mr-2 h-3.5 w-3.5" />}
+              Top up drafts
+            </Button>
+          )}
+          {live === "running" && (
+            <Button size="sm" variant="outline" onClick={onEvaluate} disabled={evaluate.isPending}>
+              {evaluate.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <Trophy className="mr-2 h-3.5 w-3.5" />}
+              Evaluate window
+            </Button>
+          )}
+          {(live === "drafted" || live === "running") && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-muted-foreground"
+              title="Test only: synthesize sends + replies + meetings so the loop closes immediately"
+              onClick={onSimulate}
+              disabled={simulate.isPending}
+            >
+              {simulate.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <Clock className="mr-2 h-3.5 w-3.5" />}
+              Simulate window
+            </Button>
+          )}
+        </div>
+      </div>
+
+      <p className="mt-2 text-xs text-muted-foreground">
+        Promotes each variant into a real contact cohort with drafted sequences (no auto-send). You
+        launch each variant, then over the{" "}
+        {batch.window_months ?? 1}-month window the winner is the one with the highest{" "}
+        <span className="font-medium text-foreground">positive-intent reply rate</span> — replies
+        that book a call/meeting to move the deal forward.
+        {windowEnds && live === "running" && (
+          <> Window ends <span className="font-medium text-foreground">{windowEnds.toLocaleDateString()}</span>.</>
+        )}
+      </p>
+
+      {live === "completed" && batch.live_analysis && (
+        <div className="mt-3 rounded border border-primary/30 bg-background/60 p-3">
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-primary">
+            <Trophy className="h-3.5 w-3.5" /> Live winner
+          </div>
+          <div className="mt-1 text-sm text-foreground">
+            {batch.live_analysis.any_positive
+              ? batch.live_analysis.winner_name
+              : "No variant booked a meeting in the window yet."}
+          </div>
+          {(batch.live_analysis.recommendations ?? []).length > 0 && (
+            <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+              {batch.live_analysis.recommendations!.map((r, i) => (
+                <li key={i} className="flex gap-2"><span>•</span><span>{r}</span></li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {/* Per-variant funnel rows */}
+      {live && (
+        <div className="mt-3 space-y-2">
+          {experiments.map((e) => {
+            const m = metricByExp.get(e.id);
+            const isWinner = winnerId === e.id;
+            const launched = m?.launched ?? !!e.live_launched_at;
+            return (
+              <div
+                key={e.id}
+                className={`rounded border p-2.5 ${isWinner ? "border-primary bg-primary/10" : "border-card-border bg-background/50"}`}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    {isWinner && <Trophy className="h-3.5 w-3.5 text-primary" />}
+                    <span className="text-sm font-medium">{e.name}</span>
+                    <span className="text-xs text-muted-foreground">
+                      cohort {e.cohort_size ?? m?.cohort_size ?? 0}
+                    </span>
+                  </div>
+                  {live === "running" && !launched && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => onLaunch(e.id, e.name)}
+                      disabled={launch.isPending}
+                    >
+                      <Send className="mr-2 h-3.5 w-3.5" /> Launch send
+                    </Button>
+                  )}
+                  {live === "drafted" && (
+                    <Button
+                      size="sm"
+                      onClick={() => onLaunch(e.id, e.name)}
+                      disabled={launch.isPending}
+                    >
+                      <Send className="mr-2 h-3.5 w-3.5" /> Launch send
+                    </Button>
+                  )}
+                  {launched && (
+                    <Badge variant="secondary" className="text-[10px] text-emerald-500">
+                      <CheckCircle2 className="mr-1 h-3 w-3" /> Sent
+                    </Badge>
+                  )}
+                </div>
+                {m && (
+                  <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-5">
+                    <FunnelStat icon={<Mail className="h-3 w-3" />} label="Contacted" value={`${m.contacted}`} />
+                    <FunnelStat icon={<TrendingUp className="h-3 w-3" />} label="Replied" value={`${m.replied}`} sub={pct(m.reply_rate_pct)} />
+                    <FunnelStat icon={<Users className="h-3 w-3" />} label="Interested" value={`${m.interested}`} />
+                    <FunnelStat icon={<CalendarClock className="h-3 w-3" />} label="Meetings" value={`${m.positive}`} />
+                    <FunnelStat icon={<Trophy className="h-3 w-3" />} label="Positive rate" value={pct(m.positive_rate_pct)} highlight />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FunnelStat({
+  icon,
+  label,
+  value,
+  sub,
+  highlight,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  sub?: string;
+  highlight?: boolean;
+}) {
+  return (
+    <div className={`rounded border p-1.5 ${highlight ? "border-primary/40 bg-primary/5" : "border-card-border bg-background/40"}`}>
+      <div className="flex items-center gap-1 text-[9px] font-medium uppercase tracking-widest text-muted-foreground">
+        {icon}
+        {label}
+      </div>
+      <div className="mt-0.5 font-mono text-sm font-semibold text-foreground">
+        {value}
+        {sub && <span className="ml-1 text-[10px] font-normal text-muted-foreground">{sub}</span>}
+      </div>
+    </div>
   );
 }
 
@@ -637,7 +940,34 @@ function CampaignPlanSection({ strategyId }: { strategyId: string }) {
             </div>
             <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
               <span>Target {fmtUsd(ph.revenue_target_usd)}</span>
+              {ph.carried_in_usd != null && ph.carried_in_usd > 0 && (
+                <span className="text-amber-400" title="Revenue carried forward from an earlier phase that fell short due to seasonality">
+                  +{fmtUsd(ph.carried_in_usd)} carried in → {fmtUsd(ph.effective_target_usd ?? ph.revenue_target_usd)} effective
+                </span>
+              )}
+              {ph.carry_forward_usd != null && ph.carry_forward_usd > 0 && (
+                <span className="text-amber-400" title="Seasonal shortfall rolled into the next phase">
+                  {fmtUsd(ph.carry_forward_usd)} carried forward
+                </span>
+              )}
               <span>{ph.required_closures} closures</span>
+              {ph.season_factor != null && (
+                <span title="Seasonality multiplier for this phase's calendar window">
+                  ×{ph.season_factor.toFixed(2)} season
+                </span>
+              )}
+              {ph.projected_attainment_pct != null && (
+                <span
+                  className={
+                    ph.projected_attainment_pct >= 99
+                      ? undefined
+                      : "text-amber-400"
+                  }
+                  title="Projected target attainment after seasonality and capacity"
+                >
+                  {Math.round(ph.projected_attainment_pct)}% projected attainment
+                </span>
+              )}
               {ph.confidence && <span>{ph.confidence} confidence</span>}
             </div>
             {ph.persona_split.length > 0 && (
@@ -701,6 +1031,21 @@ export function ExperimentsPanel({
 
   return (
     <div className="space-y-4">
+      <div className="flex items-start gap-3">
+        <div className="rounded-md bg-primary/10 p-2 text-primary">
+          <FlaskConical className="h-4 w-4" />
+        </div>
+        <div>
+          <p className="text-sm font-semibold">Experiments</p>
+          <p className="text-sm text-muted-foreground">
+            A real learning loop: each variant first tests a small sample across Apollo targeting
+            facets to find the highest-fit leads, then runs a live funnel test — send, reply, meeting —
+            over a window. The winner is the variant with the highest positive-intent reply rate
+            (replies that book a call/meeting), and only it is scaled into Prospects.
+          </p>
+        </div>
+      </div>
+
       <ReasoningPanel
         fallback={{
           source: "ai_generated",

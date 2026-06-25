@@ -10,28 +10,44 @@ from sqlalchemy.orm import Session
 from app.db import AppSetting
 from app.crypto import encrypt, decrypt
 
-INTEGRATIONS = ["serpapi", "apollo", "clay", "instantly"]
+INTEGRATIONS = ["serpapi", "apollo", "hunter", "clay", "instantly"]
 
 INTEGRATION_META = {
     "serpapi": {
         "display_name": "SerpAPI",
         "description": "Live Google search for buying signals, market sizing, and competitor news.",
         "key_label": "API Key",
+        "supported": True,
     },
     "apollo": {
         "display_name": "Apollo.io",
         "description": "Real lead discovery and contact lookup with verified emails.",
         "key_label": "API Key",
+        "supported": True,
+    },
+    "hunter": {
+        "display_name": "Hunter.io",
+        "description": "On-demand email verification — used to validate bounced addresses after analytics so you only spend credits on emails that actually need re-checking.",
+        "key_label": "API Key",
+        "supported": True,
     },
     "clay": {
         "display_name": "Clay",
-        "description": "Enrichment waterfall on top of Apollo for tech stack, funding, and verified data.",
+        "description": (
+            "Not supported. Clay is a no-code orchestration canvas without a stable "
+            "public enrichment API we can drive programmatically, so it cannot plug "
+            "into the automated GTM pipeline. We instead provide the equivalent "
+            "intelligence, scoring logic, and end-to-end flow natively via Apollo + "
+            "SerpAPI + Hunter."
+        ),
         "key_label": "API Key",
+        "supported": False,
     },
     "instantly": {
         "display_name": "Instantly.ai",
         "description": "Email outreach automation, deliverability monitoring, and response tracking.",
         "key_label": "API Key",
+        "supported": True,
     },
 }
 
@@ -61,6 +77,7 @@ def list_integrations(db: Session, user_id: str) -> list[dict]:
             "display_name": meta["display_name"],
             "description": meta["description"],
             "key_label": meta["key_label"],
+            "supported": meta.get("supported", True),
             "is_connected": bool(row and row.api_key_encrypted),
             "is_enabled": bool(row and row.is_enabled),
             "key_last_four": _safe_last_four(row.api_key_encrypted) if row else None,

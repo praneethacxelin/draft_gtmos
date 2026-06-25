@@ -61,6 +61,7 @@ export interface Sequence {
   instantly_campaign_id?: string;
   campaigns?: InstantlyCampaignInfo[];
   steps: SequenceStep[];
+  last_launch?: { timestamp: string } | null;
 }
 
 export function useSequenceByContact(contactId?: string) {
@@ -74,8 +75,11 @@ export function useSequenceByContact(contactId?: string) {
 export function useGenerateSequence() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ contactId, stepCount }: { contactId: string; stepCount?: number }) => {
-      const q = stepCount ? `?step_count=${stepCount}` : "";
+    mutationFn: ({ contactId, stepCount, dynamic }: { contactId: string; stepCount?: number; dynamic?: boolean }) => {
+      const params = new URLSearchParams();
+      if (stepCount) params.set("step_count", String(stepCount));
+      if (dynamic) params.set("dynamic", "true");
+      const q = params.toString() ? `?${params.toString()}` : "";
       return apiFetch(`/api/sequences/generate/${contactId}${q}`, { method: "POST" });
     },
     onSuccess: (_, { contactId }) => {
@@ -185,6 +189,61 @@ export function useSendingAccounts() {
   });
 }
 
+export interface WorkspaceCampaign {
+  instantly_campaign_id: string;
+  name?: string;
+  status: string;
+  analytics?: CampaignStats;
+  synced_at?: string | null;
+}
+
+/** All Instantly campaigns in the workspace (not scoped to a single contact). */
+export function useWorkspaceCampaigns() {
+  return useQuery<WorkspaceCampaign[]>({
+    queryKey: ["workspaceCampaigns"],
+    queryFn: () => apiFetch("/api/sequences/campaigns"),
+    refetchInterval: 30000,
+  });
+}
+
+/** Launch ONE campaign containing every selected contact as a lead. */
+export function useLaunchGroup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: {
+      contact_ids: string[];
+      template_sequence_id?: string;
+      schedule?: Record<string, any>;
+      is_test?: boolean;
+      test_email?: string;
+      campaign_name?: string;
+    }) =>
+      apiFetch("/api/sequences/launch-group", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }),
+    onSuccess: (data: any) => {
+      qc.invalidateQueries({ queryKey: ["workspaceCampaigns"] });
+      qc.invalidateQueries({ queryKey: ["sequence"] });
+      import("sonner")
+        .then(({ toast }) => {
+          toast.success(
+            `Campaign created with ${data?.leads_added ?? 0} lead(s)`,
+            { description: data?.campaign_name },
+          );
+        })
+        .catch(() => {});
+    },
+    onError: (err: Error) => {
+      import("sonner")
+        .then(({ toast }) => {
+          toast.error("Group launch failed", { description: err.message });
+        })
+        .catch(() => {});
+    },
+  });
+}
+
 export function useConnectSendingAccount() {
   const qc = useQueryClient();
   return useMutation({
@@ -267,6 +326,7 @@ export function usePauseCampaign() {
     onSuccess: (_, campaignId) => {
       qc.invalidateQueries({ queryKey: ["sequence"] });
       qc.invalidateQueries({ queryKey: ["analytics"] });
+      qc.invalidateQueries({ queryKey: ["workspaceCampaigns"] });
     },
   });
 }
@@ -281,6 +341,7 @@ export function useResumeCampaign() {
     onSuccess: (_, campaignId) => {
       qc.invalidateQueries({ queryKey: ["sequence"] });
       qc.invalidateQueries({ queryKey: ["analytics"] });
+      qc.invalidateQueries({ queryKey: ["workspaceCampaigns"] });
     },
   });
 }

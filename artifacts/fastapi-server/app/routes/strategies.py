@@ -21,6 +21,7 @@ from app.agents.s2_signals import (
     recognize_patterns,
     fetch_contact_emails,
     fetch_contact_phones,
+    fetch_account_contacts,
 )
 from app.agents.roi_validator import validate_roi
 from app.agents.persona_intelligence import (
@@ -235,6 +236,108 @@ def patch_discovery(
         summary=f"Strategy \"{s.product_name}\" · Discovery data updated",
     )
     return _serialize(s)
+
+
+@router.post("/{strategy_id}/discovery/document")
+def generate_discovery_document(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+):
+    """Generate a markdown document summarizing the strategy's discovery data,
+    save it to the workspace, and return it for download.
+    """
+    import datetime
+    import io
+    import os
+    from fastapi.responses import StreamingResponse
+
+    own_strategy(db, strategy_id, user)
+    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    if not strategy:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+
+    dd = strategy.discovery_data or {}
+
+    # Format the document beautifully
+    doc_lines = []
+    doc_lines.append(f"# Discovery Brief: {strategy.product_name}")
+    now_str = datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    doc_lines.append(f"Generated at: {now_str}\n")
+
+    doc_lines.append("## Product & Company")
+    doc_lines.append(f"**What is your product or service?**\n{dd.get('product_description') or strategy.description or 'Unspecified'}\n")
+    doc_lines.append(f"**What type of company are you?**\n{dd.get('company_type') or 'Unspecified'}\n")
+    doc_lines.append(f"**What pain points does your product solve?**\n{dd.get('pain_points') or strategy.pain_points_raw or 'Unspecified'}\n")
+
+    doc_lines.append("## Ideal Customer")
+
+    org_size_val = dd.get('org_size')
+    org_size_str = ", ".join(org_size_val) if isinstance(org_size_val, list) else (org_size_val or 'Unspecified')
+    doc_lines.append(f"**What org size are you targeting?**\n{org_size_str}\n")
+
+    geos_val = dd.get('target_geos')
+    geos_str = ", ".join(geos_val) if isinstance(geos_val, list) else (geos_val or 'Unspecified')
+    doc_lines.append(f"**What geographies are you targeting?**\n{geos_str}\n")
+
+    doc_lines.append(f"**Describe your perfect customer:**\n{dd.get('perfect_customer') or 'Unspecified'}\n")
+
+    doc_lines.append("## Buying Committee")
+    doc_lines.append(f"**Who is the Economic Buyer?**\n{dd.get('economic_buyer') or 'Unspecified'}\n")
+    doc_lines.append(f"**Who is the Champion?**\n{dd.get('champion') or 'Unspecified'}\n")
+
+    blockers_val = dd.get('deal_blockers')
+    blockers_str = ", ".join(blockers_val) if isinstance(blockers_val, list) else (blockers_val or 'Unspecified')
+    doc_lines.append(f"**What typically blocks deals?**\n{blockers_str}\n")
+
+    doc_lines.append("## Signals & Competition")
+
+    signals_val = dd.get('buying_signals')
+    signals_str = ", ".join(signals_val) if isinstance(signals_val, list) else (signals_val or 'Unspecified')
+    doc_lines.append(f"**What buying signals should we look for?**\n{signals_str}\n")
+
+    doc_lines.append(f"**What triggers a purchase?**\n{dd.get('triggers') or 'Unspecified'}\n")
+    doc_lines.append(f"**What tools / methods do they currently use?**\n{dd.get('alternatives') or 'Unspecified'}\n")
+    doc_lines.append(f"**What is your unique value proposition?**\n{dd.get('uvp') or 'Unspecified'}\n")
+    doc_lines.append(f"**What is the typical sales cycle?**\n{dd.get('sales_cycle') or 'Unspecified'}\n")
+
+    doc_lines.append("## Investment & ROI")
+    doc_lines.append(f"**What is your planned GTM investment?**\n{dd.get('planned_investment') or 'Unspecified'}\n")
+    doc_lines.append(f"**What revenue / return do you expect from it?**\n{dd.get('expected_revenue') or 'Unspecified'}\n")
+    doc_lines.append(f"**Over what timeframe?**\n{dd.get('roi_timeframe') or 'Unspecified'}\n")
+
+    doc_content = "\n".join(doc_lines)
+
+    # Save the document to the workspace directories
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    filename = f"discovery_{strategy_id}.md"
+
+    # Save in fastapi-server folder
+    file_path = os.path.join(base_dir, filename)
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(doc_content)
+    except Exception as e:
+        print(f"Failed to save document to workspace path {file_path}: {e}")
+
+    # Save in workspace root folder
+    workspace_root = os.path.dirname(base_dir)
+    workspace_file_path = os.path.join(workspace_root, filename)
+    try:
+        with open(workspace_file_path, "w", encoding="utf-8") as f:
+            f.write(doc_content)
+    except Exception as e:
+        print(f"Failed to save document to workspace root {workspace_file_path}: {e}")
+
+    # Return as streaming file download
+    headers = {
+        'Content-Disposition': f'attachment; filename="{filename}"'
+    }
+    return StreamingResponse(
+        io.BytesIO(doc_content.encode("utf-8")),
+        media_type="text/markdown",
+        headers=headers
+    )
 
 
 @router.patch("/{strategy_id}/personas")
@@ -511,6 +614,20 @@ def persona_intelligence(
     return compute_persona_intelligence(db, strategy_id)
 
 
+@router.get("/{strategy_id}/tone-intelligence")
+def tone_intelligence(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    """Correlate email tone (technical/casual/formal/consultative) with reply
+    rate per persona, so the GTM engineer learns which writing style each
+    persona responds to."""
+    from app.agents.tone_intelligence import compute_tone_intelligence
+    own_strategy(db, strategy_id, user)
+    return compute_tone_intelligence(db, strategy_id)
+
+
 @router.get("/{strategy_id}/persona-allocation")
 def persona_allocation(
     strategy_id: str,
@@ -618,6 +735,19 @@ class ApolloFacets(BaseModel):
         return out or None
 
 
+class GetContactsRequest(BaseModel):
+    """Body for account-scoped contact fetching from the Prospects tab."""
+    account_ids: list[str] | None = None
+    persona: str | None = None
+    per_account: int | None = None
+    facets: ApolloFacets | None = None
+
+
+class FetchEmailsRequest(BaseModel):
+    """Body for the Fetch-emails reveal step (optional contact selection)."""
+    contact_ids: list[str] | None = None
+
+
 @router.get("/{strategy_id}/leads/filter-preview")
 async def lead_filter_preview(
     strategy_id: str,
@@ -637,7 +767,7 @@ async def lead_filter_preview(
 async def accounts_discover(
     strategy_id: str,
     body: ApolloFacets | None = None,
-    limit: int | None = Query(None, ge=1, le=25),
+    limit: int | None = Query(None, ge=1, le=100),
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ):
@@ -657,17 +787,29 @@ async def accounts_discover(
 @router.post("/{strategy_id}/leads/contacts")
 async def leads_get_contacts(
     strategy_id: str,
-    body: ApolloFacets | None = None,
-    limit: int | None = Query(None, ge=1, le=25),
+    body: GetContactsRequest | None = None,
+    limit: int | None = Query(None, ge=1, le=100),
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ):
-    """Pull contacts for the discovered accounts (enriched people search). Reuses
-    the same facets so contacts match the account universe."""
+    """Pull contacts for a hand-picked set of discovered accounts, scoped to a
+    persona, WITHOUT revealing emails (emails are a separate paid step). Runs
+    after scoring has re-tiered accounts, so the GTM engineer spends Apollo
+    credits only on the accounts/persona they actually want."""
     own_strategy(db, strategy_id, user)
-    override = body.to_override() if body else None
+    account_ids = body.account_ids if body else None
+    persona = body.persona if body else None
+    override = body.facets.to_override() if (body and body.facets) else None
+    per_account = limit if limit else (body.per_account if body else None) or 5
     return _sse(
-        lambda d: run_lead_search(d, strategy_id, limit=limit, override_filters=override),
+        lambda d: fetch_account_contacts(
+            d,
+            strategy_id,
+            account_ids=account_ids,
+            persona=persona,
+            per_account=per_account,
+            override_filters=override,
+        ),
         "leads",
     )
 
@@ -675,13 +817,14 @@ async def leads_get_contacts(
 @router.post("/{strategy_id}/leads/discover-experiments")
 async def lead_search_experiments(
     strategy_id: str,
-    limit: int | None = Query(None, ge=1, le=25),
+    limit: int | None = Query(None, ge=1, le=1000),
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ):
     """Experiment-driven discovery: pull leads using the winning experiment's
     facets + persona split, tagged ``source="experiment"``. Gated until a batch
-    has been analyzed."""
+    has been analyzed. The limit spans the cheap test sample (~25) up to the
+    winning variant's monthly scale target."""
     own_strategy(db, strategy_id, user)
     return _sse(
         lambda d: run_experiment_discovery(d, strategy_id, limit=limit),
@@ -715,13 +858,19 @@ def score_run(
 @router.post("/{strategy_id}/contacts/fetch-emails")
 async def contacts_fetch_emails(
     strategy_id: str,
+    body: FetchEmailsRequest | None = None,
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ):
     """Reveal emails for contacts missing one via Apollo /v1/people/match.
-    Each successful reveal costs an Apollo email credit."""
+    Each successful reveal costs an Apollo email credit. Pass ``contact_ids`` to
+    reveal only a hand-picked selection (bulk or single)."""
     own_strategy(db, strategy_id, user)
-    return _sse(lambda d: fetch_contact_emails(d, strategy_id), "fetch_emails")
+    contact_ids = body.contact_ids if body else None
+    return _sse(
+        lambda d: fetch_contact_emails(d, strategy_id, contact_ids=contact_ids),
+        "fetch_emails",
+    )
 
 
 @router.post("/{strategy_id}/contacts/fetch-phones")
