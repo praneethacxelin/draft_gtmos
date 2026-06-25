@@ -17,6 +17,7 @@ import { TierBadge, StatusPill } from "@/components/Pills";
 import { useActiveStrategy } from "@/hooks/useActiveStrategy";
 import { useContacts, useUpdateContact } from "@/hooks/useContacts";
 import { useSenderStatus } from "@/hooks/useSettings";
+import { useVerifyContactEmail } from "@/hooks/useContacts";
 import {
   useSequenceByContact,
   useGenerateSequence,
@@ -39,6 +40,11 @@ import {
   Eye,
   Code2,
   ClipboardCheck,
+  BadgeCheck,
+  CheckCircle2,
+  XCircle,
+  HelpCircle,
+  Loader2,
 } from "lucide-react";
 import { fmtDate } from "@/lib/format";
 import { ReasoningPanel, SourceBadge } from "@/components/ReasoningPanel";
@@ -260,6 +266,7 @@ export function Outreach() {
   const check      = useDeliverabilityCheck();
   const launch     = useLaunchSequence();
   const patchStep  = useUpdateSequenceStep();
+  const verifyEmail = useVerifyContactEmail();
 
   const activeContact = contacts?.find((c) => c.id === activeContactId);
   const account       = { company_name: activeContact?.company_name, industry: activeContact?.industry };
@@ -322,6 +329,7 @@ export function Outreach() {
 
   // Instantly sender status
   const { data: senderStatus } = useSenderStatus();
+  const testEmail = senderStatus?.email;
 
   // Bulk generation state
   const [isGeneratingBulk, setIsGeneratingBulk] = useState(false);
@@ -901,6 +909,35 @@ export function Outreach() {
                     {activeContact.title} · {activeContact.company_name}
                   </div>
                 )}
+                {activeContact && (
+                  <div className="mt-1 flex items-center gap-1.5 text-xs">
+                    <Mail className="h-3.5 w-3.5 text-muted-foreground" />
+                    {activeContact.email &&
+                    activeContact.email !== "Not found" &&
+                    activeContact.email !== "(not revealed)" ? (
+                      <span className="font-mono text-foreground/80">{activeContact.email}</span>
+                    ) : (
+                      <span className="text-muted-foreground/60">
+                        No email yet — reveal it on the Prospects page first
+                      </span>
+                    )}
+                    {activeContact.email_verified === "valid" && (
+                      <span className="ml-0.5 inline-flex items-center gap-1 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-primary">
+                        <CheckCircle2 className="h-3 w-3" /> Valid
+                      </span>
+                    )}
+                    {activeContact.email_verified === "invalid" && (
+                      <span className="ml-0.5 inline-flex items-center gap-1 rounded bg-destructive/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-destructive">
+                        <XCircle className="h-3 w-3" /> Invalid
+                      </span>
+                    )}
+                    {activeContact.email_verified === "catch_all" && (
+                      <span className="ml-0.5 inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-amber-500">
+                        <HelpCircle className="h-3 w-3" /> Catch-all
+                      </span>
+                    )}
+                  </div>
+                )}
                 {sequence && (
                   <div className="mt-2 flex items-center gap-2 flex-wrap">
                     <StatusPill status={sequence.status} />
@@ -908,7 +945,12 @@ export function Outreach() {
                       <span className="rounded bg-primary/15 px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-primary">Active via Instantly</span>
                     )}
                     {sequence.status === "simulated" && (
-                      <span className="rounded bg-purple-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-purple-400">Simulated (no Instantly key)</span>
+                      <span
+                        className="rounded bg-purple-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-purple-400"
+                        title="Test send — not pushed to Instantly. Happens when you use 'Simulate window' or when no Instantly key was set at launch time."
+                      >
+                        Simulated (test send)
+                      </span>
                     )}
                   </div>
                 )}
@@ -994,6 +1036,104 @@ export function Outreach() {
                       {launch.isPending ? "Launching…" : "Launch"}
                     </Button>
                   )}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={
+                      !activeContact ||
+                      !activeContact.email ||
+                      activeContact.email === "Not found" ||
+                      activeContact.email === "(not revealed)" ||
+                      verifyEmail.isPending
+                    }
+                    onClick={() =>
+                      activeContactId &&
+                      verifyEmail.mutate(
+                        { id: activeContactId, provider: "instantly" },
+                        {
+                          onSuccess: (data) => {
+                            const s = data.email_verified;
+                            toast({
+                              title:
+                                s === "valid"
+                                  ? "Email verified — safe to send"
+                                  : s === "invalid"
+                                    ? "Email is invalid"
+                                    : s === "catch_all"
+                                      ? "Catch-all domain — send with caution"
+                                      : "Verification pending",
+                              description:
+                                s === "valid"
+                                  ? `${data.email} passed Instantly verification.`
+                                  : s === "invalid"
+                                    ? `${data.email} would likely bounce. Re-reveal or skip this contact.`
+                                    : `Instantly returned "${s}" for ${data.email}.`,
+                              variant: s === "invalid" ? "destructive" : undefined,
+                            });
+                          },
+                          onError: (err: any) =>
+                            toast({
+                              title: "Verification failed",
+                              description:
+                                err.message ||
+                                "Configure Instantly (or Hunter) in Settings → Integrations.",
+                              variant: "destructive",
+                            }),
+                        },
+                      )
+                    }
+                    data-testid="button-verify-email"
+                    title="Verify the email with Instantly before generating the sequence"
+                  >
+                    {verifyEmail.isPending ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <BadgeCheck className="mr-2 h-4 w-4" />
+                    )}
+                    {verifyEmail.isPending ? "Verifying…" : "Verify email"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={!activeContactId || generate.isPending}
+                    onClick={() => activeContactId && generate.mutate({ contactId: activeContactId })}
+                    data-testid="button-generate-sequence"
+                  >
+                    <Wand2 className="mr-2 h-4 w-4" />
+                    {generate.isPending ? "Generating…" : "Generate"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={!sequence || check.isPending}
+                    onClick={() => sequence && check.mutate(sequence.id)}
+                    data-testid="button-deliverability"
+                  >
+                    <ShieldCheck className="mr-2 h-4 w-4" />
+                    {check.isPending ? "Checking…" : "Deliverability"}
+                  </Button>
+                  <Button
+                    size="sm"
+                    disabled={!sequence || launch.isPending}
+                    onClick={() =>
+                      sequence &&
+                      launch.mutate({
+                        sequenceId: sequence.id,
+                        testEmail: testEmail || undefined,
+                        schedule: schedule,
+                      })
+                    }
+                    data-testid="button-launch"
+                  >
+                    <Send className="mr-2 h-4 w-4" />
+                    {launch.isPending
+                      ? "Launching…"
+                      : testEmail
+                        ? "Launch → test inbox"
+                        : "Launch"}
+                  </Button>
                 </div>
               </div>
             </div>

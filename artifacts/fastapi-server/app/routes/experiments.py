@@ -15,6 +15,13 @@ from app.agents.experiments import (
     serialize_batch,
     serialize_experiment,
 )
+from app.agents.live_experiment import (
+    promote_to_live,
+    launch_variant,
+    compute_live_metrics,
+    evaluate_live_batch,
+    simulate_window,
+)
 
 router = APIRouter(prefix="/strategies/{strategy_id}/experiments", tags=["experiments"])
 
@@ -180,6 +187,102 @@ async def analyze(
 ) -> dict:
     _own_batch(db, strategy_id, batch_id, user)
     result = await analyze_batch(db, batch_id)
+    if isinstance(result, dict) and "_error" in result:
+        raise HTTPException(status_code=400, detail=result["_error"])
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Live (closed-loop) funnel test
+# ---------------------------------------------------------------------------
+
+
+class PromoteLiveRequest(BaseModel):
+    draft_per_variant: int | None = None
+
+
+class LaunchVariantRequest(BaseModel):
+    test_email: str | None = None
+
+
+@router.post("/{batch_id}/promote-live")
+async def promote_live(
+    strategy_id: str,
+    batch_id: str,
+    body: PromoteLiveRequest | None = None,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    """Materialize real cohorts + draft sequences for every analyzed variant."""
+    _own_batch(db, strategy_id, batch_id, user)
+    result = await promote_to_live(
+        db,
+        batch_id,
+        draft_per_variant=(body.draft_per_variant if body and body.draft_per_variant else None)
+        or 5,
+    )
+    if isinstance(result, dict) and "_error" in result:
+        raise HTTPException(status_code=400, detail=result["_error"])
+    return result
+
+
+@router.post("/experiments/{experiment_id}/launch")
+def launch_one_variant(
+    strategy_id: str,
+    experiment_id: str,
+    body: LaunchVariantRequest | None = None,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    """Launch a variant's drafted sequences (engineer clicks send)."""
+    _own_experiment(db, strategy_id, experiment_id, user)
+    result = launch_variant(db, experiment_id, test_email=body.test_email if body else None)
+    if isinstance(result, dict) and "_error" in result:
+        raise HTTPException(status_code=400, detail=result["_error"])
+    return result
+
+
+@router.get("/{batch_id}/live")
+def get_live(
+    strategy_id: str,
+    batch_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    """Live funnel metrics per variant for an in-flight test."""
+    _own_batch(db, strategy_id, batch_id, user)
+    result = compute_live_metrics(db, batch_id)
+    if isinstance(result, dict) and "_error" in result:
+        raise HTTPException(status_code=404, detail=result["_error"])
+    return result
+
+
+@router.post("/{batch_id}/evaluate-live")
+def evaluate_live(
+    strategy_id: str,
+    batch_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    """Score the window and crown the live winner (only once it has closed)."""
+    _own_batch(db, strategy_id, batch_id, user)
+    result = evaluate_live_batch(db, batch_id, force=False)
+    if isinstance(result, dict) and "_error" in result:
+        raise HTTPException(status_code=400, detail=result["_error"])
+    return result
+
+
+@router.post("/{batch_id}/simulate-window")
+def simulate_live_window(
+    strategy_id: str,
+    batch_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    """TEST ONLY: synthesize the funnel + close the window so the loop can be
+    observed without waiting the real window. Not part of the production flow."""
+    _own_batch(db, strategy_id, batch_id, user)
+    result = simulate_window(db, batch_id)
     if isinstance(result, dict) and "_error" in result:
         raise HTTPException(status_code=400, detail=result["_error"])
     return result

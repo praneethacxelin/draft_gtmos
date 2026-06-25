@@ -48,6 +48,16 @@ _FACET_KEYS = (
     "keywords",
 )
 
+# Below this lead count a relevancy score is statistically unreliable, so its
+# relevancy is discounted proportionally (a 2-lead "100% relevant" experiment
+# must not out-rank a 25-lead "80% relevant" one). At/above this count the
+# relevancy is trusted at full weight.
+MIN_CONFIDENT_SAMPLE = 10
+
+# A variant must surface at least this many leads to be eligible as the
+# relevancy winner — we never crown a winner on a tiny, unreliable sample.
+MIN_LEADS_FOR_WINNER = 5
+
 # Discovery org-size labels → Apollo "min,max" employee ranges.
 _ORG_SIZE_DIGITS_TO_RANGE = {
     1: "1,10",
@@ -82,6 +92,9 @@ def serialize_experiment(e: Experiment) -> dict:
         "relevancy": e.relevancy_json,
         "score": e.score,
         "error": e.error,
+        "cohort_size": e.cohort_size,
+        "live_launched_at": e.live_launched_at.isoformat() if e.live_launched_at else None,
+        "live_metrics": e.live_metrics_json,
         "created_at": e.created_at.isoformat() if e.created_at else None,
         "updated_at": e.updated_at.isoformat() if e.updated_at else None,
     }
@@ -98,6 +111,12 @@ def serialize_batch(db: Session, b: ExperimentBatch, include_experiments: bool =
         "hypothesis": b.hypothesis,
         "best_experiment_id": b.best_experiment_id,
         "analysis": b.analysis_json,
+        "live_status": b.live_status,
+        "window_months": b.window_months,
+        "window_started_at": b.window_started_at.isoformat() if b.window_started_at else None,
+        "window_ends_at": b.window_ends_at.isoformat() if b.window_ends_at else None,
+        "live_winner_experiment_id": b.live_winner_experiment_id,
+        "live_analysis": b.live_analysis_json,
         "created_at": b.created_at.isoformat() if b.created_at else None,
         "updated_at": b.updated_at.isoformat() if b.updated_at else None,
     }
@@ -481,9 +500,17 @@ async def run_experiment(db: Session, experiment_id: str) -> dict:
         else:
             run_params.pop("technologies", None)
 
+    # Relax progressively until we gather a sample large enough for a FAIR
+    # comparison. The old behavior stopped at the first non-empty tier, so a
+    # narrow variant could be judged on just 2 leads while a loose one had 25.
+    # Now we keep peeling the fragile facets until a tier returns at least the
+    # requested sample size, otherwise we keep the tier that surfaced the most.
     ladder = _build_ladder(run_params)
+    target = n_leads or 10
     apollo_results = None
     used_tier = None
+    best_count = 0
+    tiers_tried = 0
     seen: set[str] = set()
     for tier_name, tier_filters in ladder:
         cleaned = {k: v for k, v in tier_filters.items() if v}
@@ -491,15 +518,22 @@ async def run_experiment(db: Session, experiment_id: str) -> dict:
         if not cleaned or sig in seen:
             continue
         seen.add(sig)
-        apollo_results = clients.apollo_people_search(
+        tiers_tried += 1
+        tier_results = clients.apollo_people_search(
             apollo_key,
             cleaned,
             per_page=min(n_leads or 10, 100),
             _strategy_id=strategy.id,
             _strategy_name=strategy.product_name,
         )
-        if apollo_results:
+        tier_count = len(tier_results or [])
+        # Keep the richest sample seen so far.
+        if tier_count > best_count:
+            best_count = tier_count
+            apollo_results = tier_results
             used_tier = tier_name
+        # Stop as soon as a tier yields a full, comparable sample.
+        if tier_count >= target:
             break
 
     leads = [_normalize_lead(p) for p in (apollo_results or [])][: (n_leads or 10)]
@@ -517,6 +551,8 @@ async def run_experiment(db: Session, experiment_id: str) -> dict:
         "lead_count": len(leads),
         "winning_tier": used_tier,
         "relaxed": bool(used_tier and used_tier != "precise (all facets)"),
+        "tiers_tried": tiers_tried,
+        "sample_sufficient": len(leads) >= (n_leads or 10),
         "industry_spread": industries,
         "location_spread": locations,
         "industry_resolution": industry_notes,
@@ -690,11 +726,20 @@ async def analyze_batch(db: Session, batch_id: str) -> dict:
     for e in run_rows:
         rel = await _score_relevancy(strategy, e)
         e.relevancy_json = rel
-        # Composite: relevancy dominates, volume is a mild tie-breaker.
+        # Composite: relevancy dominates, but a tiny sample can't claim full
+        # relevancy credit. sample_confidence shrinks the relevancy of low-lead
+        # experiments toward 0 so a 2-lead "100%" can't beat a 25-lead "80%".
         rel_score = rel.get("relevancy_score")
         rel_score = rel_score if isinstance(rel_score, (int, float)) else 0
-        volume_factor = len(e.leads_json or []) / max_leads
-        e.score = round(rel_score * 0.85 + (volume_factor * 100) * 0.15, 1)
+        lead_count = len(e.leads_json or [])
+        sample_confidence = min(1.0, lead_count / MIN_CONFIDENT_SAMPLE)
+        adjusted_relevancy = rel_score * sample_confidence
+        volume_factor = lead_count / max_leads
+        rel["sample_confidence"] = round(sample_confidence, 2)
+        rel["adjusted_relevancy"] = round(adjusted_relevancy, 1)
+        rel["low_confidence"] = sample_confidence < 1.0
+        e.relevancy_json = rel
+        e.score = round(adjusted_relevancy * 0.85 + (volume_factor * 100) * 0.15, 1)
         db.commit()
 
     # ---- 2. Cross-experiment ranking (compact rows, never raw lead dump) ----
@@ -710,6 +755,8 @@ async def analyze_batch(db: Session, batch_id: str) -> dict:
             "lead_count": summ.get("lead_count", len(e.leads_json or [])),
             "relaxed": summ.get("relaxed"),
             "relevancy_score": rel.get("relevancy_score"),
+            "sample_confidence": rel.get("sample_confidence"),
+            "adjusted_relevancy": rel.get("adjusted_relevancy"),
             "off_target_industries": rel.get("off_target_industries"),
             "composite_score": e.score,
         })
@@ -718,7 +765,12 @@ async def analyze_batch(db: Session, batch_id: str) -> dict:
         "You are analyzing a series of Apollo lead-search experiments to recommend the "
         "single best-performing parameter set for a product. Weigh RELEVANCY (leads that "
         "actually fit the product) far above raw volume — a smaller, on-target experiment "
-        "beats a large one full of off-target industries.\n\n"
+        "beats a large one full of off-target industries. BUT a relevancy score from a "
+        "tiny sample is unreliable: each experiment includes 'sample_confidence' (1.0 = "
+        "enough leads to trust the score, lower = too few leads) and 'adjusted_relevancy' "
+        "(relevancy already discounted by sample size). Prefer the highest 'composite_score'; "
+        "never crown an experiment with very low sample_confidence as the winner unless every "
+        "alternative is worse on adjusted_relevancy.\n\n"
         f"PRODUCT: {strategy.product_name}\n"
         f"WHAT IT DOES: {(strategy.description or '')[:400]}\n\n"
         f"EXPERIMENTS (already scored):\n{json.dumps(digest, default=str)[:3000]}\n\n"
@@ -733,12 +785,15 @@ async def analyze_batch(db: Session, batch_id: str) -> dict:
     ai = await chat_json(prompt, max_tokens=1000)
 
     # Deterministic fallback / guard: the highest composite score is the winner
-    # unless the model picked a valid run experiment id.
-    best_by_score = max(run_rows, key=lambda e: (e.score or 0))
+    # unless the model picked a valid run experiment id. Winner eligibility is
+    # restricted to experiments with enough leads to trust the score (tiny
+    # samples can't be crowned) — falling back to all runs only if none clear it.
+    winner_pool = [e for e in run_rows if len(e.leads_json or []) >= MIN_LEADS_FOR_WINNER] or run_rows
+    best_by_score = max(winner_pool, key=lambda e: (e.score or 0))
     best_id = best_by_score.id
     analysis = ai if isinstance(ai, dict) and "_error" not in ai else {}
     model_pick = analysis.get("best_experiment_id")
-    if model_pick and any(e.id == model_pick for e in run_rows):
+    if model_pick and any(e.id == model_pick for e in winner_pool):
         best_id = model_pick
 
     analysis_payload = {
@@ -752,14 +807,16 @@ async def analyze_batch(db: Session, batch_id: str) -> dict:
         "_provenance": stamp(
             source="ai_generated",
             logic=(
-                "Scored each experiment's leads for relevancy to the product, then ranked "
-                "experiments by a composite of relevancy (85%) and volume (15%). The model "
-                "justified the winner from a compact per-experiment digest — raw leads are "
-                "never dumped wholesale to avoid hallucination."
+                "Scored each experiment's leads for relevancy to the product, discounted "
+                "that relevancy by sample confidence (tiny samples can't claim full credit), "
+                "then ranked experiments by a composite of adjusted relevancy (85%) and "
+                "volume (15%). The model justified the winner from a compact per-experiment "
+                "digest — raw leads are never dumped wholesale to avoid hallucination."
             ),
             steps=[
                 "Score relevancy per experiment (one at a time)",
-                "Compute composite score = 0.85*relevancy + 0.15*volume",
+                f"Discount relevancy by sample_confidence = min(1, leads/{MIN_CONFIDENT_SAMPLE})",
+                "Compute composite = 0.85*adjusted_relevancy + 0.15*volume",
                 "Rank experiments from a compact digest",
                 "Pick best (model choice validated against top composite score)",
             ],

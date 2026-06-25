@@ -315,14 +315,26 @@ export interface GtmPlan {
     window_months?: number;
     n_experiments?: number;
     leads_per_experiment?: number;
+    test_sample_per_experiment?: number;
+    total_test_leads?: number;
+    scale_target_leads?: number;
+    winners_scaled?: number;
     total_experiment_leads?: number;
     window_send_capacity?: number;
     capacity_limited?: boolean;
+    design?: string;
+    baseline?: Record<string, string>;
+    factors_tested?: string[];
     hypotheses?: {
       idx?: number;
       persona?: string;
       segment?: string;
+      company_size?: string | null;
+      seniority?: string | null;
+      industry?: string | null;
+      technology?: string | null;
       angle?: string | null;
+      factor?: string;
       label?: string;
       leads?: number;
     }[];
@@ -546,6 +558,39 @@ export function usePersonaIntelligence(id?: string) {
   });
 }
 
+export interface ToneRow {
+  tone: string;
+  label: string;
+  contacted: number;
+  replied: number;
+  reply_rate_pct: number | null;
+}
+
+export interface TonePersona {
+  persona_type: string;
+  label: string;
+  total: number;
+  best_tone: { tone: string; label: string; reply_rate_pct: number } | null;
+  tones: ToneRow[];
+}
+
+export interface ToneIntelligence {
+  strategy_id: string;
+  data_basis: "funnel" | "engagement_proxy" | "none";
+  total_sequences: number;
+  tones: ToneRow[];
+  personas: TonePersona[];
+  recommendations: string[];
+}
+
+export function useToneIntelligence(id?: string) {
+  return useQuery<ToneIntelligence>({
+    queryKey: id ? [...strategyKeys.detail(id), "tone-intelligence"] : ["tone-intel", "none"],
+    queryFn: () => apiFetch(`/api/strategies/${id}/tone-intelligence`),
+    enabled: !!id,
+  });
+}
+
 export interface PersonaAllocationRow {
   persona_type: string;
   label: string;
@@ -595,12 +640,18 @@ export interface CampaignPlanPhase {
   calendar_range: string;
   quarter: string;
   revenue_target_usd: number;
+  base_target_usd?: number;
+  carried_in_usd?: number;
+  effective_target_usd?: number;
+  carry_forward_usd?: number;
   required_closures: number;
   prospect_count: number;
   prospect_share_pct: number;
   baseline_prospects: number;
   persona_split: CampaignPlanPersonaSplit[];
   season_factor: number | null;
+  season_notes?: string[];
+  projected_attainment_pct?: number | null;
   confidence: "High" | "Moderate" | "Low" | null;
 }
 
@@ -778,16 +829,20 @@ export function useGetContacts() {
     mutationFn: ({
       id,
       limit,
+      accountIds,
+      persona,
       facets,
     }: {
       id: string;
       limit?: number;
+      accountIds?: string[];
+      persona?: string;
       facets?: Partial<ApolloFacets>;
     }) =>
       streamSse(
         withLimit(`/api/strategies/${id}/leads/contacts`, limit),
         undefined,
-        facets,
+        { account_ids: accountIds, persona, facets },
       ),
     onSuccess: (result: unknown) => {
       qc.invalidateQueries({ queryKey: ["accounts"] });
@@ -795,13 +850,13 @@ export function useGetContacts() {
       import("sonner")
         .then(({ toast }) => {
           const r = result as
-            | { accounts_added?: number; contacts_added?: number; cached?: boolean; message?: string }
+            | { accounts_targeted?: number; contacts_added?: number; message?: string }
             | null;
           if (r?.message) {
             toast.info(r.message);
           } else if (r) {
             toast.success(
-              `Added ${r.contacts_added ?? 0} contacts across ${r.accounts_added ?? 0} accounts`,
+              `Added ${r.contacts_added ?? 0} contacts across ${r.accounts_targeted ?? 0} accounts`,
             );
           } else {
             toast.success("Contacts pulled");
@@ -892,9 +947,17 @@ export function useScoreLeads() {
 export function useFetchContactEmails() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) =>
-      streamSse(`/api/strategies/${id}/contacts/fetch-emails`),
-    onSuccess: (result: unknown, id) => {
+    mutationFn: (vars: string | { id: string; contactIds?: string[] }) => {
+      const { id, contactIds } =
+        typeof vars === "string" ? { id: vars, contactIds: undefined } : vars;
+      return streamSse(
+        `/api/strategies/${id}/contacts/fetch-emails`,
+        undefined,
+        { contact_ids: contactIds },
+      );
+    },
+    onSuccess: (result: unknown, vars) => {
+      const id = typeof vars === "string" ? vars : vars.id;
       qc.invalidateQueries({ queryKey: ["contacts", id] });
       qc.invalidateQueries({ queryKey: ["contacts"] });
       import("sonner").then(({ toast }) => {

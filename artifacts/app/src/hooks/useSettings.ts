@@ -6,6 +6,7 @@ export interface Integration {
   display_name: string;
   description: string;
   key_label: string;
+  supported?: boolean;
   is_connected: boolean;
   is_enabled: boolean;
   key_last_four?: string | null;

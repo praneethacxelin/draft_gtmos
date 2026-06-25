@@ -183,6 +183,7 @@ function IntegrationCard({ integration }: { integration: Integration }) {
   const [showKey, setShowKey] = useState(false);
   const update = useUpdateIntegration();
   const test = useTestIntegration();
+  const unsupported = integration.supported === false;
 
   useEffect(() => {
     setEnabled(integration.is_enabled);
@@ -190,7 +191,7 @@ function IntegrationCard({ integration }: { integration: Integration }) {
 
   return (
     <Card
-      className="border-card-border bg-card p-5"
+      className={`border-card-border bg-card p-5${unsupported ? " opacity-70" : ""}`}
       data-testid={`integration-${integration.name}`}
     >
       <div className="flex items-start justify-between">
@@ -198,7 +199,13 @@ function IntegrationCard({ integration }: { integration: Integration }) {
           <div className="flex items-center gap-2">
             <KeyRound className="h-4 w-4 text-primary" />
             <div className="text-sm font-semibold">{integration.display_name}</div>
-            <LiveBadge integration={integration} />
+            {unsupported ? (
+              <span className="inline-flex items-center gap-1 rounded bg-destructive/15 px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-destructive">
+                Not supported
+              </span>
+            ) : (
+              <LiveBadge integration={integration} />
+            )}
           </div>
           <div className="mt-1 max-w-md text-xs text-muted-foreground">
             {integration.description}
@@ -214,6 +221,7 @@ function IntegrationCard({ integration }: { integration: Integration }) {
         </div>
         <Switch
           checked={enabled}
+          disabled={unsupported}
           onCheckedChange={(v) => {
             setEnabled(v);
             update.mutate({
@@ -231,8 +239,11 @@ function IntegrationCard({ integration }: { integration: Integration }) {
         <div className="relative">
           <Input
             type={showKey ? "text" : "password"}
+            disabled={unsupported}
             placeholder={
-              integration.is_connected ? "•••••••• (saved — type to replace)" : "Paste API key"
+              unsupported
+                ? "Not supported — no integration available"
+                : integration.is_connected ? "•••••••• (saved — type to replace)" : "Paste API key"
             }
             value={key}
             onChange={(e) => setKey(e.target.value.trim())}
@@ -266,7 +277,7 @@ function IntegrationCard({ integration }: { integration: Integration }) {
           <Button
             size="sm"
             variant="secondary"
-            disabled={!integration.is_connected || test.isPending}
+            disabled={unsupported || !integration.is_connected || test.isPending}
             onClick={() => test.mutate(integration.name)}
             data-testid={`button-test-${integration.name}`}
           >
@@ -274,7 +285,7 @@ function IntegrationCard({ integration }: { integration: Integration }) {
           </Button>
           <Button
             size="sm"
-            disabled={update.isPending}
+            disabled={unsupported || update.isPending}
             onClick={async () => {
               try {
                 await update.mutateAsync({

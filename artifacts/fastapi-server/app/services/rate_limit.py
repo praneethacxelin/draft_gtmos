@@ -42,6 +42,7 @@ _LIMITS: dict[str, tuple[float, float]] = {
     "apollo": (30, 30),
     "instantly": (10, 10),
     "clay": (20, 20),
+    "hunter": (20, 20),
 }
 
 _BUCKETS: dict[str, _Bucket] = {}

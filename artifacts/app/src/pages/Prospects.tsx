@@ -15,7 +15,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { TierBadge, ScoreBar, DemoBadge } from "@/components/Pills";
 import { useActiveStrategy } from "@/hooks/useActiveStrategy";
 import { usePrioritizedAccounts } from "@/hooks/useAccounts";
-import { useContacts, useUpdateContact, useRevealContactEmail, useRevealContactPhone, useVerifyContactEmail, useVerifyBulkEmails } from "@/hooks/useContacts";
+import { useContacts, useUpdateContact, useRevealContactEmail, useRevealContactPhone } from "@/hooks/useContacts";
 import { useSignals } from "@/hooks/useSignals";
 import { useToast } from "@/hooks/use-toast";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -24,6 +24,7 @@ import {
   useDiscoverAccounts,
   useGetContacts,
   useCampaignPlan,
+  useStrategy,
   useRunSignals,
   useScoreLeads,
   useRunPatterns,
@@ -44,7 +45,6 @@ import {
   CheckCircle2,
   XCircle,
   HelpCircle,
-  ShieldCheck,
   ExternalLink,
   FlaskConical,
   Lock,
@@ -53,6 +53,7 @@ import {
 } from "lucide-react";
 import { ReasoningPanel, SourceBadge } from "@/components/ReasoningPanel";
 import { ApolloFilterGate } from "@/components/ApolloFilterGate";
+import { GetContactsGate } from "@/components/GetContactsGate";
 import { useFetchLimits } from "@/hooks/useSettings";
 import { RetriggerBar, type RetriggerAction } from "@/components/RetriggerBar";
 
@@ -84,8 +85,16 @@ const FACET_LABELS: Record<string, string> = {
 
 function ExperimentDiscoverySection({ strategyId }: { strategyId: string }) {
   const { data: plan, isLoading } = useCampaignPlan(strategyId);
+  const { data: strategy } = useStrategy(strategyId);
   const discover = useDiscoverExperimentLeads();
   const [expLimit, setExpLimit] = useState<string>("default");
+
+  // The winning variant is scaled to this monthly target (from the ROI plan).
+  // Fall back to the legacy ``leads_per_experiment`` field for ROI plans that
+  // were computed before ``scale_target_leads`` existed.
+  const experimentPlan = strategy?.roi?.gtm_plan?.experiment_plan;
+  const scaleTarget =
+    experimentPlan?.scale_target_leads ?? experimentPlan?.leads_per_experiment ?? null;
 
   if (isLoading) return null;
 
@@ -139,7 +148,7 @@ function ExperimentDiscoverySection({ strategyId }: { strategyId: string }) {
         </div>
         <div className="flex items-center gap-2">
           <Select value={expLimit} onValueChange={setExpLimit}>
-            <SelectTrigger className="w-[130px]">
+            <SelectTrigger className="w-[170px]">
               <SelectValue placeholder="Leads" />
             </SelectTrigger>
             <SelectContent>
@@ -147,7 +156,12 @@ function ExperimentDiscoverySection({ strategyId }: { strategyId: string }) {
               <SelectItem value="5">5 leads</SelectItem>
               <SelectItem value="10">10 leads</SelectItem>
               <SelectItem value="15">15 leads</SelectItem>
-              <SelectItem value="25">25 leads</SelectItem>
+              <SelectItem value="25">25 leads (test sample)</SelectItem>
+              {scaleTarget != null && scaleTarget > 25 && (
+                <SelectItem value={String(scaleTarget)}>
+                  {scaleTarget.toLocaleString()} leads (scale target)
+                </SelectItem>
+              )}
             </SelectContent>
           </Select>
           <Button onClick={runDiscovery} disabled={discover.isPending}>
@@ -219,11 +233,47 @@ export function Prospects() {
   const { data: caps } = useFetchLimits();
   const [leadLimit, setLeadLimit] = useState<string>("default");
   const [gateOpen, setGateOpen] = useState(false);
+  const [contactsGateOpen, setContactsGateOpen] = useState(false);
+  const [selectedAccounts, setSelectedAccounts] = useState<Set<string>>(new Set());
+  const [scoredOnce, setScoredOnce] = useState(false);
   const [signalLimit, setSignalLimit] = useState<string>("default");
 
   const { data: prioritized } = usePrioritizedAccounts(activeId ?? undefined);
   const { data: contacts } = useContacts(activeId ?? undefined, tier);
   const { data: signals } = useSignals(activeId ?? undefined);
+
+  // Accounts grouped by tier → flat list + selection helpers for Get-contacts.
+  const allAccounts = [
+    ...(prioritized?.tier_1 ?? []),
+    ...(prioritized?.tier_2 ?? []),
+    ...(prioritized?.tier_3 ?? []),
+  ];
+  // "Get contacts" only makes sense after scoring has re-tiered accounts: either
+  // a score run completed this session, or some accounts have left default tier 3.
+  const hasScored =
+    scoredOnce ||
+    (prioritized?.tier_1?.length ?? 0) > 0 ||
+    (prioritized?.tier_2?.length ?? 0) > 0;
+  const selectedAccountIds = [...selectedAccounts].filter((id) =>
+    allAccounts.some((a) => a.id === id),
+  );
+
+  function toggleAccount(id: string, checked: boolean) {
+    setSelectedAccounts((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
+  function toggleTier(ids: string[], checked: boolean) {
+    setSelectedAccounts((prev) => {
+      const next = new Set(prev);
+      ids.forEach((id) => (checked ? next.add(id) : next.delete(id)));
+      return next;
+    });
+  }
 
   const discoverAccounts = useDiscoverAccounts();
   const getContacts = useGetContacts();
@@ -235,8 +285,6 @@ export function Prospects() {
   const updateContact = useUpdateContact();
   const revealEmail = useRevealContactEmail();
   const revealPhone = useRevealContactPhone();
-  const verifyEmail = useVerifyContactEmail();
-  const verifyBulk = useVerifyBulkEmails();
   const { toast } = useToast();
 
   const [selectedContacts, setSelectedContacts] = useState<Set<string>>(new Set());
@@ -320,24 +368,6 @@ export function Prospects() {
     setSelectedContacts(next);
   }
 
-  async function handleVerifyBulk() {
-    if (selectedContacts.size === 0) return;
-    try {
-      const res = await verifyBulk.mutateAsync(Array.from(selectedContacts));
-      toast({
-        title: "Bulk verification complete",
-        description: `${res.verified} verified, ${res.invalid} invalid, ${res.catch_all} catch-all.`,
-      });
-      setSelectedContacts(new Set());
-    } catch (err: any) {
-      toast({
-        title: "Verification failed",
-        description: err.message || "An error occurred during verification.",
-        variant: "destructive"
-      });
-    }
-  }
-
   if (!activeId) {
     return (
       <div className="rounded border border-dashed border-border p-12 text-center">
@@ -370,6 +400,23 @@ export function Prospects() {
           );
         }}
       />
+      <GetContactsGate
+        open={contactsGateOpen}
+        onOpenChange={setContactsGateOpen}
+        selectedCount={selectedAccountIds.length}
+        pending={getContacts.isPending}
+        onConfirm={({ persona, perAccount }) => {
+          getContacts.mutate(
+            {
+              id: activeId,
+              accountIds: selectedAccountIds,
+              persona,
+              limit: perAccount,
+            },
+            { onSettled: () => setContactsGateOpen(false) },
+          );
+        }}
+      />
       <PageHeader
         eyebrow="Stage 2 · Research & scoring"
         title="Prospects"
@@ -389,7 +436,7 @@ export function Prospects() {
                 <SelectItem value="default">
                   Default ({caps?.limits.leads_per_run ?? 5})
                 </SelectItem>
-                {[3, 5, 10, 15, 25].map((n) => (
+                {[5, 10, 25, 50, 100].map((n) => (
                   <SelectItem key={n} value={String(n)}>
                     {n} leads
                   </SelectItem>
@@ -406,25 +453,25 @@ export function Prospects() {
               <Building2 className="mr-2 h-4 w-4" />
               {discoverAccounts.isPending ? "Discovering…" : "Discover accounts"}
             </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={getContacts.isPending}
-              onClick={() =>
-                getContacts.mutate({
-                  id: activeId,
-                  limit:
-                    leadLimit && leadLimit !== "default"
-                      ? Number(leadLimit)
-                      : undefined,
-                })
-              }
-              title="Pull contacts (people) for the discovered accounts — uses Apollo enrichment credits"
-              data-testid="button-get-contacts"
-            >
-              <Users className="mr-2 h-4 w-4" />
-              {getContacts.isPending ? "Pulling…" : "Get contacts"}
-            </Button>
+            {hasScored && (
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={getContacts.isPending}
+                onClick={() => setContactsGateOpen(true)}
+                title={
+                  selectedAccountIds.length
+                    ? `Pull contacts for ${selectedAccountIds.length} selected account(s)`
+                    : "Select accounts (or a tier) in the Accounts tab first"
+                }
+                data-testid="button-get-contacts"
+              >
+                <Users className="mr-2 h-4 w-4" />
+                {getContacts.isPending
+                  ? "Pulling…"
+                  : `Get contacts${selectedAccountIds.length ? ` (${selectedAccountIds.length})` : ""}`}
+              </Button>
+            )}
             <Select value={signalLimit} onValueChange={setSignalLimit}>
               <SelectTrigger
                 className="h-8 w-32 text-xs"
@@ -467,7 +514,9 @@ export function Prospects() {
               size="sm"
               variant="secondary"
               disabled={score.isPending}
-              onClick={() => score.mutate(activeId)}
+              onClick={() =>
+                score.mutate(activeId, { onSuccess: () => setScoredOnce(true) })
+              }
               data-testid="button-score"
             >
               <Sparkles className="mr-2 h-4 w-4" />
@@ -488,12 +537,25 @@ export function Prospects() {
               size="sm"
               variant="outline"
               disabled={fetchEmails.isPending}
-              onClick={() => fetchEmails.mutate(activeId)}
-              title="Uses Apollo email credits — only fetches contacts missing an email (up to 20)"
+              onClick={() =>
+                fetchEmails.mutate({
+                  id: activeId,
+                  contactIds: selectedContacts.size
+                    ? [...selectedContacts]
+                    : undefined,
+                })
+              }
+              title={
+                selectedContacts.size
+                  ? `Reveal emails for ${selectedContacts.size} selected contact(s) — Apollo email credits`
+                  : "Uses Apollo email credits — reveals emails for contacts missing one (select rows to limit the spend)"
+              }
               data-testid="button-fetch-emails"
             >
               <Mail className="mr-2 h-3.5 w-3.5 text-blue-400" />
-              {fetchEmails.isPending ? "Fetching…" : "Fetch emails"}
+              {fetchEmails.isPending
+                ? "Fetching…"
+                : `Fetch emails${selectedContacts.size ? ` (${selectedContacts.size})` : ""}`}
             </Button>
             <Button
               size="sm"
@@ -505,19 +567,6 @@ export function Prospects() {
             >
               <Phone className="mr-2 h-3.5 w-3.5 text-emerald-400" />
               {fetchPhones.isPending ? "Fetching…" : "Fetch phones"}
-            </Button>
-            <div className="h-5 w-px bg-border mx-1" />
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={selectedContacts.size === 0 || verifyBulk.isPending}
-              onClick={handleVerifyBulk}
-              title="Verify emails for selected contacts using Instantly"
-              data-testid="button-verify-bulk"
-              className={selectedContacts.size > 0 ? "border-primary text-primary hover:text-primary/80" : ""}
-            >
-              <ShieldCheck className="mr-2 h-3.5 w-3.5" />
-              {verifyBulk.isPending ? "Verifying…" : `Verify selected (${selectedContacts.size})`}
             </Button>
           </div>
         }
@@ -577,6 +626,18 @@ export function Prospects() {
                   <table className="w-full text-sm">
                     <thead className="bg-muted/40">
                       <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
+                        <th className="px-4 py-2 w-[40px]">
+                          <Checkbox
+                            checked={
+                              (list?.length ?? 0) > 0 &&
+                              (list ?? []).every((a) => selectedAccounts.has(a.id))
+                            }
+                            onCheckedChange={(checked) =>
+                              toggleTier((list ?? []).map((a) => a.id), checked as boolean)
+                            }
+                            aria-label={`Select all tier ${t} accounts`}
+                          />
+                        </th>
                         <th className="px-4 py-2">Company</th>
                         <th className="px-4 py-2">Location</th>
                         <th className="px-4 py-2">Industry</th>
@@ -593,6 +654,15 @@ export function Prospects() {
                           className="hover-elevate"
                           data-testid={`row-account-${a.id}`}
                         >
+                          <td className="px-4 py-2">
+                            <Checkbox
+                              checked={selectedAccounts.has(a.id)}
+                              onCheckedChange={(checked) =>
+                                toggleAccount(a.id, checked as boolean)
+                              }
+                              aria-label={`Select ${a.company_name}`}
+                            />
+                          </td>
                           <td className="px-4 py-2">
                             <div className="flex items-center gap-2">
                               <Building2 className="h-4 w-4 text-muted-foreground" />
@@ -675,7 +745,7 @@ export function Prospects() {
                       {(!list || list.length === 0) && (
                         <tr>
                           <td
-                            colSpan={6}
+                            colSpan={8}
                             className="px-4 py-6 text-center text-sm text-muted-foreground"
                           >
                             No accounts at this tier.
@@ -786,28 +856,24 @@ export function Prospects() {
                               <Mail className="h-3 w-3 text-blue-400 shrink-0" />
                               <span className="truncate max-w-[140px]" title={c.email}>{c.email}</span>
                               {c.email_verified === "valid" ? (
-                                <span title="Verified (Valid)"><CheckCircle2 className="h-3.5 w-3.5 text-green-500 shrink-0 ml-1" /></span>
+                                <span className="ml-1 inline-flex" title="Verified (Valid)">
+                                  <CheckCircle2 className="h-3.5 w-3.5 text-green-500 shrink-0" />
+                                </span>
                               ) : c.email_verified === "invalid" ? (
-                                <span title="Invalid"><XCircle className="h-3.5 w-3.5 text-red-500 shrink-0 ml-1" /></span>
+                                <span className="ml-1 inline-flex" title="Invalid">
+                                  <XCircle className="h-3.5 w-3.5 text-red-500 shrink-0" />
+                                </span>
                               ) : c.email_verified === "catch_all" ? (
-                                <span title="Catch-all"><HelpCircle className="h-3.5 w-3.5 text-yellow-500 shrink-0 ml-1" /></span>
+                                <span className="ml-1 inline-flex" title="Catch-all">
+                                  <HelpCircle className="h-3.5 w-3.5 text-yellow-500 shrink-0" />
+                                </span>
                               ) : (
-                                <button 
-                                  onClick={() => verifyEmail.mutate(c.id, {
-                                    onError: (err: any) => {
-                                      toast({
-                                        title: "Verification failed",
-                                        description: err.message || "An error occurred.",
-                                        variant: "destructive"
-                                      });
-                                    }
-                                  })}
-                                  disabled={verifyEmail.isPending}
-                                  className="text-muted-foreground hover:text-foreground transition-colors ml-1"
-                                  title="Verify email with Instantly"
+                                <span
+                                  className="ml-1 inline-flex"
+                                  title="Not verified — verification runs later on bounced emails (Analytics), to conserve credits"
                                 >
-                                  <CheckCircle2 className="h-3.5 w-3.5 opacity-30" />
-                                </button>
+                                  <HelpCircle className="h-3.5 w-3.5 text-muted-foreground/30 shrink-0" />
+                                </span>
                               )}
                             </div>
                           ) : c.email === "Not found" ? (
@@ -822,7 +888,7 @@ export function Prospects() {
                                 size="sm"
                                 variant="outline"
                                 className="h-5 px-1.5 text-[10px]"
-                                disabled={revealEmail.isPending}
+                                disabled={revealEmail.isPending && revealEmail.variables === c.id}
                                 onClick={() => revealEmail.mutate(c.id, {
                                   onSuccess: (data) => {
                                     if (data.email && data.email !== "Not found") {
@@ -847,7 +913,7 @@ export function Prospects() {
                                 })}
                                 title="Uses 1 Apollo credit to fetch this person's email"
                               >
-                                {revealEmail.isPending ? "Fetching..." : "Get Email"}
+                                {revealEmail.isPending && revealEmail.variables === c.id ? "Fetching..." : "Get Email"}
                               </Button>
                             </div>
                           )}

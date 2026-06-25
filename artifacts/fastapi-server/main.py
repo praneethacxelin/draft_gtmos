@@ -32,10 +32,12 @@ from app.routes import (
     analytics,
     experiments,
     learnings,
+    apollo_store,
 )
 from app.services.instantly_poller import poll_loop
 from app.services.m3_tracking import m3_loop
 from app.services.signal_cron import signal_cron_loop
+from app.services.experiment_cron import experiment_eval_loop
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("gtm")
@@ -107,11 +109,12 @@ async def lifespan(app: FastAPI):
     poller = asyncio.create_task(poll_loop())
     m3 = asyncio.create_task(m3_loop())
     signals = asyncio.create_task(signal_cron_loop())
-    log.info("Background tasks started: Instantly poller (1h), M3 tracker (6h), Signal cron (24h)")
+    exp_eval = asyncio.create_task(experiment_eval_loop())
+    log.info("Background tasks started: Instantly poller (1h), M3 tracker (6h), Signal cron (24h), Experiment eval (1h)")
     try:
         yield
     finally:
-        for t in (poller, m3, signals):
+        for t in (poller, m3, signals, exp_eval):
             t.cancel()
             try:
                 await t
@@ -175,6 +178,7 @@ app.include_router(admin.router, prefix=api_prefix)
 app.include_router(audit.router, prefix=api_prefix)
 app.include_router(analytics.router, prefix=api_prefix)
 app.include_router(learnings.router, prefix=api_prefix)
+app.include_router(apollo_store.router, prefix=api_prefix)
 
 
 if __name__ == "__main__":

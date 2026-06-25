@@ -17,6 +17,7 @@ import httpx
 
 from app.services.rate_limit import consume as _rl_consume, RateLimitExceeded
 from app.services import audit_service
+from app.services import apollo_store
 
 log = logging.getLogger("gtm.clients")
 TIMEOUT = httpx.Timeout(20.0, connect=5.0)
@@ -364,6 +365,12 @@ def apollo_people_search(
     # Add seniority filter (AI-selected decision-maker levels)
     if filters.get("seniorities"):
         search_body["person_seniorities"] = filters["seniorities"]
+    # Scope the search to specific company domains (used when pulling contacts
+    # for a hand-picked set of already-discovered accounts).
+    if filters.get("organization_domains"):
+        doms = [str(d).strip() for d in filters["organization_domains"] if str(d).strip()]
+        if doms:
+            search_body["q_organization_domains_list"] = doms
     # Add optional industry filter
     if filters.get("industries"):
         search_body["organization_industries"] = filters["industries"]
@@ -474,6 +481,9 @@ def apollo_people_search(
             response_summary=summary_payload,
             summary=f"Apollo people search: titles={filters.get('titles', [])[:2]} → {result_count} contacts",
         )
+        # Silent capture: mirror everything Apollo returned into our own store.
+        if people:
+            apollo_store.capture_people(people, endpoint="people_search", strategy_id=_strategy_id)
 
 
 def _person_name(p: dict) -> str:
@@ -587,6 +597,101 @@ def apollo_match_person(
             response_summary=summary_payload,
             summary=f"Apollo {kind}: {name} @ {org_name or '?'} → {'found' if person else 'not found'}",
         )
+        # Silent capture: mirror the matched person (incl. revealed email).
+        if person:
+            apollo_store.capture_person(person, endpoint="people_match", strategy_id=_strategy_id)
+
+
+def apollo_bulk_reveal(
+    api_key: str,
+    person_ids: list[str],
+    reveal_personal: bool = False,
+    _strategy_id: Optional[str] = None,
+    _strategy_name: Optional[str] = None,
+) -> dict[str, dict]:
+    """Reveal work emails for a set of Apollo person IDs via ``/people/bulk_match``.
+
+    Matching by the Apollo person ``id`` we captured during the (free) people
+    search is far more reliable than re-matching by name, and it returns the
+    work email when the account's plan includes it. Returns a mapping of
+    ``person_id -> matched person dict`` (only entries Apollo could match).
+    """
+    out: dict[str, dict] = {}
+    if not api_key or not person_ids:
+        return out
+    url = "https://api.apollo.io/api/v1/people/bulk_match"
+    headers = {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-cache",
+        "X-Api-Key": api_key,
+    }
+    # Apollo caps bulk_match at 10 records per call.
+    for start in range(0, len(person_ids), 10):
+        chunk = [pid for pid in person_ids[start : start + 10] if pid]
+        if not chunk:
+            continue
+        _rl_consume("apollo")
+        body = {
+            "details": [{"id": pid} for pid in chunk],
+            "reveal_personal_emails": reveal_personal,
+            "reveal_phone_number": False,
+        }
+        curl = _make_curl("POST", url, headers=headers, body=body)
+        t0 = time.perf_counter()
+        status = None
+        matched = 0
+        error_text: Optional[str] = None
+        raw_response_preview: Optional[str] = None
+        try:
+            with httpx.Client(timeout=TIMEOUT) as c:
+                r = c.post(url, json=body, headers=headers)
+                status = r.status_code
+                raw_response_preview = r.text[:2000]
+                r.raise_for_status()
+                data = r.json()
+                matches = data.get("matches", []) or []
+                for p in matches:
+                    if not p:
+                        continue
+                    pid = p.get("id")
+                    if pid:
+                        out[str(pid)] = p
+                        matched += 1
+                # Positional fallback: align matches to the chunk order when
+                # Apollo does not echo the queried id back on each match.
+                if matched == 0:
+                    for pid, p in zip(chunk, matches):
+                        if p:
+                            out[str(pid)] = p
+                            matched += 1
+        except Exception as e:
+            error_text = str(e)
+            log.warning("apollo_bulk_reveal failed: %s", e)
+        finally:
+            latency_ms = int((time.perf_counter() - t0) * 1000)
+            summary_payload: dict = {"requested": len(chunk), "matched": matched}
+            if error_text:
+                summary_payload["error"] = error_text[:500]
+            if raw_response_preview and status and status >= 400:
+                summary_payload["response_body"] = raw_response_preview
+            audit_service.log_api_call(
+                service="apollo",
+                method="POST",
+                url=url,
+                request_params={"ids": chunk, "reveal_personal_emails": reveal_personal},
+                response_status=status,
+                latency_ms=latency_ms,
+                curl_command=curl,
+                strategy_id=_strategy_id,
+                strategy_name=_strategy_name,
+                is_live=True,
+                response_summary=summary_payload,
+                summary=f"Apollo bulk email reveal: {len(chunk)} ids → {matched} matched",
+            )
+    # Silent capture: mirror all revealed people (incl. work emails).
+    if out:
+        apollo_store.capture_people(list(out.values()), endpoint="bulk_match", strategy_id=_strategy_id)
+    return out
 
 
 def clay_enrich(api_key: str, contacts: list[dict]) -> Optional[list[dict]]:
@@ -836,7 +941,8 @@ def instantly_verify_email(
     _strategy_id: Optional[str] = None,
     _strategy_name: Optional[str] = None,
 ) -> Optional[str]:
-    """Verify an email using Instantly v2 API. Returns status (valid/invalid/catch_all/pending)."""
+    """Verify an email using Instantly v2 API. Returns a normalized status
+    (valid/invalid/catch_all/pending) matching ``hunter_verify_email``."""
     if not api_key or not email:
         return None
     _rl_consume("instantly")
@@ -853,8 +959,21 @@ def instantly_verify_email(
             r = c.post(url, json=payload, headers=headers)
             status = r.status_code
             r.raise_for_status()
-            data = r.json()
-            verification_status = data.get("status")
+            data = r.json() or {}
+            # NB: the top-level ``status`` field is only the request status
+            # (success/error). The real result lives in ``verification_status``
+            # (pending/verified/invalid) plus a separate ``catch_all`` flag.
+            raw = (data.get("verification_status") or "").lower()
+            catch_all = data.get("catch_all")
+            if raw == "verified":
+                # A verified-but-catch-all mailbox is risky -> surface as catch_all.
+                verification_status = "catch_all" if catch_all is True else "valid"
+            elif raw == "invalid":
+                verification_status = "invalid"
+            elif raw == "pending":
+                verification_status = "pending"
+            else:
+                verification_status = raw or "pending"
             return verification_status
     except Exception as e:
         error_text = str(e)
@@ -882,8 +1001,6 @@ def instantly_verify_email(
             response_summary=summary_payload,
             summary=f"Instantly: verify email {email}",
         )
-
-
 def instantly_get_accounts(api_key: str) -> Optional[dict]:
     """Retrieve connected sender accounts from Instantly v2 API."""
     if not api_key: return None
@@ -898,6 +1015,70 @@ def instantly_get_accounts(api_key: str) -> Optional[dict]:
     except Exception as e:
         log.warning("instantly_get_accounts failed: %s", e)
         return None
+
+
+def hunter_verify_email(
+    api_key: str,
+    email: str,
+    _strategy_id: Optional[str] = None,
+    _strategy_name: Optional[str] = None,
+) -> Optional[str]:
+    """Verify an email using Hunter.io email-verifier. Returns a normalized
+    status (valid/invalid/catch_all/pending) matching ``instantly_verify_email``.
+    """
+    if not api_key or not email:
+        return None
+    _rl_consume("hunter")
+    url = "https://api.hunter.io/v2/email-verifier"
+    params = {"email": email, "api_key": api_key}
+    # Don't leak the key into the recorded curl/audit.
+    curl = _make_curl("GET", f"{url}?email={email}&api_key=***")
+    t0 = time.perf_counter()
+    status = None
+    normalized: Optional[str] = None
+    error_text: Optional[str] = None
+    try:
+        with httpx.Client(timeout=15.0) as c:
+            r = c.get(url, params=params)
+            status = r.status_code
+            r.raise_for_status()
+            data = (r.json() or {}).get("data") or {}
+            result = (data.get("result") or "").lower()
+            hstatus = (data.get("status") or "").lower()
+            if result == "deliverable" or hstatus == "valid":
+                normalized = "valid"
+            elif result == "undeliverable" or hstatus in ("invalid", "disposable"):
+                normalized = "invalid"
+            elif hstatus in ("accept_all", "webmail") or result == "risky":
+                normalized = "catch_all"
+            else:
+                normalized = "pending"
+            return normalized
+    except Exception as e:
+        error_text = str(e)
+        log.warning("hunter_verify_email failed: %s", e)
+        raise e
+    finally:
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        summary_payload: dict = {"email": email}
+        if normalized:
+            summary_payload["verification_status"] = normalized
+        if error_text:
+            summary_payload["error"] = error_text[:500]
+        audit_service.log_api_call(
+            service="hunter",
+            method="GET",
+            url=url,
+            request_params={"email": email},
+            response_status=status,
+            latency_ms=latency_ms,
+            curl_command=curl,
+            strategy_id=_strategy_id,
+            strategy_name=_strategy_name,
+            is_live=True,
+            response_summary=summary_payload,
+            summary=f"Hunter: verify email {email}",
+        )
 
 
 def instantly_get_campaigns(api_key: str) -> Optional[list[dict]]:
@@ -1029,10 +1210,22 @@ def test_connection(name: str, api_key: str) -> tuple[bool, str]:
                 if r2.status_code == 200:
                     return True, "Connected (v1)"
                 return False, f"Instantly HTTP v2={r.status_code} v1={r2.status_code}"
+        if name == "hunter":
+            with httpx.Client(timeout=TIMEOUT) as c:
+                r = c.get(
+                    "https://api.hunter.io/v2/account",
+                    params={"api_key": api_key},
+                )
+                if r.status_code == 200:
+                    return True, "Connected"
+                if r.status_code in (401, 403):
+                    return False, "Invalid Hunter.io API key"
+                return False, f"Hunter HTTP {r.status_code}"
         if name == "clay":
-            if len(api_key) >= 8:
-                return True, "Key saved (Clay does not expose a public health endpoint)"
-            return False, "Key looks too short"
+            return False, (
+                "Clay is not supported — no stable programmatic enrichment API. "
+                "Use Apollo + SerpAPI + Hunter for the equivalent flow."
+            )
         return False, "Unknown integration"
     except Exception as e:
         return False, str(e)

@@ -17,6 +17,7 @@ import {
   Mail,
   FlaskConical,
   PieChart,
+  MessagesSquare,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -34,6 +35,7 @@ import {
   useValidateRoi,
   usePersonaIntelligence,
   usePersonaAllocation,
+  useToneIntelligence,
   type Strategy,
   type RoiVerdict,
   type GtmPlan,
@@ -803,6 +805,9 @@ export function RoiPanel({
             totalProspects={roi.gtm_plan?.required_prospects ?? null}
           />
 
+          {/* Tone × persona intelligence */}
+          <ToneIntelligenceSection strategyId={strategyId} />
+
           {/* Rationale + market ceiling */}
           {roi.rationale && (
             <Card className="border-card-border bg-card p-4">
@@ -995,6 +1000,123 @@ function PersonaIntelligenceSection({
           <div className="mb-2 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
             <Lightbulb className="h-3.5 w-3.5" />
             Persona recommendations
+          </div>
+          <ul className="space-y-1.5 text-sm text-foreground/90">
+            {data.recommendations.map((r, i) => (
+              <li key={i} className="flex gap-2">
+                <span className="text-primary">•</span>
+                <span>{r}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+const TONE_BAR_COLORS: Record<string, string> = {
+  technical: "bg-sky-500",
+  casual: "bg-emerald-500",
+  formal: "bg-violet-500",
+  consultative: "bg-amber-500",
+};
+
+function ToneIntelligenceSection({ strategyId }: { strategyId: string }) {
+  const { data, isLoading } = useToneIntelligence(strategyId);
+
+  if (isLoading) {
+    return (
+      <Card className="border-card-border bg-card p-4">
+        <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+          <MessagesSquare className="h-3.5 w-3.5" />
+          Tone × persona
+        </div>
+        <div className="mt-2 text-sm text-muted-foreground">Analyzing email tone…</div>
+      </Card>
+    );
+  }
+
+  const personas = (data?.personas ?? []).filter((p) => p.total > 0);
+  if (!data || personas.length === 0) {
+    return (
+      <Card className="border-card-border bg-card p-4">
+        <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+          <MessagesSquare className="h-3.5 w-3.5" />
+          Tone × persona
+        </div>
+        <div className="mt-2 text-sm text-muted-foreground">
+          No tone data yet. Generate and send sequences across personas — this panel learns which
+          writing style (technical, casual, formal, consultative) earns the most replies per persona.
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="border-card-border bg-card p-4">
+      <div className="mb-1 flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+        <MessagesSquare className="h-3.5 w-3.5" />
+        Tone × persona
+        <span className="ml-auto inline-flex items-center gap-2 text-[11px] font-normal normal-case tracking-normal text-muted-foreground">
+          {data.total_sequences} sequences ·{" "}
+          {data.data_basis === "funnel" ? "reply-based" : "early signal"}
+        </span>
+      </div>
+      <div className="mb-3 text-[11px] text-muted-foreground">
+        Email tone is classified per sequence, then correlated with reply rate — so you learn which
+        writing style each persona actually responds to.
+      </div>
+
+      <div className="space-y-3">
+        {personas.map((p) => {
+          const maxRate = Math.max(
+            1,
+            ...p.tones.map((t) => t.reply_rate_pct ?? 0),
+          );
+          return (
+            <div
+              key={p.persona_type}
+              className="rounded border border-card-border bg-background/40 p-3"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium text-foreground">{p.label}</span>
+                <span className="text-[11px] text-muted-foreground">{p.total} sequences</span>
+                {p.best_tone && (
+                  <span className="ml-auto inline-flex items-center gap-1 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-primary">
+                    Best: {p.best_tone.label} · {p.best_tone.reply_rate_pct}%
+                  </span>
+                )}
+              </div>
+              <div className="mt-2 space-y-1.5">
+                {p.tones.map((t) => (
+                  <div key={t.tone} className="flex items-center gap-2">
+                    <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{t.label}</span>
+                    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-card-border/60">
+                      <div
+                        className={`h-full rounded-full ${TONE_BAR_COLORS[t.tone] ?? "bg-primary"}`}
+                        style={{
+                          width: `${Math.max(2, ((t.reply_rate_pct ?? 0) / maxRate) * 100)}%`,
+                        }}
+                      />
+                    </div>
+                    <span className="w-28 shrink-0 text-right font-mono text-[11px] text-muted-foreground">
+                      {t.reply_rate_pct != null ? `${t.reply_rate_pct}%` : "—"} · {t.replied}/
+                      {t.contacted}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {(data.recommendations ?? []).length > 0 && (
+        <div className="mt-3 border-t border-card-border pt-3">
+          <div className="mb-2 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+            <Lightbulb className="h-3.5 w-3.5" />
+            Tone recommendations
           </div>
           <ul className="space-y-1.5 text-sm text-foreground/90">
             {data.recommendations.map((r, i) => (
@@ -1272,13 +1394,32 @@ function GtmPlanSection({ plan }: { plan: GtmPlan }) {
           </div>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
             <CalcStat label="Experiments to run" value={fmtInt(exp.n_experiments)} />
-            <CalcStat label="Leads per experiment" value={fmtInt(exp.leads_per_experiment)} />
-            <CalcStat label="Total experiment leads" value={fmtInt(exp.total_experiment_leads)} />
+            <CalcStat
+              label="Test leads / experiment"
+              value={fmtInt(exp.test_sample_per_experiment ?? exp.leads_per_experiment)}
+            />
+            <CalcStat label="Test-phase leads" value={fmtInt(exp.total_test_leads)} />
+            <CalcStat
+              label="Winner scale target"
+              value={`${fmtInt(exp.scale_target_leads ?? exp.leads_per_experiment)}/mo`}
+            />
+            <CalcStat
+              label="Total leads (test + 1 winner)"
+              value={fmtInt(exp.total_experiment_leads)}
+            />
           </div>
+          <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+            Only the single best variant is scaled into Prospects — so the real spend is{" "}
+            {fmtInt(exp.n_experiments)} × {fmtInt(exp.test_sample_per_experiment ?? exp.leads_per_experiment)} test
+            leads plus one winner scaled to {fmtInt(exp.scale_target_leads ?? exp.leads_per_experiment)}/mo, not{" "}
+            {fmtInt(exp.n_experiments)} × {fmtInt(exp.scale_target_leads ?? exp.leads_per_experiment)}.
+          </p>
           {exp.hypotheses && exp.hypotheses.length > 0 && (
             <div className="mt-3">
               <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                What each experiment tests (persona × segment)
+                {exp.design === "ofat"
+                  ? "What each experiment isolates (one factor at a time)"
+                  : "What each experiment tests (persona × segment)"}
               </div>
               <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
                 {exp.hypotheses.map((h) => (
@@ -1292,6 +1433,22 @@ function GtmPlanSection({ plan }: { plan: GtmPlan }) {
                     <span className="min-w-0 flex-1 truncate text-foreground/90" title={h.label}>
                       {h.label}
                     </span>
+                    {h.factor && (
+                      <span
+                        className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] uppercase tracking-wide ${
+                          h.factor === "baseline"
+                            ? "bg-muted text-muted-foreground"
+                            : "bg-sky-500/15 text-sky-300"
+                        }`}
+                        title={
+                          h.factor === "baseline"
+                            ? "Shared ICP baseline all variants compare against"
+                            : `Isolates the ${h.factor} factor`
+                        }
+                      >
+                        {h.factor}
+                      </span>
+                    )}
                     <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
                       {fmtInt(h.leads)} leads
                     </span>

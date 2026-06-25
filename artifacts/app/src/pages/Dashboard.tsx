@@ -402,77 +402,35 @@ function EngineerView({ strategyId, selectedStrategy }: { strategyId?: string; s
     }),
     [prioritized],
   );
-
-  const { data: sequence } = useSequenceByContact(plays?.[0]?.contact_id);
-  const engagementCount = engagement?.filter((event) => ["reply", "replied", "interested", "meeting_booked"].includes(event.event_type)).length ?? 0;
+  const engagementCount = engagement?.length ?? 0;
 
   return (
     <>
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-        <MetricCard label="Strategies ready" value={summaryLoading ? "—" : `${summary?.ready_strategies ?? 0} / ${summary?.strategies ?? 0}`} icon={<Layers className="h-4 w-4" />} />
-        <MetricCard label="Total contacts" value={summaryLoading ? "—" : (summary?.total_contacts ?? accounts?.length ?? 0).toLocaleString()} icon={<Users className="h-4 w-4" />} />
-        <MetricCard label="Tier 1 accounts" value={summaryLoading ? "—" : (summary?.tier_1_contacts ?? tiers.tier1).toLocaleString()} icon={<Zap className="h-4 w-4" />} accent />
-        <MetricCard label="Captured learnings" value={(learnings?.length ?? 0).toString()} icon={<Sparkles className="h-4 w-4" />} />
-      </div>
-
-      <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <Card className="col-span-2 border-card-border bg-card p-5">
-          <div className="mb-4 flex items-center justify-between">
-            <div className="text-sm font-semibold">Today's top plays</div>
-            <Link href="/outreach" className="text-xs text-muted-foreground hover:text-foreground">
-              All outreach <ArrowUpRight className="ml-0.5 inline h-3 w-3" />
-            </Link>
-          </div>
-          {!strategyId && <EmptyState text="Select a strategy to see the prioritised feed." />}
-          {strategyId && (!plays || plays.length === 0) && <EmptyState text="No top-tier contacts yet. Run lead discovery then score leads." />}
-          <div className="space-y-2">
-            {plays?.slice(0, 6).map((play) => (
-              <div key={play.contact_id} className="flex items-center justify-between rounded border border-border bg-background/40 p-3 hover-elevate">
-                <div className="flex items-center gap-3">
-                  <UrgencyDot urgency={play.urgency} />
-                  <div>
-                    <div className="text-sm font-medium">
-                      {play.contact_name}
-                      <span className="ml-2 text-xs text-muted-foreground">{play.title}</span>
-                    </div>
-                    <div className="mt-0.5 text-xs text-muted-foreground">
-                      {play.action} — {play.reason}
-                    </div>
-                  </div>
-                </div>
-                <div className="font-mono text-xs tabular-nums text-muted-foreground">{play.score?.toFixed(0)}</div>
-              </div>
-            ))}
-          </div>
-        </Card>
-
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="border-card-border bg-card p-5">
-          <div className="mb-4 text-sm font-semibold">Workflow funnel</div>
+          <div className="mb-4 text-sm font-semibold">Workflow snapshot</div>
           <div className="space-y-3 text-sm">
             <FunnelRow label="Tier 1 accounts" value={tiers.tier1} accent />
             <FunnelRow label="Tier 2 accounts" value={tiers.tier2} />
             <FunnelRow label="Tier 3 accounts" value={tiers.tier3} />
             <FunnelRow label="Engaged events" value={engagementCount} />
             <FunnelRow label="Learnings" value={learnings?.length ?? 0} />
+            <FunnelRow label="Accounts tracked" value={accounts?.length ?? 0} />
+            <FunnelRow label="Copilot plays" value={plays?.length ?? 0} />
           </div>
-          <div className="mt-6 border-t border-border pt-4">
-            <div className="mb-2 text-xs font-medium uppercase tracking-widest text-muted-foreground">Active sequence</div>
-            {sequence ? (
-              <div className="space-y-2 text-xs text-muted-foreground">
-                <div className="flex items-center justify-between">
-                  <span className="text-foreground">{sequence.status}</span>
-                  <span>{sequence.steps?.length ?? 0} steps</span>
-                </div>
-                <div>
-                  Deliverability score: <span className="text-foreground">{sequence.deliverability_score ?? "—"}</span>
-                </div>
-                <div>
-                  Latest launch: <span className="text-foreground">{sequence.last_launch ? fmtRelative(sequence.last_launch.timestamp) : "none"}</span>
-                </div>
-              </div>
-            ) : (
-              <div className="text-xs text-muted-foreground">Open a contact sequence to inspect send health.</div>
-            )}
+        </Card>
+
+        <SignalPulseCard pulse={pulse} />
+
+        <Card className="border-card-border bg-card p-5">
+          <div className="mb-4 text-sm font-semibold">Winning pipeline</div>
+          <div className="space-y-3 text-sm">
+            <FunnelRow label="Ready to launch" value={campaignPlan?.ready ? "Yes" : "No"} accent={!!campaignPlan?.ready} />
+            <FunnelRow label="Winning experiment" value={campaignPlan?.winning_experiment_name ?? "Pending"} />
+            <FunnelRow label="Pipeline window" value={campaignPlan?.experiment_window_months ? `${campaignPlan.experiment_window_months} mo` : "—"} />
+          </div>
+          <div className="mt-4 border-t border-border pt-4 text-xs text-muted-foreground">
+            Use the Experiments panel to seed variations, then run, analyze, and promote the winner into the live funnel.
           </div>
         </Card>
       </div>
@@ -512,32 +470,24 @@ function EngineerView({ strategyId, selectedStrategy }: { strategyId?: string; s
         </Card>
 
         <Card className="border-card-border bg-card p-5">
-          <div className="mb-4 text-sm font-semibold">Winning pipeline</div>
-          <div className="space-y-3 text-sm">
-            <FunnelRow label="Ready to launch" value={campaignPlan?.ready ? "Yes" : "No"} accent={!!campaignPlan?.ready} />
-            <FunnelRow label="Winning experiment" value={campaignPlan?.winning_experiment_name ?? "Pending"} />
-            <FunnelRow label="Pipeline window" value={campaignPlan?.experiment_window_months ? `${campaignPlan.experiment_window_months} mo` : "—"} />
+          <div className="mb-4 text-sm font-semibold">Approval queue</div>
+          <div className="space-y-3">
+            {selectedStrategy ? (
+              <div className="rounded border border-border bg-background/40 p-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-sm font-medium">{selectedStrategy.product_name}</div>
+                  <StatusPill status={selectedStrategy.status} />
+                </div>
+              </div>
+            ) : (
+              <EmptyState text="No active strategy selected." />
+            )}
           </div>
         </Card>
       </div>
 
       <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="border-card-border bg-card p-5 lg:col-span-2">
-          <div className="mb-4 text-sm font-semibold">Approval queue</div>
-          <div className="space-y-3">
-            {(strategyId ? [selectedStrategy] : []).filter(Boolean).map((strategy) => (
-              <div key={strategy!.id} className="rounded border border-border bg-background/40 p-3">
-                <div className="flex items-center justify-between">
-                  <div className="text-sm font-medium">{strategy!.product_name}</div>
-                  <StatusPill status={strategy!.status} />
-                </div>
-              </div>
-            ))}
-            {(!strategyId || !selectedStrategy) && <EmptyState text="No active strategy selected." />}
-          </div>
-        </Card>
-
-        <Card className="border-card-border bg-card p-5">
           <div className="mb-4 text-sm font-semibold">Recent activity</div>
           <div className="space-y-2">
             {activity?.slice(0, 6).map((item, index) => (
@@ -549,6 +499,14 @@ function EngineerView({ strategyId, selectedStrategy }: { strategyId?: string; s
                 <div className="shrink-0 font-mono text-muted-foreground">{fmtRelative(item.at)}</div>
               </div>
             ))}
+          </div>
+        </Card>
+
+        <Card className="border-card-border bg-card p-5">
+          <div className="mb-4 text-sm font-semibold">Engineer notes</div>
+          <div className="space-y-3 text-xs text-muted-foreground">
+            <p>Seed experiments from the product profile, edit the facets, then run and analyze the batch before promoting a winner.</p>
+            <p>Keep the live sequence clean: launch only after deliverability, approvals, and the winning pipeline line up.</p>
           </div>
         </Card>
       </div>
@@ -571,7 +529,6 @@ function ExecutiveView({
   const { data: activity } = useDashboardActivity();
 
   const performanceRows = useMemo(() => buildStrategyPerformanceRows(strategies, outreachAnalytics), [strategies, outreachAnalytics]);
-  const funnel = useMemo(() => buildRevenueFunnel(strategies, summary, outreachAnalytics), [strategies, summary, outreachAnalytics]);
   const alerts = useMemo(() => buildExecutiveAlerts(performanceRows, outreachAnalytics), [performanceRows, outreachAnalytics]);
 
   const totals = useMemo(() => {
@@ -680,22 +637,23 @@ function ExecutiveView({
 
       <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card className="border-card-border bg-card p-5">
-          <div className="mb-4 text-sm font-semibold">Revenue funnel</div>
-          <div className="space-y-3">
-            {funnel.map((stage, index) => (
-              <div key={stage.stage} className="rounded border border-border bg-background/40 p-3 text-xs">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="font-medium text-foreground">
-                    {index + 1}. {stage.stage}
-                  </div>
-                  <div className="font-mono tabular-nums text-muted-foreground">{stage.volume.toLocaleString()}</div>
-                </div>
-                <div className="mt-2 flex items-center justify-between text-[11px] uppercase tracking-widest text-muted-foreground">
-                  <span>Conversion {stage.conversionRate.toFixed(1)}%</span>
-                  <span>Drop-off {stage.dropOffRate.toFixed(1)}%</span>
-                </div>
-              </div>
-            ))}
+          <div className="mb-4 text-sm font-semibold">How to read the numbers</div>
+          <div className="space-y-3 text-sm text-muted-foreground">
+            <p>
+              <span className="font-medium text-foreground">Investment</span> is the planned GTM spend from the ROI plan. <span className="font-medium text-foreground">Expected return</span> is the target revenue tied to that plan.
+            </p>
+            <p>
+              <span className="font-medium text-foreground">Projection</span> is the current modeled revenue from the active strategy. <span className="font-medium text-foreground">Pipeline</span> is the projected pipeline dollars from the same plan.
+            </p>
+            <p>
+              <span className="font-medium text-foreground">ROI</span> is projected revenue divided by planned investment. <span className="font-medium text-foreground">Meetings</span>, <span className="font-medium text-foreground">opportunities</span>, and <span className="font-medium text-foreground">reply rate</span> come from outreach analytics.
+            </p>
+            <p>
+              <span className="font-medium text-foreground">On Track</span> means projection is at or above expected return. <span className="font-medium text-foreground">At Risk</span> means projection is at least 80% of target but not there yet. <span className="font-medium text-foreground">Behind Plan</span> means projection is below 80% of target.
+            </p>
+            <p>
+              <span className="font-medium text-foreground">Forecast confidence</span> comes from the campaign plan when available; otherwise it follows the top strategy trend.
+            </p>
           </div>
         </Card>
 

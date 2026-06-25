@@ -21,6 +21,7 @@ from app.agents.s2_signals import (
     recognize_patterns,
     fetch_contact_emails,
     fetch_contact_phones,
+    fetch_account_contacts,
 )
 from app.agents.roi_validator import validate_roi
 from app.agents.persona_intelligence import (
@@ -613,6 +614,20 @@ def persona_intelligence(
     return compute_persona_intelligence(db, strategy_id)
 
 
+@router.get("/{strategy_id}/tone-intelligence")
+def tone_intelligence(
+    strategy_id: str,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    """Correlate email tone (technical/casual/formal/consultative) with reply
+    rate per persona, so the GTM engineer learns which writing style each
+    persona responds to."""
+    from app.agents.tone_intelligence import compute_tone_intelligence
+    own_strategy(db, strategy_id, user)
+    return compute_tone_intelligence(db, strategy_id)
+
+
 @router.get("/{strategy_id}/persona-allocation")
 def persona_allocation(
     strategy_id: str,
@@ -720,6 +735,19 @@ class ApolloFacets(BaseModel):
         return out or None
 
 
+class GetContactsRequest(BaseModel):
+    """Body for account-scoped contact fetching from the Prospects tab."""
+    account_ids: list[str] | None = None
+    persona: str | None = None
+    per_account: int | None = None
+    facets: ApolloFacets | None = None
+
+
+class FetchEmailsRequest(BaseModel):
+    """Body for the Fetch-emails reveal step (optional contact selection)."""
+    contact_ids: list[str] | None = None
+
+
 @router.get("/{strategy_id}/leads/filter-preview")
 async def lead_filter_preview(
     strategy_id: str,
@@ -739,7 +767,7 @@ async def lead_filter_preview(
 async def accounts_discover(
     strategy_id: str,
     body: ApolloFacets | None = None,
-    limit: int | None = Query(None, ge=1, le=25),
+    limit: int | None = Query(None, ge=1, le=100),
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ):
@@ -759,17 +787,29 @@ async def accounts_discover(
 @router.post("/{strategy_id}/leads/contacts")
 async def leads_get_contacts(
     strategy_id: str,
-    body: ApolloFacets | None = None,
-    limit: int | None = Query(None, ge=1, le=25),
+    body: GetContactsRequest | None = None,
+    limit: int | None = Query(None, ge=1, le=100),
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ):
-    """Pull contacts for the discovered accounts (enriched people search). Reuses
-    the same facets so contacts match the account universe."""
+    """Pull contacts for a hand-picked set of discovered accounts, scoped to a
+    persona, WITHOUT revealing emails (emails are a separate paid step). Runs
+    after scoring has re-tiered accounts, so the GTM engineer spends Apollo
+    credits only on the accounts/persona they actually want."""
     own_strategy(db, strategy_id, user)
-    override = body.to_override() if body else None
+    account_ids = body.account_ids if body else None
+    persona = body.persona if body else None
+    override = body.facets.to_override() if (body and body.facets) else None
+    per_account = limit if limit else (body.per_account if body else None) or 5
     return _sse(
-        lambda d: run_lead_search(d, strategy_id, limit=limit, override_filters=override),
+        lambda d: fetch_account_contacts(
+            d,
+            strategy_id,
+            account_ids=account_ids,
+            persona=persona,
+            per_account=per_account,
+            override_filters=override,
+        ),
         "leads",
     )
 
@@ -777,13 +817,14 @@ async def leads_get_contacts(
 @router.post("/{strategy_id}/leads/discover-experiments")
 async def lead_search_experiments(
     strategy_id: str,
-    limit: int | None = Query(None, ge=1, le=25),
+    limit: int | None = Query(None, ge=1, le=1000),
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ):
     """Experiment-driven discovery: pull leads using the winning experiment's
     facets + persona split, tagged ``source="experiment"``. Gated until a batch
-    has been analyzed."""
+    has been analyzed. The limit spans the cheap test sample (~25) up to the
+    winning variant's monthly scale target."""
     own_strategy(db, strategy_id, user)
     return _sse(
         lambda d: run_experiment_discovery(d, strategy_id, limit=limit),
@@ -817,13 +858,19 @@ def score_run(
 @router.post("/{strategy_id}/contacts/fetch-emails")
 async def contacts_fetch_emails(
     strategy_id: str,
+    body: FetchEmailsRequest | None = None,
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ):
     """Reveal emails for contacts missing one via Apollo /v1/people/match.
-    Each successful reveal costs an Apollo email credit."""
+    Each successful reveal costs an Apollo email credit. Pass ``contact_ids`` to
+    reveal only a hand-picked selection (bulk or single)."""
     own_strategy(db, strategy_id, user)
-    return _sse(lambda d: fetch_contact_emails(d, strategy_id), "fetch_emails")
+    contact_ids = body.contact_ids if body else None
+    return _sse(
+        lambda d: fetch_contact_emails(d, strategy_id, contact_ids=contact_ids),
+        "fetch_emails",
+    )
 
 
 @router.post("/{strategy_id}/contacts/fetch-phones")

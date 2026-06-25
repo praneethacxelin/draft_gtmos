@@ -440,6 +440,16 @@ class ExperimentBatch(Base):
     hypothesis = Column(Text, nullable=True)
     best_experiment_id = Column(String, nullable=True)
     analysis_json = Column(JSONB, nullable=True)  # cross-experiment summary + ranking
+    # ---- Live (closed-loop) funnel test ----
+    # Once a batch is analyzed for relevancy, it can be promoted to a live test:
+    # each variant gets a real contact cohort + drafted sequences, the engineer
+    # launches sends, and over a window we measure positive-intent replies.
+    live_status = Column(String, nullable=True)  # None / drafted / running / completed
+    window_months = Column(Integer, nullable=True)
+    window_started_at = Column(DateTime, nullable=True)
+    window_ends_at = Column(DateTime, nullable=True)
+    live_winner_experiment_id = Column(String, nullable=True)
+    live_analysis_json = Column(JSONB, nullable=True)  # per-variant funnel metrics + winner
     created_at = Column(DateTime, default=now)
     updated_at = Column(DateTime, default=now, onupdate=now)
 
@@ -463,8 +473,47 @@ class Experiment(Base):
     relevancy_json = Column(JSONB, nullable=True)  # per-experiment relevancy scoring vs profile
     score = Column(Float, nullable=True)  # composite 0-100 (relevancy x volume)
     error = Column(Text, nullable=True)
+    # ---- Live cohort + funnel metrics (populated during a live test) ----
+    cohort_size = Column(Integer, nullable=True)  # real contacts materialized for this variant
+    live_launched_at = Column(DateTime, nullable=True)
+    live_metrics_json = Column(JSONB, nullable=True)  # contacted/replied/positive funnel counts
     created_at = Column(DateTime, default=now)
     updated_at = Column(DateTime, default=now, onupdate=now)
+
+
+# ---------- Apollo capture (silent data lake) ----------
+#
+# Every person/organization Apollo returns is mirrored here, deduped by Apollo
+# id. It is deliberately decoupled from the pipeline (no FKs, never blocks a
+# request, best-effort writes) so that as usage grows we accumulate our own
+# proprietary contact/company dataset independent of any single strategy. The
+# pipeline keeps using the ``contacts``/``accounts`` tables; this is the raw
+# silent store that "fills up" over time.
+
+
+class ApolloCapture(Base):
+    __tablename__ = "apollo_captures"
+    id = Column(String, primary_key=True, default=gen_id)
+    apollo_id = Column(String, nullable=False, index=True)
+    record_type = Column(String, nullable=False, index=True)  # person | organization
+    name = Column(String, nullable=True)        # person full name or company name
+    title = Column(String, nullable=True)
+    company = Column(String, nullable=True)
+    domain = Column(String, nullable=True, index=True)
+    email = Column(String, nullable=True, index=True)
+    linkedin_url = Column(String, nullable=True)
+    industry = Column(String, nullable=True)
+    location = Column(String, nullable=True)
+    endpoint = Column(String, nullable=True)    # which Apollo endpoint produced it
+    strategy_id = Column(String, nullable=True, index=True)  # context only, no FK
+    payload_json = Column(JSONB, nullable=True)  # full raw Apollo record
+    seen_count = Column(Integer, default=1)
+    first_seen_at = Column(DateTime, default=now)
+    last_seen_at = Column(DateTime, default=now, onupdate=now)
+
+    __table_args__ = (
+        UniqueConstraint("apollo_id", "record_type", name="uq_apollo_capture_id_type"),
+    )
 
 
 # ---------- Learnings ----------
@@ -562,6 +611,46 @@ def init_db() -> None:
                 if column_name not in columns:
                     conn.execute(text(
                         f"ALTER TABLE instantly_campaigns ADD COLUMN {column_name} JSON"
+                    ))
+
+    if is_sqlite:
+        # Older SQLite snapshots also predate the live experiment fields on
+        # experiment batches. Add them lazily so experiment seeding can insert
+        # the current ORM shape without a destructive reset.
+        with engine.begin() as conn:
+            columns = {
+                row[1]
+                for row in conn.execute(text("PRAGMA table_info(experiment_batches)"))
+            }
+            for column_name, column_type in (
+                ("live_status", "VARCHAR"),
+                ("window_months", "INTEGER"),
+                ("window_started_at", "DATETIME"),
+                ("window_ends_at", "DATETIME"),
+                ("live_winner_experiment_id", "VARCHAR"),
+                ("live_analysis_json", "JSON"),
+            ):
+                if column_name not in columns:
+                    conn.execute(text(
+                        f"ALTER TABLE experiment_batches ADD COLUMN {column_name} {column_type}"
+                    ))
+
+    if is_sqlite:
+        # Match the current Experiment ORM as well. Older demo DBs lack the
+        # live cohort fields that are populated once experiments start running.
+        with engine.begin() as conn:
+            columns = {
+                row[1]
+                for row in conn.execute(text("PRAGMA table_info(experiments)"))
+            }
+            for column_name, column_type in (
+                ("cohort_size", "INTEGER"),
+                ("live_launched_at", "DATETIME"),
+                ("live_metrics_json", "JSON"),
+            ):
+                if column_name not in columns:
+                    conn.execute(text(
+                        f"ALTER TABLE experiments ADD COLUMN {column_name} {column_type}"
                     ))
 
 
