@@ -19,6 +19,11 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { PageHeader } from "@/components/PageHeader";
 import { TierBadge, StatusPill } from "@/components/Pills";
 import { useActiveStrategy } from "@/hooks/useActiveStrategy";
@@ -98,6 +103,13 @@ interface StepDraft {
   send_at?: string;
 }
 
+interface LaunchSchedule {
+  timezone: string;
+  time_from: string;
+  time_to: string;
+  days: Record<string, boolean>;
+}
+
 export function Outreach() {
   const { active, activeId } = useActiveStrategy();
   const { data: contacts, isFetching: isContactsFetching, refetch: refetchContacts } = useContacts(activeId ?? undefined);
@@ -108,6 +120,31 @@ export function Outreach() {
   // Multi-select for group generation (checkboxes)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isGeneratingBulk, setIsGeneratingBulk] = useState<boolean>(false);
+
+  // ── Generate dialog (tone + improvisation instructions) ──
+  const [genDialogOpen, setGenDialogOpen] = useState(false);
+  const [genTone, setGenTone] = useState<string>("professional");
+  const [genInstructions, setGenInstructions] = useState<string>("");
+
+  // ── Group launch verification dialog ──
+  const [launchGroupOpen, setLaunchGroupOpen] = useState(false);
+  const [groupRecipients, setGroupRecipients] = useState<Record<string, string>>({});
+  const [groupCampaignName, setGroupCampaignName] = useState<string>("");
+
+  // ── Solo launch dialog (test or live, with per-campaign schedule) ──
+  const [soloLaunchOpen, setSoloLaunchOpen] = useState(false);
+  const [soloMode, setSoloMode] = useState<"test" | "live">("test");
+  const [soloRecipient, setSoloRecipient] = useState<string>("");
+
+  // Per-launch schedule working copy — seeded from the global default each time a
+  // launch dialog opens, but edited & sent independently so every campaign keeps
+  // its own timezone, sending window and active days.
+  const [launchSchedule, setLaunchSchedule] = useState<LaunchSchedule>(() => ({
+    timezone: "UTC",
+    time_from: "09:00",
+    time_to: "17:00",
+    days: { "0": false, "1": true, "2": true, "3": true, "4": true, "5": true, "6": false },
+  }));
 
   useEffect(() => {
     if (!selected && contacts && contacts[0]) setSelected(contacts[0].id);
@@ -146,14 +183,14 @@ export function Outreach() {
 
   // Generate a reusable template sequence (with {{firstName}} merge tags) for every
   // checked contact — or, if none are checked, the currently focused contact.
-  async function handleGenerateGroup() {
+  async function handleGenerateGroup(tone?: string, instructions?: string) {
     const ids = selectedIds.size > 0 ? Array.from(selectedIds) : selected ? [selected] : [];
     if (ids.length === 0) return;
     const dynamic = ids.length > 1; // group → dynamic merge-tag template
     setIsGeneratingBulk(true);
     try {
       for (const id of ids) {
-        await generate.mutateAsync({ contactId: id, stepCount, dynamic });
+        await generate.mutateAsync({ contactId: id, stepCount, dynamic, tone, instructions });
       }
       const { toast } = await import("sonner");
       toast.success(
@@ -169,12 +206,25 @@ export function Outreach() {
     }
   }
 
+  // Confirm handler for the Generate dialog — runs generation with the chosen
+  // tone + free-form improvisation instructions, then closes the dialog.
+  async function confirmGenerate() {
+    setGenDialogOpen(false);
+    await handleGenerateGroup(genTone, genInstructions);
+  }
+
   // Verify the email of the checked contacts (group) — or, if none are checked,
   // the currently focused contact (single). Uses Instantly first and falls back
   // to Hunter.io (provider="instantly" → the backend tries Instantly, then Hunter).
   async function handleVerifyEmails() {
-    const ids = selectedIds.size > 0 ? Array.from(selectedIds) : selected ? [selected] : [];
-    if (ids.length === 0) return;
+    const allIds = selectedIds.size > 0 ? Array.from(selectedIds) : selected ? [selected] : [];
+    if (allIds.length === 0) return;
+    // Skip contacts already verified "valid" — unless every selected one is
+    // already valid, in which case re-verify them all.
+    const unverified = allIds.filter(
+      (id) => contacts?.find((c) => c.id === id)?.email_verified !== "valid",
+    );
+    const ids = unverified.length > 0 ? unverified : allIds;
     const { toast } = await import("sonner");
     setIsVerifying(true);
     try {
@@ -183,8 +233,19 @@ export function Outreach() {
         toast.success(`Email ${res.email_verified ?? "checked"}: ${res.email}`);
       } else {
         const res = await verifyBulk.mutateAsync({ contact_ids: ids, provider: "instantly" });
+        const extras: string[] = [];
+        if (res.pending) extras.push(`${res.pending} pending`);
+        if (res.skipped) extras.push(`${res.skipped} no email`);
         toast.success(
           `Verified ${res.total}: ${res.verified} valid · ${res.invalid} invalid · ${res.catch_all} catch-all`,
+          extras.length
+            ? {
+                description:
+                  `${extras.join(" · ")}. ` +
+                  "Pending = provider couldn't give a verdict (try again or add a Hunter.io key); " +
+                  "no email = reveal the contact's email before verifying.",
+              }
+            : undefined,
         );
       }
     } catch (err: any) {
@@ -192,6 +253,155 @@ export function Outreach() {
     } finally {
       setIsVerifying(false);
     }
+  }
+
+  // ── Selection-derived helpers (used by Verify button label + group launch) ──
+  const selectedContacts = (contacts ?? []).filter((c) => selectedIds.has(c.id));
+  // How many of the selected contacts are NOT already a definitive "valid".
+  const selectedUnverifiedCount =
+    selectedContacts.filter((c) => c.email_verified !== "valid").length;
+  const allSelectedVerified =
+    selectedContacts.length > 0 && selectedUnverifiedCount === 0;
+
+  // Open the group-launch verification dialog, seeding each lead's recipient with
+  // its effective test email (per-lead → global) or falling back to the real email.
+  function openLaunchGroup() {
+    const ids = selectedIds.size > 0 ? Array.from(selectedIds) : selected ? [selected] : [];
+    const seed: Record<string, string> = {};
+    for (const id of ids) {
+      const c = contacts?.find((x) => x.id === id);
+      seed[id] = effectiveTestEmail(id) || c?.email || "";
+    }
+    setGroupRecipients(seed);
+    setGroupCampaignName("");
+    setLaunchSchedule({ ...schedule, days: { ...schedule.days } });
+    setLaunchGroupOpen(true);
+  }
+
+  // Confirm the group launch from the verification dialog. If every recipient is a
+  // test inbox (i.e. differs from the lead's real email), the campaign is created
+  // as a test (not activated); otherwise it's a real launch.
+  function confirmLaunchGroup() {
+    if (!sequence) return;
+    const ids = selectedIds.size > 0 ? Array.from(selectedIds) : selected ? [selected] : [];
+    const recipients = ids
+      .map((id) => ({ contact_id: id, email: (groupRecipients[id] ?? "").trim() }))
+      .filter((r) => r.email);
+    if (recipients.length === 0) return;
+    const anyTest = ids.some((id) => {
+      const c = contacts?.find((x) => x.id === id);
+      const addr = (groupRecipients[id] ?? "").trim();
+      return addr && addr !== (c?.email ?? "");
+    });
+    launchGroup.mutate(
+      {
+        contact_ids: ids,
+        template_sequence_id: sequence.id,
+        schedule: launchSchedule,
+        is_test: anyTest,
+        campaign_name: groupCampaignName.trim() || undefined,
+        recipients,
+      },
+      { onSuccess: () => setLaunchGroupOpen(false) },
+    );
+  }
+
+  // Open the solo launch dialog for the focused contact, in test or live mode,
+  // seeding the recipient and a per-campaign schedule from the global default.
+  function openSoloLaunch(mode: "test" | "live") {
+    if (!sequence || !selected) return;
+    const c = contacts?.find((x) => x.id === selected);
+    const addr = mode === "test" ? effectiveTestEmail(selected) : (c?.email ?? "");
+    setSoloMode(mode);
+    setSoloRecipient(addr);
+    setLaunchSchedule({ ...schedule, days: { ...schedule.days } });
+    setSoloLaunchOpen(true);
+  }
+
+  // Confirm a solo launch from the dialog with the chosen recipient + schedule.
+  function confirmSoloLaunch() {
+    if (!sequence) return;
+    const isTest = soloMode === "test";
+    const addr = soloRecipient.trim();
+    if (isTest && !addr) return;
+    launch.mutate(
+      {
+        sequenceId: sequence.id,
+        testEmail: isTest ? addr : undefined,
+        schedule: launchSchedule,
+        is_test: isTest,
+      },
+      { onSuccess: () => setSoloLaunchOpen(false) },
+    );
+  }
+
+  // Reusable schedule editor (timezone / sending window / active days) used by both
+  // the solo and group launch dialogs so each campaign's schedule is controllable.
+  function renderScheduleEditor(value: LaunchSchedule, onChange: (next: LaunchSchedule) => void) {
+    const toggle = (k: string) =>
+      onChange({ ...value, days: { ...value.days, [k]: !value.days[k] } });
+    return (
+      <div className="space-y-3 rounded-md border border-border bg-muted/20 p-3">
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Campaign schedule
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label className="text-[11px] text-muted-foreground">Timezone</Label>
+            <Select value={value.timezone} onValueChange={(v) => onChange({ ...value, timezone: v })}>
+              <SelectTrigger className="h-8 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {presetTzs.map((tz) => (
+                  <SelectItem key={tz} value={tz}>{tz}</SelectItem>
+                ))}
+                {!presetTzs.includes(browserTz) && (
+                  <SelectItem value={browserTz}>{browserTz} (Local)</SelectItem>
+                )}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-[11px] text-muted-foreground">Sending window</Label>
+            <div className="flex items-center gap-2">
+              <Input
+                type="time"
+                value={value.time_from}
+                onChange={(e) => onChange({ ...value, time_from: e.target.value })}
+                className="h-8 w-[92px] text-xs"
+              />
+              <span className="text-xs text-muted-foreground">to</span>
+              <Input
+                type="time"
+                value={value.time_to}
+                onChange={(e) => onChange({ ...value, time_to: e.target.value })}
+                className="h-8 w-[92px] text-xs"
+              />
+            </div>
+          </div>
+        </div>
+        <div className="space-y-1.5">
+          <Label className="text-[11px] text-muted-foreground">Active days</Label>
+          <div className="flex items-center gap-1">
+            {daysMap.map((d) => (
+              <button
+                key={d.k}
+                type="button"
+                onClick={() => toggle(d.k)}
+                className={`h-7 w-7 rounded text-xs font-medium transition-colors ${
+                  value.days[d.k]
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-muted text-muted-foreground hover:bg-muted/80"
+                }`}
+              >
+                {d.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
   }
 
   const [editingStepId, setEditingStepId] = useState<string | null>(null);
@@ -211,10 +421,29 @@ export function Outreach() {
   const [testEmailDraft, setTestEmailDraft] = useState("");
   const [editingTestEmail, setEditingTestEmail] = useState(false);
 
-  // ── Per-lead test email overrides (keyed by contact id) ──
-  const [perLeadTestEmail, setPerLeadTestEmail] = useState<Record<string, string>>({});
+  // ── Per-lead test email overrides (keyed by contact id), persisted ──
+  const PER_LEAD_TEST_KEY = "gtm_per_lead_test_email";
+  const [perLeadTestEmail, setPerLeadTestEmail] = useState<Record<string, string>>(() => {
+    try {
+      const saved = localStorage.getItem(PER_LEAD_TEST_KEY);
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return {};
+  });
   const [perLeadEditing, setPerLeadEditing] = useState<Record<string, boolean>>({});
   const [perLeadDraft, setPerLeadDraft] = useState<Record<string, string>>({});
+
+  // Set (or clear) a single lead's test email and persist the whole map.
+  function setLeadTestEmail(contactId: string, value: string) {
+    setPerLeadTestEmail((prev) => {
+      const next = { ...prev };
+      const v = value.trim();
+      if (v) next[contactId] = v;
+      else delete next[contactId];
+      try { localStorage.setItem(PER_LEAD_TEST_KEY, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }
 
   // Effective test email: per-lead → global → empty (live mode)
   function effectiveTestEmail(contactId: string): string {
@@ -396,7 +625,7 @@ export function Outreach() {
           </span>
           <div className="min-w-0">
             <div className="text-sm font-semibold leading-tight">Launch Settings</div>
-            <div className="text-[11px] text-muted-foreground">Test recipient, timezone and sending window applied to every launch.</div>
+            <div className="text-[11px] text-muted-foreground">Default test recipient, timezone and sending window — each launch popup can override these per campaign.</div>
           </div>
         </div>
         
@@ -558,20 +787,93 @@ export function Outreach() {
                         {c.title} · {c.company_name}
                       </div>
                     </div>
-                    {c.email_verified && (
+                    {/* Per-lead test email — set independently for each lead */}
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <button
+                          onClick={(e) => e.stopPropagation()}
+                          title={
+                            perLeadTestEmail[c.id]
+                              ? `Test email: ${perLeadTestEmail[c.id]}`
+                              : "Set this lead's test email"
+                          }
+                          className={`shrink-0 rounded p-0.5 transition-colors ${
+                            perLeadTestEmail[c.id]
+                              ? "text-amber-400 hover:text-amber-300"
+                              : "text-muted-foreground/50 hover:text-amber-400"
+                          }`}
+                        >
+                          <FlaskConical className="h-3.5 w-3.5" />
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent
+                        align="end"
+                        className="w-72 space-y-2"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div className="text-xs font-semibold">Test email for {c.full_name}</div>
+                        <p className="text-[11px] text-muted-foreground">
+                          Sends this lead's sequence to this inbox instead of its real
+                          address. Each lead can have its own.
+                        </p>
+                        <Input
+                          value={perLeadTestEmail[c.id] ?? ""}
+                          onChange={(e) => setLeadTestEmail(c.id, e.target.value)}
+                          placeholder={testEmail || "test@yourdomain.com"}
+                          className="h-8 text-xs"
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] text-muted-foreground">
+                            {perLeadTestEmail[c.id]
+                              ? "Test mode for this lead"
+                              : testEmail
+                                ? `Falls back to global: ${testEmail}`
+                                : "No test email — sends live"}
+                          </span>
+                          {perLeadTestEmail[c.id] && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setLeadTestEmail(c.id, "");
+                              }}
+                              className="text-[10px] text-muted-foreground hover:text-destructive"
+                            >
+                              Clear
+                            </button>
+                          )}
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+                    {c.email_verified === "valid" ? (
+                      <span
+                        title={`Email verified valid${c.email ? `: ${c.email}` : ""}`}
+                        className="flex shrink-0 items-center gap-0.5 rounded bg-emerald-500/15 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-500"
+                      >
+                        <BadgeCheck className="h-3 w-3" /> Valid
+                      </span>
+                    ) : c.email_verified === "invalid" ? (
+                      <span
+                        title="Email verified invalid"
+                        className="shrink-0 rounded bg-red-500/15 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-red-500"
+                      >
+                        Invalid
+                      </span>
+                    ) : c.email_verified === "catch_all" ? (
+                      <span
+                        title="Catch-all domain — accepts all mail, can't confirm the inbox"
+                        className="shrink-0 rounded bg-amber-500/15 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-500"
+                      >
+                        Catch-all
+                      </span>
+                    ) : c.email_verified ? (
                       <span
                         title={`Email: ${c.email_verified}`}
-                        className={`shrink-0 h-2 w-2 rounded-full ${
-                          c.email_verified === "valid"
-                            ? "bg-emerald-500"
-                            : c.email_verified === "invalid"
-                              ? "bg-red-500"
-                              : c.email_verified === "catch_all"
-                                ? "bg-amber-500"
-                                : "bg-muted-foreground/50"
-                        }`}
-                      />
-                    )}
+                        className="shrink-0 rounded bg-muted px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground"
+                      >
+                        Pending
+                      </span>
+                    ) : null}
                     <TierBadge tier={c.tier} />
                   </div>
                 );
@@ -688,14 +990,14 @@ export function Outreach() {
                           autoFocus
                           onKeyDown={(e) => {
                             if (e.key === "Enter") {
-                              setPerLeadTestEmail(p => ({ ...p, [contact.id]: perLeadDraft[contact.id]?.trim() ?? "" }));
+                              setLeadTestEmail(contact.id, perLeadDraft[contact.id] ?? "");
                               setPerLeadEditing(p => ({ ...p, [contact.id]: false }));
                             }
                             if (e.key === "Escape") setPerLeadEditing(p => ({ ...p, [contact.id]: false }));
                           }}
                         />
                         <button className="text-amber-400 hover:text-amber-300" onClick={() => {
-                          setPerLeadTestEmail(p => ({ ...p, [contact.id]: perLeadDraft[contact.id]?.trim() ?? "" }));
+                          setLeadTestEmail(contact.id, perLeadDraft[contact.id] ?? "");
                           setPerLeadEditing(p => ({ ...p, [contact.id]: false }));
                         }}><Check className="h-3 w-3" /></button>
                         <button className="text-muted-foreground" onClick={() => setPerLeadEditing(p => ({ ...p, [contact.id]: false }))}>
@@ -720,7 +1022,7 @@ export function Outreach() {
                         </button>
                         {perLeadTestEmail[contact.id] && (
                           <button className="text-muted-foreground hover:text-destructive transition-colors" title="Clear"
-                            onClick={() => setPerLeadTestEmail(p => ({ ...p, [contact.id]: "" }))}>
+                            onClick={() => setLeadTestEmail(contact.id, "")}>
                             <X className="h-3 w-3" />
                           </button>
                         )}
@@ -758,12 +1060,12 @@ export function Outreach() {
                   size="sm"
                   variant="secondary"
                   disabled={(selectedIds.size === 0 && !selected) || generate.isPending || isGeneratingBulk}
-                  onClick={handleGenerateGroup}
+                  onClick={() => setGenDialogOpen(true)}
                   data-testid="button-generate-sequence"
                   title={
                     selectedIds.size > 1
-                      ? `Generate a reusable dynamic-variable template for ${selectedIds.size} selected contacts`
-                      : "Generate a sequence for the selected contact"
+                      ? `Set tone & instructions, then generate a reusable dynamic-variable template for ${selectedIds.size} selected contacts`
+                      : "Set tone & instructions, then generate a sequence for the selected contact"
                   }
                 >
                   <Wand2 className="mr-2 h-4 w-4" />
@@ -781,7 +1083,9 @@ export function Outreach() {
                   data-testid="button-verify-email"
                   title={
                     selectedIds.size > 1
-                      ? `Verify ${selectedIds.size} emails (Instantly, then Hunter.io fallback)`
+                      ? allSelectedVerified
+                        ? `Re-verify all ${selectedIds.size} selected emails`
+                        : `Verify ${selectedUnverifiedCount} unverified of ${selectedIds.size} selected (already-valid skipped)`
                       : "Verify this contact's email (Instantly, then Hunter.io fallback)"
                   }
                 >
@@ -789,7 +1093,9 @@ export function Outreach() {
                   {isVerifying
                     ? "Verifying…"
                     : selectedIds.size > 1
-                      ? `Verify (${selectedIds.size})`
+                      ? allSelectedVerified
+                        ? `Re-verify (${selectedIds.size})`
+                        : `Verify (${selectedUnverifiedCount})`
                       : "Verify Email"}
                 </Button>
                 <Button
@@ -803,17 +1109,12 @@ export function Outreach() {
                   {check.isPending ? "Checking…" : "Deliverability"}
                 </Button>
                 <div className="mx-1 hidden h-6 w-px self-center bg-border sm:block" aria-hidden />
-                {/* Test Launch — sends to test email, keeps sequence as draft */}
+                {/* Test Launch — opens dialog to confirm recipient + schedule */}
                 <Button
                   size="sm"
                   variant="outline"
                   disabled={!sequence || launch.isPending || !effectiveTestEmail(selected ?? "")}
-                  onClick={() => {
-                    if (!sequence || !selected) return;
-                    const addr = effectiveTestEmail(selected);
-                    if (!addr) return;
-                    launch.mutate({ sequenceId: sequence.id, testEmail: addr, schedule, is_test: true });
-                  }}
+                  onClick={() => openSoloLaunch("test")}
                   data-testid="button-test-launch"
                   title={
                     effectiveTestEmail(selected ?? "")
@@ -825,11 +1126,11 @@ export function Outreach() {
                   <FlaskConical className="mr-2 h-4 w-4" />
                   {launch.isPending ? "Sending…" : "Test Launch"}
                 </Button>
-                {/* Live Launch — sends to lead's actual email, sets sequence active */}
+                {/* Live Launch — opens dialog to confirm + set schedule, then sends to real email */}
                 <Button
                   size="sm"
                   disabled={!sequence || launch.isPending}
-                  onClick={() => sequence && launch.mutate({ sequenceId: sequence.id, testEmail: undefined, schedule, is_test: false })}
+                  onClick={() => openSoloLaunch("live")}
                   data-testid="button-launch"
                   title="Launch to real lead email via Instantly"
                 >
@@ -841,17 +1142,9 @@ export function Outreach() {
                   <Button
                     size="sm"
                     disabled={!sequence || launchGroup.isPending}
-                    onClick={() =>
-                      sequence &&
-                      launchGroup.mutate({
-                        contact_ids: Array.from(selectedIds),
-                        template_sequence_id: sequence.id,
-                        schedule,
-                        is_test: false,
-                      })
-                    }
+                    onClick={openLaunchGroup}
                     data-testid="button-launch-group"
-                    title={`Create ONE campaign with the ${selectedIds.size} selected contacts as leads (dynamic variables, schedule & sending accounts included)`}
+                    title={`Review the ${selectedIds.size} selected leads, their recipients (test email or real) and schedule, then launch ONE campaign`}
                     className="bg-emerald-600 text-white hover:bg-emerald-600/90"
                   >
                     <Users className="mr-2 h-4 w-4" />
@@ -1134,6 +1427,230 @@ export function Outreach() {
           <SendingAccounts />
         </div>
       </div>
+
+      {/* ── Generate dialog: tone + improvisation instructions ── */}
+      <Dialog open={genDialogOpen} onOpenChange={setGenDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              Generate {selectedIds.size > 1 ? `${selectedIds.size} sequences` : "sequence"}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label className="text-xs text-muted-foreground">Message tone</Label>
+              <Select value={genTone} onValueChange={setGenTone}>
+                <SelectTrigger className="h-9 text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="professional">Professional</SelectItem>
+                  <SelectItem value="friendly">Friendly</SelectItem>
+                  <SelectItem value="casual">Casual</SelectItem>
+                  <SelectItem value="direct">Direct &amp; concise</SelectItem>
+                  <SelectItem value="consultative">Consultative</SelectItem>
+                  <SelectItem value="enthusiastic">Enthusiastic</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs text-muted-foreground">
+                Extra instructions <span className="text-muted-foreground/60">(optional)</span>
+              </Label>
+              <Textarea
+                value={genInstructions}
+                onChange={(e) => setGenInstructions(e.target.value)}
+                placeholder="e.g. Emphasize ROI and time-to-value, mention our Freshdesk migration offer, keep step 1 under 80 words…"
+                className="min-h-[90px] text-sm"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                Steers the copy: value props, CTAs, angle, length, things to avoid.
+                Deliverability rules and personalization still apply.
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setGenDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={confirmGenerate} disabled={generate.isPending || isGeneratingBulk}>
+              <Wand2 className="mr-2 h-4 w-4" />
+              {selectedIds.size > 1 ? `Generate (${selectedIds.size})` : "Generate"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Group launch verification dialog ── */}
+      <Dialog open={launchGroupOpen} onOpenChange={setLaunchGroupOpen}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>
+              Review &amp; launch group ({selectedIds.size} leads)
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[11px] text-muted-foreground">
+              Each lead is sent to its <strong>test email</strong> when set, otherwise its{" "}
+              <strong>real email</strong>. Adjust recipients below before launching one campaign.
+            </div>
+
+            {/* Per-campaign schedule (editable) */}
+            {renderScheduleEditor(launchSchedule, setLaunchSchedule)}
+
+            {/* Per-lead recipients + step count */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs text-muted-foreground">Recipients</Label>
+                <span className="text-[11px] text-muted-foreground">
+                  {sequence?.steps.length ?? 0} steps per lead
+                </span>
+              </div>
+              <div className="space-y-2">
+                {(selectedIds.size > 0 ? Array.from(selectedIds) : selected ? [selected] : []).map(
+                  (id) => {
+                    const c = contacts?.find((x) => x.id === id);
+                    if (!c) return null;
+                    const realEmail = c.email ?? "";
+                    const recip = groupRecipients[id] ?? "";
+                    const isTestAddr = !!recip && recip !== realEmail;
+                    return (
+                      <div
+                        key={id}
+                        className="flex items-center gap-2 rounded-md border border-border bg-card px-2.5 py-2"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-sm font-medium">{c.full_name}</div>
+                          <div className="truncate text-[11px] text-muted-foreground">
+                            {c.title} · {c.company_name}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className={`shrink-0 rounded px-1 py-0.5 text-[9px] font-semibold uppercase ${
+                              isTestAddr
+                                ? "bg-amber-500/15 text-amber-500"
+                                : "bg-emerald-500/15 text-emerald-500"
+                            }`}
+                            title={isTestAddr ? "Sending to test inbox" : "Sending to real email"}
+                          >
+                            {isTestAddr ? "Test" : "Live"}
+                          </span>
+                          <Input
+                            value={recip}
+                            onChange={(e) =>
+                              setGroupRecipients((p) => ({ ...p, [id]: e.target.value }))
+                            }
+                            placeholder={realEmail || "recipient@domain.com"}
+                            className="h-8 w-56 text-xs"
+                          />
+                        </div>
+                      </div>
+                    );
+                  },
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-xs text-muted-foreground">
+                Campaign name <span className="text-muted-foreground/60">(optional)</span>
+              </Label>
+              <Input
+                value={groupCampaignName}
+                onChange={(e) => setGroupCampaignName(e.target.value)}
+                placeholder="GTM group launch"
+                className="h-9 text-sm"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setLaunchGroupOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={confirmLaunchGroup}
+              disabled={!sequence || launchGroup.isPending}
+              className="bg-emerald-600 text-white hover:bg-emerald-600/90"
+            >
+              <Users className="mr-2 h-4 w-4" />
+              {launchGroup.isPending ? "Launching…" : `Launch Group (${selectedIds.size})`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Solo launch dialog (test or live) with per-campaign schedule ── */}
+      <Dialog open={soloLaunchOpen} onOpenChange={setSoloLaunchOpen}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {soloMode === "test" ? "Test launch" : "Launch"} · {contact?.full_name ?? "contact"}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div
+              className={`rounded-md border px-3 py-2 text-[11px] ${
+                soloMode === "test"
+                  ? "border-amber-500/30 bg-amber-500/5 text-amber-500/90"
+                  : "border-emerald-500/30 bg-emerald-500/5 text-emerald-500/90"
+              }`}
+            >
+              {soloMode === "test"
+                ? "Test send — goes to the test inbox below; the sequence stays a draft."
+                : "Live launch — sends to the lead's real email and activates the campaign."}
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-xs text-muted-foreground">
+                {soloMode === "test" ? "Test recipient" : "Recipient (real email)"}
+              </Label>
+              <Input
+                value={soloRecipient}
+                onChange={(e) => setSoloRecipient(e.target.value)}
+                placeholder={soloMode === "test" ? "test@yourdomain.com" : "lead@company.com"}
+                className="h-9 text-sm"
+                disabled={soloMode === "live"}
+              />
+              {soloMode === "live" && (
+                <p className="text-[11px] text-muted-foreground">
+                  Live sends always use the lead's real email on file.
+                </p>
+              )}
+            </div>
+
+            {/* Per-campaign schedule (editable) */}
+            {renderScheduleEditor(launchSchedule, setLaunchSchedule)}
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setSoloLaunchOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={confirmSoloLaunch}
+              disabled={!sequence || launch.isPending || (soloMode === "test" && !soloRecipient.trim())}
+              className={
+                soloMode === "test"
+                  ? "border-amber-500/50 bg-amber-500/90 text-white hover:bg-amber-500"
+                  : ""
+              }
+            >
+              {soloMode === "test" ? (
+                <FlaskConical className="mr-2 h-4 w-4" />
+              ) : (
+                <Send className="mr-2 h-4 w-4" />
+              )}
+              {launch.isPending
+                ? soloMode === "test"
+                  ? "Sending…"
+                  : "Launching…"
+                : soloMode === "test"
+                  ? "Test Launch"
+                  : "Launch"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

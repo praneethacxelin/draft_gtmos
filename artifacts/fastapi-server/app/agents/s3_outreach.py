@@ -176,7 +176,14 @@ def _replace_sender_placeholders(text: str | None, db: Session, user_id: str | N
 
 
 
-async def generate_sequence(db: Session, contact_id: str, step_count: int = 4, dynamic: bool = False) -> dict:
+async def generate_sequence(
+    db: Session,
+    contact_id: str,
+    step_count: int = 4,
+    dynamic: bool = False,
+    tone: str | None = None,
+    instructions: str | None = None,
+) -> dict:
     contact = db.query(Contact).filter(Contact.id == contact_id).first()
     if not contact:
         return {"error": "Contact not found"}
@@ -266,6 +273,26 @@ async def generate_sequence(db: Session, contact_id: str, step_count: int = 4, d
     contact_seniority = contact.seniority or "Unknown"
     contact_persona = contact.persona_type or "Unknown"
 
+    # User-chosen tone + free-form improvisation instructions (from the Generate dialog).
+    _TONE_GUIDANCE = {
+        "professional": "Keep the tone professional, polished and credible.",
+        "friendly": "Keep the tone warm, friendly and approachable while staying professional.",
+        "casual": "Keep the tone casual and conversational, like a quick note to a peer.",
+        "direct": "Keep the tone direct and concise — get to the point fast, minimal fluff.",
+        "consultative": "Keep the tone consultative and advisory — lead with insight and curiosity, not a pitch.",
+        "enthusiastic": "Keep the tone upbeat and energetic without sounding salesy or using spam words.",
+    }
+    tone_key = (tone or "").strip().lower()
+    tone_clause = _TONE_GUIDANCE.get(tone_key, "")
+    user_guidance_parts = []
+    if tone_clause:
+        user_guidance_parts.append(f"TONE: {tone_clause}")
+    if instructions and instructions.strip():
+        user_guidance_parts.append(
+            f"EXTRA INSTRUCTIONS FROM THE USER (follow closely): {instructions.strip()[:600]}"
+        )
+    user_guidance = " ".join(user_guidance_parts)
+
     def _build_msg_prompt(extra_guidance: str = "") -> str:
         if dynamic:
             rule3 = (
@@ -306,6 +333,7 @@ async def generate_sequence(db: Session, contact_id: str, step_count: int = 4, d
             f"11. PRODUCT PROFILE BRIEF: You must mention a small, natural brief/context about the product ({strategy.product_name if strategy else ''}: {product_description}) in the body of the email so the lead understands exactly what the product is and how it solves their challenges. "
             f"12. EMAIL THREADING FOLLOW-UPS: Step 1 is the initial email. Steps 2 and 3 are follow-up emails in the same thread (replies). Make sure the copy of Step 2 and Step 3 is written naturally as follow-ups to the preceding steps (e.g., refer back to the previous note, keep it shorter, check in on timing), rather than sounding like completely new, detached emails."
             f"{chr(10) + '13. PROVEN LEARNINGS — apply these insights from this product’s past experiments, live winners, and persona analysis. Lean into what converted and avoid what underperformed:' + chr(10) + learnings_block if learnings_block else ''}"
+            f"{(' ' + user_guidance) if user_guidance else ''}"
             f"{(' ' + extra_guidance) if extra_guidance else ''}"
         )
 
@@ -775,6 +803,7 @@ def launch_group_sequence(
     campaign_name: str | None = None,
     is_test: bool = False,
     test_email: str | None = None,
+    recipients: list[dict] | None = None,
 ) -> dict:
     """Create ONE Instantly campaign containing MULTIPLE selected contacts as leads.
 
@@ -840,7 +869,37 @@ def launch_group_sequence(
     contacts = db.query(Contact).filter(Contact.id.in_(contact_ids)).all()
 
     leads: list[dict] = []
-    if is_test and test_email:
+    # Per-lead recipient overrides from the pre-launch verification form:
+    # each entry is {"contact_id": ..., "email": ...}. When present, every lead
+    # is sent to its chosen recipient (a test inbox or its real email) inside the
+    # SAME campaign.
+    override_by_cid: dict[str, str] = {}
+    if recipients:
+        for r in recipients:
+            cid = (r or {}).get("contact_id")
+            addr = ((r or {}).get("email") or "").strip()
+            if cid and addr:
+                override_by_cid[cid] = addr
+
+    if override_by_cid:
+        contacts_by_id = {c.id: c for c in contacts}
+        for cid in contact_ids:
+            c = contacts_by_id.get(cid)
+            addr = override_by_cid.get(cid)
+            if not c or not addr:
+                continue
+            acct = db.query(Account).filter(Account.id == c.account_id).first() if c.account_id else None
+            name_parts = (c.full_name or "").split()
+            first = name_parts[0] if name_parts else ""
+            last = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
+            leads.append({
+                "email": addr,
+                "first_name": first,
+                "last_name": last,
+                "company_name": acct.company_name if acct else "",
+                "personalization": f"Hi {first}" if first else "Hi there",
+            })
+    elif is_test and test_email:
         c0 = contacts[0] if contacts else None
         name_parts = (c0.full_name if c0 else "Test User").split()
         first = name_parts[0] if name_parts else "Test"

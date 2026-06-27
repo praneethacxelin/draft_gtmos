@@ -579,6 +579,7 @@ def apollo_match_person(
     domain: Optional[str] = None,
     linkedin_url: Optional[str] = None,
     reveal_phone: bool = False,
+    reveal_personal: bool = False,
     _strategy_id: Optional[str] = None,
     _strategy_name: Optional[str] = None,
 ) -> Optional[dict]:
@@ -586,7 +587,9 @@ def apollo_match_person(
 
     Apollo `/v1/people/match` always returns the work email when it can be
     found without a personal email reveal credit. Set ``reveal_phone=True``
-    to request phone numbers (costs an Apollo phone credit per call).
+    to request phone numbers (costs an Apollo phone credit per call). Set
+    ``reveal_personal=True`` to also request personal emails (used as a
+    fallback when the work email is locked/unavailable).
     """
     if not api_key:
         return None
@@ -599,7 +602,7 @@ def apollo_match_person(
     }
     body: dict = {
         "name": name,
-        "reveal_personal_emails": False,
+        "reveal_personal_emails": reveal_personal,
         "reveal_phone_number": reveal_phone,
     }
     if org_name:

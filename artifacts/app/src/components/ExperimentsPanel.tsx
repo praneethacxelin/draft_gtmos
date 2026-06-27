@@ -25,12 +25,15 @@ import {
   CheckCircle2,
   Clock,
   Beaker,
+  SlidersHorizontal,
+  Layers,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { ReasoningPanel } from "@/components/ReasoningPanel";
 import {
   useExperimentBatches,
@@ -54,6 +57,8 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import type { Strategy } from "@/hooks/useStrategies";
 import { useCampaignPlan } from "@/hooks/useStrategies";
+import { ApolloFilterGate } from "@/components/ApolloFilterGate";
+import type { ApolloFacets } from "@/hooks/useStrategies";
 
 // The experiment batch is a relevancy TEST: each experiment samples a small,
 // server-capped number of leads (≤25) to find the best Apollo params. The ROI
@@ -97,6 +102,52 @@ function STATUS_BADGE(status: Experiment["status"]) {
     default:
       return <Badge variant="outline">Draft</Badge>;
   }
+}
+
+function TRUST_BADGES(trust?: Experiment["trust"]) {
+  // "Relaxed by Apollo" is already surfaced via the separate `relaxed` badge.
+  const badges = (trust?.badges ?? []).filter((b) => b !== "Relaxed by Apollo");
+  if (badges.length === 0) return null;
+  const violationText =
+    trust?.violations && trust.violations.length > 0
+      ? trust.violations
+          .map((v) => `${v.facet}: ${v.values.join(", ")} — ${v.reason}`)
+          .join("\n")
+      : undefined;
+  return (
+    <>
+      {badges.map((b) => {
+        if (b === "Discovery-locked" || b === "Controlled") {
+          return (
+            <Badge
+              key={b}
+              className="bg-emerald-600 text-emerald-50 hover:bg-emerald-600"
+              title="Holds the discovery-backed ICP constant and varies a single facet, so a winning variant is explainable."
+            >
+              {b}
+            </Badge>
+          );
+        }
+        if (b === "Off-profile") {
+          return (
+            <Badge key={b} variant="destructive" title={violationText}>
+              {b}
+            </Badge>
+          );
+        }
+        return (
+          <Badge
+            key={b}
+            variant="outline"
+            className="text-muted-foreground"
+            title="Discovery data was too thin to lock this facet — Apollo defaults were inferred."
+          >
+            {b}
+          </Badge>
+        );
+      })}
+    </>
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -182,6 +233,7 @@ function ExperimentCard({
                 relaxed
               </Badge>
             )}
+            {TRUST_BADGES(exp.trust)}
           </div>
           {exp.hypothesis && !editing && (
             <div className="mt-1 text-xs text-muted-foreground">{exp.hypothesis}</div>
@@ -536,6 +588,16 @@ function LiveExperimentSection({
   const evaluate = useEvaluateLive(strategyId);
   const simulate = useSimulateWindow(strategyId);
   const [promoteCount, setPromoteCount] = useState(batch.leads_per_experiment ?? 5);
+  const [showOptions, setShowOptions] = useState(false);
+  const [opts, setOpts] = useState({
+    autoSequence: true,
+    stepCount: 4 as 4 | 5,
+    dynamicTemplates: false,
+    runSignals: false,
+    scoreLeads: false,
+    recognizePatterns: false,
+    tierFilter: "all" as "all" | "t1" | "t12",
+  });
   const preview = usePromotionPreview(
     strategyId,
     batch.id,
@@ -557,16 +619,38 @@ function LiveExperimentSection({
   }, [metrics]);
 
   function onPromote() {
+    const promoteTiers =
+      opts.tierFilter === "t1" ? [1] : opts.tierFilter === "t12" ? [1, 2] : null;
     promote.mutate(
-      { batchId: batch.id, draftPerVariant: promoteCount },
+      {
+        batchId: batch.id,
+        draftPerVariant: promoteCount,
+        options: {
+          autoSequence: opts.autoSequence,
+          stepCount: opts.stepCount,
+          dynamicTemplates: opts.dynamicTemplates,
+          runSignals: opts.runSignals,
+          scoreLeads: opts.scoreLeads,
+          recognizePatterns: opts.recognizePatterns,
+          promoteTiers,
+        },
+      },
       {
         onSuccess: (r: any) => {
           const skipped = (r.skipped ?? []) as Array<{ name: string; reason: string }>;
+          const enr = r.enrichment ?? {};
+          const bits: string[] = [];
+          if (enr.signals) bits.push("signals detected");
+          if (enr.scoring) bits.push("leads scored + tiered");
+          if (enr.patterns) bits.push("patterns recognized");
+          if (r.tier_held) bits.push(`${r.tier_held} held back by tier`);
+          if (!opts.autoSequence) bits.push("leads only (no sequences)");
           toast({
             title: "Promoted to live test",
             description:
               `${r.total_cohort ?? 0} leads across ${(r.variants ?? []).length} variant(s) moved forward · ` +
               `${r.total_drafted ?? 0} sequences drafted (scaled by rank, up to ${r.per_variant_budget ?? promoteCount}/variant).` +
+              (bits.length ? ` ${bits.join(", ")}.` : "") +
               (skipped.length
                 ? ` Skipped ${skipped.length} low-fit: ${skipped.map((s) => `${s.name} (${s.reason})`).join(", ")}.`
                 : ""),
@@ -645,6 +729,18 @@ function LiveExperimentSection({
               />
             </label>
           )}
+          {(!live || live === "drafted") && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className={showOptions ? "text-primary" : "text-muted-foreground"}
+              onClick={() => setShowOptions((v) => !v)}
+              title="Configure how promoted leads behave: score + tier, detect signals, sequence shape, and which tiers advance to outreach. Leave untouched to use the default flow."
+            >
+              <SlidersHorizontal className="mr-2 h-3.5 w-3.5" />
+              Configure flow
+            </Button>
+          )}
           {!live && (
             <Button size="sm" onClick={onPromote} disabled={promote.isPending}>
               {promote.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="mr-2 h-3.5 w-3.5" />}
@@ -689,6 +785,105 @@ function LiveExperimentSection({
           <> Window ends <span className="font-medium text-foreground">{windowEnds.toLocaleDateString()}</span>.</>
         )}
       </p>
+
+      {(!live || live === "drafted") && showOptions && (
+        <div className="mt-3 rounded border border-primary/30 bg-background/60 p-3">
+          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-widest text-primary">
+            <SlidersHorizontal className="h-3.5 w-3.5" /> Real-flow options
+          </div>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Make the promoted leads behave like the full prospect pipeline. Untouched, this runs the
+            default flow (materialize cohorts + draft 4-step sequences for everyone).
+          </p>
+
+          <div className="mt-3 space-y-2.5">
+            <OptionRow
+              label="Auto-draft outreach sequences"
+              hint="Off = only materialize leads into Prospects, draft nothing."
+              checked={opts.autoSequence}
+              onChange={(v) => setOpts((o) => ({ ...o, autoSequence: v }))}
+            />
+            <OptionRow
+              label="Detect buying signals"
+              hint="Run funding/hiring (and other) signal detection on the cohort."
+              checked={opts.runSignals}
+              onChange={(v) => setOpts((o) => ({ ...o, runSignals: v }))}
+            />
+            <OptionRow
+              label="Score & tier leads"
+              hint="ICP fit + signals + engagement → tier 1/2/3 (needed for tier gating)."
+              checked={opts.scoreLeads}
+              onChange={(v) => setOpts((o) => ({ ...o, scoreLeads: v }))}
+            />
+            <OptionRow
+              label="Recognize patterns"
+              hint="Cluster winning signal combinations across the cohort."
+              checked={opts.recognizePatterns}
+              onChange={(v) => setOpts((o) => ({ ...o, recognizePatterns: v }))}
+            />
+            <OptionRow
+              label="Reusable merge-tag templates"
+              hint="Write {{firstName}}/{{companyName}} once for grouped leads instead of per-lead copy."
+              checked={opts.dynamicTemplates}
+              onChange={(v) => setOpts((o) => ({ ...o, dynamicTemplates: v }))}
+            />
+
+            <div className="flex items-center justify-between gap-2 border-t border-card-border pt-2.5">
+              <div className="flex items-center gap-1.5 text-xs text-foreground">
+                <Layers className="h-3.5 w-3.5 text-muted-foreground" /> Sequence shape
+              </div>
+              <div className="flex gap-1">
+                {([4, 5] as const).map((n) => (
+                  <Button
+                    key={n}
+                    size="sm"
+                    variant={opts.stepCount === n ? "default" : "outline"}
+                    className="h-7 px-2 text-xs"
+                    onClick={() => setOpts((o) => ({ ...o, stepCount: n }))}
+                  >
+                    {n === 4 ? "4-step (3 email + 1 LinkedIn)" : "5-step (3 email + 2 LinkedIn)"}
+                  </Button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 text-xs text-foreground">
+                <Target className="h-3.5 w-3.5 text-muted-foreground" /> Advance to outreach
+              </div>
+              <div className="flex gap-1">
+                {([
+                  ["all", "All tiers"],
+                  ["t12", "Tier 1 + 2"],
+                  ["t1", "Tier 1 only"],
+                ] as const).map(([val, label]) => (
+                  <Button
+                    key={val}
+                    size="sm"
+                    variant={opts.tierFilter === val ? "default" : "outline"}
+                    className="h-7 px-2 text-xs"
+                    onClick={() =>
+                      setOpts((o) => ({
+                        ...o,
+                        tierFilter: val,
+                        // Tier gating needs scores — auto-enable scoring when filtering.
+                        scoreLeads: val === "all" ? o.scoreLeads : true,
+                      }))
+                    }
+                  >
+                    {label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+            {opts.tierFilter !== "all" && (
+              <p className="text-[10px] text-amber-500">
+                Tier gating auto-enables scoring so tiers exist before drafting.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
 
       {(!live || live === "drafted") && preview.data && (
         <div className="mt-3 rounded border border-primary/30 bg-background/60 p-3">
@@ -821,6 +1016,28 @@ function LiveExperimentSection({
   );
 }
 
+function OptionRow({
+  label,
+  hint,
+  checked,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <div className="text-xs font-medium text-foreground">{label}</div>
+        <div className="text-[10px] text-muted-foreground">{hint}</div>
+      </div>
+      <Switch checked={checked} onCheckedChange={onChange} className="mt-0.5 shrink-0" />
+    </div>
+  );
+}
+
 function FunnelStat({
   icon,
   label,
@@ -922,6 +1139,12 @@ function CampaignPlanSection({ strategyId }: { strategyId: string }) {
       <div className="mb-1 flex items-center gap-2">
         <Rocket className="h-4 w-4 text-primary" />
         <div className="text-sm font-semibold">Campaign execution plan</div>
+        {plan.execution_mode && (
+          <Badge variant="outline" className="text-[10px] capitalize">
+            {plan.campaign_count ?? 1} campaign
+            {(plan.campaign_count ?? 1) > 1 ? "s" : ""} · {plan.execution_mode}
+          </Badge>
+        )}
         {plan.overall_confidence && (
           <Badge variant="secondary" className="ml-auto text-[10px]">
             {plan.overall_confidence} confidence
@@ -1047,6 +1270,62 @@ function CampaignPlanSection({ strategyId }: { strategyId: string }) {
                 ))}
               </div>
             )}
+            {(ph.campaigns?.length ?? 0) > 0 && (
+              <div className="mt-2 rounded border border-card-border bg-background/60 p-2">
+                <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+                  <Rocket className="h-3 w-3" />
+                  {ph.campaigns!.length} campaign{ph.campaigns!.length > 1 ? "s" : ""}
+                  {ph.execution_mode && (
+                    <Badge
+                      variant="secondary"
+                      className="ml-1 px-1.5 py-0 text-[9px] capitalize"
+                      title={
+                        ph.execution_mode === "parallel"
+                          ? "All campaigns run at once; the team is split across them."
+                          : ph.execution_mode === "sequential"
+                            ? "Campaigns run one after another, reusing the full team."
+                            : "An initial wave runs in parallel, then the team is reused on the rest."
+                      }
+                    >
+                      {ph.execution_mode}
+                    </Badge>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+                  {ph.campaigns!.map((c) => (
+                    <div
+                      key={c.name}
+                      className="rounded border border-card-border bg-background/50 px-2 py-1.5"
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="truncate text-[11px] font-medium text-foreground">
+                          {c.name}
+                        </span>
+                        {c.bottleneck && (
+                          <span
+                            className="text-[9px] text-amber-400"
+                            title="Throughput below this campaign's prospect load — under-staffed"
+                          >
+                            ⚠ capacity
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-0.5 font-mono text-[11px] text-primary">
+                        {c.prospect_count.toLocaleString()}
+                        <span className="ml-1 text-[10px] text-muted-foreground">
+                          {c.share_pct}%
+                        </span>
+                      </div>
+                      {c.engineers != null && (
+                        <div className="text-[10px] text-muted-foreground">
+                          {c.engineers} eng
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -1088,10 +1367,34 @@ export function ExperimentsPanel({
 
   const [n, setN] = useState(recExperiments ?? 3);
   const [leads, setLeads] = useState(recSampleLeads ?? 10);
+  const [gateOpen, setGateOpen] = useState(false);
 
   function applyRoiPlan() {
     if (recExperiments != null) setN(recExperiments);
     if (recSampleLeads != null) setLeads(recSampleLeads);
+  }
+
+  function handleSeedConfirm(
+    facets: ApolloFacets,
+    opts?: { strictDiscovery: boolean },
+  ) {
+    const strict = opts?.strictDiscovery ?? true;
+    // In strict mode the engineer-reviewed facets become the clamp override; in
+    // AI mode they seed any empty facet but the model is free to expand.
+    const override: Record<string, string[]> = {};
+    (Object.keys(facets) as (keyof ApolloFacets)[]).forEach((k) => {
+      const v = facets[k];
+      if (Array.isArray(v) && v.length) override[k] = v;
+    });
+    create.mutate(
+      {
+        n,
+        leads_per_experiment: leads,
+        strict_discovery: strict,
+        override_facets: Object.keys(override).length ? override : undefined,
+      },
+      { onSuccess: () => setGateOpen(false) },
+    );
   }
 
   return (
@@ -1211,7 +1514,7 @@ export function ExperimentsPanel({
             />
           </div>
           <Button
-            onClick={() => create.mutate({ n, leads_per_experiment: leads })}
+            onClick={() => setGateOpen(true)}
             disabled={create.isPending}
             data-testid="button-create-batch"
             className="gap-2"
@@ -1231,6 +1534,18 @@ export function ExperimentsPanel({
           </div>
         )}
       </Card>
+
+      <ApolloFilterGate
+        open={gateOpen}
+        onOpenChange={setGateOpen}
+        strategyId={strategyId}
+        pending={create.isPending}
+        confirmLabel="Seed experiments"
+        onConfirm={handleSeedConfirm}
+        showExperimentMode
+        title="Review experiment parameters"
+        description="Review the Apollo parameters that will seed your experiments. Choose whether to stick strictly to the discovery answers or let the AI draft from its own knowledge, and optionally refine the facets before seeding."
+      />
 
       {isLoading ? (
         <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground">

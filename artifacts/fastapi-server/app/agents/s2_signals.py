@@ -12,6 +12,68 @@ from app.services.vector_store import store as vector_store
 from app.provenance import stamp
 
 
+# Catalog of buying-signal types a GTM engineer can scan for. Each entry has a
+# SerpAPI query template ({c} = company name), a human label, and a base
+# strength used as the signal's strength_score when SerpAPI is unavailable for
+# fine-grained scoring.
+SIGNAL_CATALOG: dict[str, dict] = {
+    "funding": {
+        "label": "Funding / investment",
+        "query": '"{c}" funding OR investment OR raises OR raised OR "series"',
+        "strength": 0.9,
+    },
+    "hiring": {
+        "label": "Hiring / open roles",
+        "query": '"{c}" hiring OR "new hire" OR "joins as" OR "is hiring"',
+        "strength": 0.85,
+    },
+    "leadership": {
+        "label": "Leadership change",
+        "query": '"{c}" "appoints" OR "names new" OR "new CEO" OR "new VP" OR "promoted to"',
+        "strength": 0.8,
+    },
+    "ma": {
+        "label": "M&A / acquisition",
+        "query": '"{c}" "acquires" OR "acquisition" OR "merger" OR "to acquire"',
+        "strength": 0.8,
+    },
+    "tech_adoption": {
+        "label": "Tech adoption / migration",
+        "query": '"{c}" "migrates to" OR "adopts" OR "implements" OR "switches to"',
+        "strength": 0.75,
+    },
+    "expansion": {
+        "label": "Expansion / new market",
+        "query": '"{c}" "expands" OR "new office" OR "opens" OR "enters market"',
+        "strength": 0.72,
+    },
+    "product_launch": {
+        "label": "Product launch",
+        "query": '"{c}" "launches" OR "introduces" OR "unveils" OR "new product"',
+        "strength": 0.7,
+    },
+    "partnership": {
+        "label": "Partnership / integration",
+        "query": '"{c}" "partners with" OR "partnership" OR "integration with"',
+        "strength": 0.6,
+    },
+    "layoffs": {
+        "label": "Layoffs / restructuring",
+        "query": '"{c}" "layoffs" OR "restructuring" OR "cuts jobs"',
+        "strength": 0.55,
+    },
+    "award": {
+        "label": "Award / recognition",
+        "query": '"{c}" "wins award" OR "recognized" OR "named to" OR "ranked"',
+        "strength": 0.5,
+    },
+}
+
+# Default scan when the caller does not specify any signal types (preserves the
+# historical funding+hiring behavior).
+DEFAULT_SIGNAL_TYPES: list[str] = ["funding", "hiring"]
+
+
 # Map ICP geographies to SerpAPI gl (Google country) codes
 _GEO_MAP = {
     "north america": "us", "united states": "us", "usa": "us", "us": "us",
@@ -679,11 +741,141 @@ async def design_apollo_facets(db: Session, strategy_id: str) -> dict:
     # scalar/None the model may emit.
     facets = {k: [str(x) for x in (v or []) if x is not None and str(x).strip()] for k, v in facets.items()}
 
+    # Clamp the AI/heuristic facets to the discovery targeting contract so the
+    # preview the engineer reviews never leaks off-profile industries/locations
+    # (same guard experiments use). Lazy import avoids a circular dependency
+    # (experiments imports from this module).
+    contract_meta: dict = {}
+    try:
+        from app.agents.experiments import apply_discovery_contract
+
+        clamped, contract_meta = apply_discovery_contract(strategy, dict(facets))
+        facets = {
+            k: [str(x) for x in (clamped.get(k) or []) if x is not None and str(x).strip()]
+            for k in facets
+        }
+    except Exception:
+        # Never block the preview on a contract failure — fall back to raw facets.
+        contract_meta = {}
+
     return {
         "facets": facets,
         "seniority_options": APOLLO_SENIORITY_OPTIONS,
         "ai_designed": bool(ai_filters),
         "apollo_key_present": bool(apollo_key),
+        "contract": contract_meta,
+    }
+
+
+_REFINE_FACET_KEYS = (
+    "titles", "seniorities", "locations", "industries",
+    "employee_ranges", "technologies", "keywords",
+)
+
+
+async def refine_apollo_facets(
+    db: Session,
+    strategy_id: str,
+    current_facets: dict,
+    context: str = "discovery",
+) -> dict:
+    """Deep-analyze the engineer's current Apollo facets and SUGGEST improvements.
+
+    This does NOT run Apollo or persist anything — it returns a suggested facet
+    set, a plain-English rationale, and a per-field diff so the GTM engineer can
+    accept or reject the changes before discovery / experiment seeding runs.
+
+    ``context`` is ``"discovery"`` (accounts gate — clamp suggestions to the
+    discovery contract so nothing off-profile leaks) or ``"experiment"`` (seed
+    gate — allow the model to expand using its own knowledge).
+    """
+    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    if not strategy:
+        return {"error": "Strategy not found"}
+
+    h = _lead_heuristics(strategy)
+    competitors = [
+        c.name
+        for c in db.query(Competitor).filter(Competitor.strategy_id == strategy_id).all()
+        if c.name
+    ][:8]
+
+    cur = {
+        k: [str(x) for x in (current_facets.get(k) or []) if x is not None and str(x).strip()]
+        for k in _REFINE_FACET_KEYS
+    }
+
+    prompt = (
+        "You are a senior Apollo.io targeting strategist. A GTM engineer has drafted "
+        "the people-search facets below. Do a DEEP analysis against the product's ICP, "
+        "personas, discovery answers, and known competitors, then SUGGEST a refined facet "
+        "set that will surface higher-fit leads. Tighten over-broad facets, drop low-signal "
+        "values, and add high-signal titles / technologies / keywords the engineer missed. "
+        "Keep every suggestion defensible from the context — do not invent unrelated markets.\n\n"
+        f"PRODUCT: {strategy.product_name}\n"
+        f"DESCRIPTION: {(strategy.description or '')[:400]}\n"
+        f"ICP: {json.dumps(h['icp'])[:1000]}\n"
+        f"DISCOVERY: {json.dumps(h['dd'])[:800] if h.get('dd') else 'none'}\n"
+        f"KNOWN COMPETITORS / TOOLS BUYERS USE: {', '.join(competitors) if competitors else 'none'}\n\n"
+        f"CURRENT FACETS:\n{json.dumps(cur)}\n\n"
+        "Return STRICT JSON: {\n"
+        '  "facets": { "titles": [...], "seniorities": [subset of '
+        "owner,founder,c_suite,partner,vp,head,director,manager], \"locations\": [country names], "
+        '"industries": [...], "employee_ranges": ["min,max"], "technologies": [...], "keywords": [...] },\n'
+        '  "rationale": "2-3 sentences explaining the most important changes and why they lift lead quality"\n'
+        "}\n"
+        "Only include a facet when you have a concrete value for it; echo unchanged facets as-is."
+    )
+
+    resp = await chat_json(prompt, max_tokens=900)
+    suggested_raw = resp.get("facets") if isinstance(resp, dict) else None
+    if not isinstance(suggested_raw, dict):
+        suggested_raw = {}
+
+    suggested = {
+        k: [
+            str(x)
+            for x in (suggested_raw.get(k) if isinstance(suggested_raw.get(k), list) else cur.get(k))
+            or []
+            if x is not None and str(x).strip()
+        ]
+        for k in _REFINE_FACET_KEYS
+    }
+    suggested["locations"] = _normalize_apollo_locations(suggested["locations"])
+
+    # In the accounts (discovery) context, clamp the suggestion to the discovery
+    # contract so the refine step can never leak off-profile values. In the
+    # experiment context we deliberately let the model expand on its own knowledge.
+    if context == "discovery":
+        try:
+            from app.agents.experiments import apply_discovery_contract
+
+            clamped, _ = apply_discovery_contract(strategy, dict(suggested))
+            suggested = {
+                k: [str(x) for x in (clamped.get(k) or []) if x is not None and str(x).strip()]
+                for k in _REFINE_FACET_KEYS
+            }
+        except Exception:
+            pass
+
+    changes: list[dict] = []
+    for k in _REFINE_FACET_KEYS:
+        before = cur[k]
+        after = suggested[k]
+        added = [v for v in after if v not in before]
+        removed = [v for v in before if v not in after]
+        if added or removed:
+            changes.append({"field": k, "added": added, "removed": removed})
+
+    rationale = ""
+    if isinstance(resp, dict) and isinstance(resp.get("rationale"), str):
+        rationale = resp["rationale"].strip()
+
+    return {
+        "suggested": suggested,
+        "rationale": rationale,
+        "changes": changes,
+        "changed": bool(changes),
     }
 
 
@@ -1498,6 +1690,7 @@ async def fetch_account_contacts(
                     is_demo=False,
                     source="discovery",
                     source_ref=p.get("id"),  # Apollo person id → reliable email reveal later
+                    apollo_person_id=p.get("id"),
                 )
                 db.add(contact)
                 new_contacts.append(contact)
@@ -1627,13 +1820,29 @@ async def run_experiment_discovery(
     return result
 
 
-async def run_signals(db: Session, strategy_id: str, limit: int | None = None) -> dict:
-    """Detect buying signals per account."""
+async def run_signals(
+    db: Session,
+    strategy_id: str,
+    limit: int | None = None,
+    signal_types: list[str] | None = None,
+) -> dict:
+    """Detect buying signals per account.
+
+    ``signal_types`` picks which buying-signal categories to scan for (see
+    ``SIGNAL_CATALOG``). When omitted, the default funding+hiring pair is used so
+    existing callers keep their behavior.
+    """
     strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
     if not strategy:
         return {"signals_added": 0}
     limits = fetch_limits.get_limits(db, strategy.user_id or "user_public")
     n_per_account = fetch_limits.clamp("signals_per_account", limit, limits)
+
+    # Resolve the requested signal types against the catalog (ignore unknowns);
+    # fall back to the default pair when nothing valid was requested.
+    selected = [t for t in (signal_types or []) if t in SIGNAL_CATALOG]
+    if not selected:
+        selected = list(DEFAULT_SIGNAL_TYPES)
 
     serp_key = settings_service.get_key(db, strategy.user_id, "serpapi")
     accounts = db.query(Account).filter(Account.strategy_id == strategy_id).limit(10).all()
@@ -1652,10 +1861,7 @@ async def run_signals(db: Session, strategy_id: str, limit: int | None = None) -
         # account per run, regardless of how many query types we issue. We
         # split the budget across query kinds, then truncate the merged
         # result list before insert as a belt-and-braces guard.
-        query_kinds = [
-            ("funding", '"{c}" funding OR investment OR raises OR raised'),
-            ("hiring", '"{c}" hiring OR "new hire" OR "joins as"'),
-        ]
+        query_kinds = [(t, SIGNAL_CATALOG[t]["query"]) for t in selected]
         per_query_budget = max(1, n_per_account // len(query_kinds)) or 1
         raw_signals = []
         acct_by_id = {a.id: a for a in accounts}
@@ -1704,7 +1910,7 @@ async def run_signals(db: Session, strategy_id: str, limit: int | None = None) -
                     insights_map[s.get("idx")] = s.get("actionable_summary", "")
                     
             for i, (sid, kind, r) in enumerate(raw_signals):
-                strength = {"funding": 0.9, "hiring": 0.85, "tech": 0.75, "news": 0.6}.get(kind, 0.7)
+                strength = SIGNAL_CATALOG.get(kind, {}).get("strength", 0.7)
                 summary = insights_map.get(i) or (r.get("title", "") + " - " + r.get("snippet", ""))[:240]
                 db.add(Signal(
                     strategy_id=strategy_id,
@@ -1719,10 +1925,15 @@ async def run_signals(db: Session, strategy_id: str, limit: int | None = None) -
     else:
         # AI demo signals
         company_names = [a.company_name for a in accounts]
+        type_list = ", ".join(f"'{t}'" for t in selected)
+        type_labels = "; ".join(
+            f"{t} = {SIGNAL_CATALOG[t]['label']}" for t in selected
+        )
         signals_prompt = (
             f"Generate realistic-but-synthetic buying signals for these companies: "
             f"{', '.join(company_names[:8])}. Return JSON with key 'signals' = array of "
-            "{company_name, signal_type 'funding'|'hiring'|'tech'|'news', summary, strength 0-1}. "
+            "{company_name, signal_type, summary, strength 0-1}. "
+            f"signal_type must be one of: {type_list} ({type_labels}). "
             "For 'summary', write a highly actionable insight for a sales rep. Format: '[Fact] - [Why it matters]'. "
             "Example: 'Just raised $10M Series A — likely expanding their revops team and tooling budget soon.'\n"
             "Generate 12 signals total spread across companies."
@@ -1736,7 +1947,7 @@ async def run_signals(db: Session, strategy_id: str, limit: int | None = None) -
             db.add(Signal(
                 strategy_id=strategy_id,
                 account_id=acct.id,
-                signal_type=s.get("signal_type", "news"),
+                signal_type=s.get("signal_type", selected[0]),
                 source="ai_demo",
                 summary=s.get("summary", "")[:240],
                 strength_score=float(s.get("strength", 0.5)),
@@ -1768,7 +1979,7 @@ async def run_signals(db: Session, strategy_id: str, limit: int | None = None) -
         "provenance": stamp(
             source="serpapi" if serp_key else "ai_generated",
             logic=(
-                f"Queried SerpAPI for funding + hiring signals across the top "
+                f"Queried SerpAPI for {', '.join(selected)} signals across the top "
                 f"{len(accounts)} accounts (up to {n_per_account} results per query)."
                 if serp_key
                 else "No SerpAPI key — model generated synthetic-but-realistic buying signals "
@@ -1776,7 +1987,7 @@ async def run_signals(db: Session, strategy_id: str, limit: int | None = None) -
             ),
             steps=[
                 f"Pull top {len(accounts)} accounts in this strategy",
-                ("SerpAPI: 'funding' and 'hiring' query per account" if serp_key else "Prompt model with company list"),
+                (f"SerpAPI: {', '.join(selected)} query per account" if serp_key else "Prompt model with company list"),
                 "Persist signals + run lead scoring",
             ],
             counts={
@@ -1847,15 +2058,44 @@ async def fetch_contact_emails(
             return None
         return value.strip()
 
+    def _extract_email(person: dict | None) -> str | None:
+        """Best usable email from an Apollo person: work, then personal/contact."""
+        if not person:
+            return None
+        primary = _real_email(person.get("email"))
+        if primary:
+            return primary
+        for pe in person.get("personal_emails") or []:
+            e = _real_email(pe if isinstance(pe, str) else None)
+            if e:
+                return e
+        for ce in person.get("contact_emails") or []:
+            raw = ce.get("email") if isinstance(ce, dict) else ce
+            e = _real_email(raw if isinstance(raw, str) else None)
+            if e:
+                return e
+        return None
+
     updated = 0
     skipped = 0
 
     # --- Fast path: reveal by Apollo person id via bulk_match (most reliable). ---
     if apollo_key:
+        def _apollo_pid(c: Contact) -> str | None:
+            # Prefer the dedicated Apollo person id. Fall back to source_ref only
+            # for non-experiment contacts (experiment-promoted contacts store the
+            # experiment id in source_ref, which is NOT an Apollo id).
+            pid = (c.apollo_person_id or "").strip() if c.apollo_person_id else ""
+            if pid:
+                return pid
+            if c.source != "experiment" and c.source_ref and str(c.source_ref).strip():
+                return str(c.source_ref).strip()
+            return None
+
         by_apollo_id = {
-            c.source_ref: c
+            pid: c
             for c in contacts
-            if not c.is_demo and c.source_ref and str(c.source_ref).strip()
+            if not c.is_demo and (pid := _apollo_pid(c))
         }
         if by_apollo_id:
             revealed = clients.apollo_bulk_reveal(
@@ -1865,14 +2105,34 @@ async def fetch_contact_emails(
                 _strategy_id=strategy_id,
                 _strategy_name=strategy.product_name,
             )
+            locked_ids: list[str] = []
             for pid, person in revealed.items():
                 contact = by_apollo_id.get(pid)
                 if not contact:
                     continue
-                email = _real_email(person.get("email"))
+                email = _extract_email(person)
                 if email:
                     contact.email = email
                     updated += 1
+                else:
+                    locked_ids.append(pid)
+            # Work emails locked/missing → one retry requesting personal emails.
+            if locked_ids:
+                revealed_p = clients.apollo_bulk_reveal(
+                    apollo_key,
+                    locked_ids,
+                    reveal_personal=True,
+                    _strategy_id=strategy_id,
+                    _strategy_name=strategy.product_name,
+                )
+                for pid, person in revealed_p.items():
+                    contact = by_apollo_id.get(pid)
+                    if not contact:
+                        continue
+                    email = _extract_email(person)
+                    if email:
+                        contact.email = email
+                        updated += 1
 
     # --- Fallback path: per-contact match for demo/no-id/unresolved contacts. ---
     for contact in contacts:
@@ -1896,7 +2156,21 @@ async def fetch_contact_emails(
             _strategy_id=strategy_id,
             _strategy_name=strategy.product_name,
         )
-        email = _real_email((person or {}).get("email"))
+        email = _extract_email(person)
+        if not email:
+            # Work email locked/missing → retry requesting personal emails.
+            person = clients.apollo_match_person(
+                apollo_key,
+                name=contact.full_name,
+                org_name=account.company_name if account else None,
+                domain=account.domain if account else None,
+                linkedin_url=contact.linkedin_url,
+                reveal_phone=False,
+                reveal_personal=True,
+                _strategy_id=strategy_id,
+                _strategy_name=strategy.product_name,
+            )
+            email = _extract_email(person)
         if email:
             contact.email = email
             updated += 1

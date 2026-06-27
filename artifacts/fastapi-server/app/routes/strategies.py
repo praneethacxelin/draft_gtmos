@@ -16,6 +16,7 @@ from app.agents.s2_signals import (
     run_lead_search,
     run_experiment_discovery,
     design_apollo_facets,
+    refine_apollo_facets,
     run_signals,
     score_leads,
     recognize_patterns,
@@ -763,6 +764,30 @@ async def lead_filter_preview(
     return result
 
 
+class RefineFiltersRequest(BaseModel):
+    facets: dict
+    context: str = "discovery"
+
+
+@router.post("/{strategy_id}/leads/refine-filters")
+async def lead_refine_filters(
+    strategy_id: str,
+    body: RefineFiltersRequest,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    """Deep-analyze the engineer's current Apollo facets and suggest refinements
+    (returns a suggestion + rationale + diff; does NOT run Apollo). Powers the
+    'Refine with AI' button in the discovery and seed-experiments gates."""
+    own_strategy(db, strategy_id, user)
+    result = await refine_apollo_facets(
+        db, strategy_id, body.facets or {}, context=(body.context or "discovery")
+    )
+    if isinstance(result, dict) and result.get("error"):
+        raise HTTPException(status_code=404, detail=result["error"])
+    return result
+
+
 @router.post("/{strategy_id}/accounts/discover")
 async def accounts_discover(
     strategy_id: str,
@@ -836,11 +861,15 @@ async def lead_search_experiments(
 async def signals_run(
     strategy_id: str,
     limit: int | None = Query(None, ge=1, le=10),
+    types: list[str] | None = Query(None),
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ):
     own_strategy(db, strategy_id, user)
-    return _sse(lambda d: run_signals(d, strategy_id, limit=limit), "signals")
+    return _sse(
+        lambda d: run_signals(d, strategy_id, limit=limit, signal_types=types),
+        "signals",
+    )
 
 
 @router.post("/{strategy_id}/score")

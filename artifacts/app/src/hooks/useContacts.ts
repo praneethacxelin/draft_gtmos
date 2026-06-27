@@ -122,7 +122,7 @@ export function useVerifyBulkEmails() {
       contact_ids: string[];
       provider?: string;
     }) =>
-      apiFetch<{ verified: number; invalid: number; catch_all: number; total: number }>(`/api/contacts/verify-bulk`, {
+      apiFetch<{ verified: number; invalid: number; catch_all: number; pending: number; skipped: number; total: number }>(`/api/contacts/verify-bulk`, {
         method: "POST",
         body: JSON.stringify({ contact_ids, provider }),
       }),

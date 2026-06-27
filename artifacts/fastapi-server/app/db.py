@@ -65,6 +65,7 @@ class User(Base):
     __tablename__ = "users"
     id = Column(String, primary_key=True)  # opaque user id (e.g. user_public)
     email = Column(String, nullable=True)
+    password_hash = Column(String, nullable=True)  # pbkdf2 hash; null for the public/no-auth user
     is_admin = Column(Boolean, nullable=False, default=False, server_default="false")
     created_at = Column(DateTime, default=now)
     updated_at = Column(DateTime, default=now, onupdate=now)
@@ -189,6 +190,10 @@ class Contact(Base):
     #   campaign   — pulled as part of phased campaign execution
     source = Column(String, default="discovery", nullable=True)
     source_ref = Column(String, nullable=True)  # batch_id / experiment_id / phase label
+    # Apollo person id, kept separately from source_ref so experiment-promoted
+    # contacts (whose source_ref is the experiment id, used for grouping) can
+    # still reveal their work email by id — the reliable Apollo path.
+    apollo_person_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=now)
 
 
@@ -558,6 +563,12 @@ def init_db() -> None:
         ))
         conn.execute(text(
             "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS source_ref VARCHAR"
+        ))
+        conn.execute(text(
+            "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS apollo_person_id VARCHAR"
+        ))
+        conn.execute(text(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR"
         ))
 
 

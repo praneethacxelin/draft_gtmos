@@ -626,6 +626,14 @@ export interface CampaignPlanPersonaSplit {
   prospect_count: number;
 }
 
+export interface CampaignPlanPhaseCampaign {
+  name: string;
+  prospect_count: number;
+  share_pct: number;
+  engineers?: number | null;
+  bottleneck?: boolean;
+}
+
 export interface CampaignPlanPhase {
   phase: number;
   label: string;
@@ -645,6 +653,8 @@ export interface CampaignPlanPhase {
   season_notes?: string[];
   projected_attainment_pct?: number | null;
   confidence: "High" | "Moderate" | "Low" | null;
+  execution_mode?: CampaignMode;
+  campaigns?: CampaignPlanPhaseCampaign[];
 }
 
 export interface CampaignPlan {
@@ -666,6 +676,10 @@ export interface CampaignPlan {
   phase_count?: number;
   annual_target_usd?: number;
   overall_confidence?: "High" | "Moderate" | "Low";
+  execution_mode?: CampaignMode;
+  campaign_count?: number;
+  campaign_mode_reason?: string | null;
+  campaign_waves?: string[][];
   phases?: CampaignPlanPhase[];
   notes?: string[];
 }
@@ -756,6 +770,38 @@ export interface FilterPreview {
   seniority_options: string[];
   ai_designed: boolean;
   apollo_key_present: boolean;
+}
+
+export interface RefineFacetChange {
+  field: keyof ApolloFacets;
+  added: string[];
+  removed: string[];
+}
+
+export interface RefineResult {
+  suggested: ApolloFacets;
+  rationale: string;
+  changes: RefineFacetChange[];
+  changed: boolean;
+}
+
+/**
+ * Deep-analyzes the engineer's current Apollo facets and returns a suggested
+ * refinement (suggestion + rationale + per-field diff). Does NOT run Apollo —
+ * powers the "Refine with AI" button in the discovery and seed-experiment gates.
+ */
+export function useRefineFilters() {
+  return useMutation<
+    RefineResult,
+    Error,
+    { id: string; facets: ApolloFacets; context?: "discovery" | "experiment" }
+  >({
+    mutationFn: ({ id, facets, context = "discovery" }) =>
+      apiFetch(`/api/strategies/${id}/leads/refine-filters`, {
+        method: "POST",
+        body: JSON.stringify({ facets, context }),
+      }),
+  });
 }
 
 /**
@@ -898,9 +944,15 @@ export function useDiscoverExperimentLeads() {
 export function useRunSignals() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (vars: string | { id: string; limit?: number }) => {
-      const { id, limit } = typeof vars === "string" ? { id: vars, limit: undefined } : vars;
-      return streamSse(withLimit(`/api/strategies/${id}/signals/run`, limit));
+    mutationFn: (vars: string | { id: string; limit?: number; signalTypes?: string[] }) => {
+      const { id, limit, signalTypes } =
+        typeof vars === "string" ? { id: vars, limit: undefined, signalTypes: undefined } : vars;
+      let path = withLimit(`/api/strategies/${id}/signals/run`, limit);
+      if (signalTypes && signalTypes.length) {
+        const qs = signalTypes.map((t) => `types=${encodeURIComponent(t)}`).join("&");
+        path += `${path.includes("?") ? "&" : "?"}${qs}`;
+      }
+      return streamSse(path);
     },
     onSuccess: (result: unknown) => {
       qc.invalidateQueries({ queryKey: ["signals"] });

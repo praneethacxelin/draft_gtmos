@@ -193,6 +193,44 @@ def build_campaign_plan(db: Session, strategy_id: str) -> dict:
     winning_facets = _winning_facets(winner)
     winning_insight = (batch.analysis_json or {}).get("winning_parameters_insight")
 
+    # ---- Campaign sequencing: inherit the ROI campaign strategy and split each
+    # phase's prospect load across the planned campaigns. The ROI layer already
+    # decided how many campaigns run and whether they go parallel / sequential /
+    # hybrid (driven by urgency + capacity + budget); we project that onto every
+    # phase so the GTM engineer sees the campaign-level breakdown, not just the
+    # phase totals. ----
+    roi_campaign_plan = gtm.get("campaign_plan") or {}
+    n_campaigns = max(1, int(roi_campaign_plan.get("campaign_count") or 1))
+    exec_mode = (roi_campaign_plan.get("mode") or "parallel").strip().lower()
+    if exec_mode not in ("parallel", "sequential", "hybrid"):
+        exec_mode = "parallel"
+    global_campaigns = roi_campaign_plan.get("campaigns") or []
+    campaign_waves = roi_campaign_plan.get("waves") or []
+    # Volume weights per campaign come from the ROI campaign distribution so the
+    # phase split mirrors the overall plan; fall back to an even split.
+    _gc_prospects = [max(0, int(c.get("prospects") or 0)) for c in global_campaigns]
+    _gc_sum = sum(_gc_prospects)
+    if _gc_sum > 0 and len(_gc_prospects) == n_campaigns:
+        campaign_weights = [p / _gc_sum for p in _gc_prospects]
+    else:
+        campaign_weights = [1.0 / n_campaigns] * n_campaigns
+
+    def _phase_campaigns(phase_prospects: int) -> list[dict]:
+        counts = _distribute_counts(phase_prospects, campaign_weights)
+        out: list[dict] = []
+        for ci in range(n_campaigns):
+            gc = global_campaigns[ci] if ci < len(global_campaigns) else {}
+            out.append(
+                {
+                    "name": gc.get("name") or f"Campaign {chr(65 + ci)}",
+                    "prospect_count": counts[ci] if ci < len(counts) else 0,
+                    "share_pct": round(campaign_weights[ci] * 100, 1),
+                    "engineers": gc.get("engineers"),
+                    "bottleneck": bool(gc.get("bottleneck", False)),
+                }
+            )
+        return out
+
     plan_phases: list[dict] = []
     elapsed = 0  # months elapsed since the ROI execution start (before window shift)
     for i, ph in enumerate(phases):
@@ -245,6 +283,10 @@ def build_campaign_plan(db: Session, strategy_id: str) -> dict:
                 "season_notes": ph.get("season_notes") or [],
                 "projected_attainment_pct": ph.get("projected_attainment_pct"),
                 "confidence": ph.get("confidence"),
+                # Campaign-level breakdown: how this phase's prospects fan out
+                # across the planned campaigns, and how they're sequenced.
+                "execution_mode": exec_mode,
+                "campaigns": _phase_campaigns(prospect_count),
             }
         )
 
@@ -270,6 +312,10 @@ def build_campaign_plan(db: Session, strategy_id: str) -> dict:
         "phase_count": n_phases,
         "annual_target_usd": revenue_plan.get("annual_target_usd"),
         "overall_confidence": revenue_plan.get("overall_confidence"),
+        "execution_mode": exec_mode,
+        "campaign_count": n_campaigns,
+        "campaign_mode_reason": roi_campaign_plan.get("reasoning"),
+        "campaign_waves": campaign_waves,
         "phases": plan_phases,
         "notes": [
             (
@@ -286,5 +332,15 @@ def build_campaign_plan(db: Session, strategy_id: str) -> dict:
             "ahead of the later-landing revenue.",
             "Each phase's prospects are split across the top personas using the 70/30 "
             "weighting from persona intelligence.",
+            (
+                f"Each phase runs {n_campaigns} campaign(s) in {exec_mode} mode "
+                + (
+                    "— all campaigns launch at once, with the team split across them."
+                    if exec_mode == "parallel"
+                    else "— campaigns run one after another, reusing the full team."
+                    if exec_mode == "sequential"
+                    else "— an initial wave launches in parallel, then the team is reused on the rest."
+                )
+            ),
         ],
     }

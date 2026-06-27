@@ -18,6 +18,7 @@ from app.auth import current_user
 from app.db import User
 from app.routes import (
     health,
+    auth as auth_routes,
     settings,
     strategies,
     accounts,
@@ -158,6 +159,7 @@ def me(user: User = Depends(current_user)) -> dict:
     return {"id": user.id, "email": user.email}
 
 
+app.include_router(auth_routes.router, prefix=api_prefix)
 app.include_router(settings.router, prefix=api_prefix)
 app.include_router(strategies.router, prefix=api_prefix)
 app.include_router(experiments.router, prefix=api_prefix)

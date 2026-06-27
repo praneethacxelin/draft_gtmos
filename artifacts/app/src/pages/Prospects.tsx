@@ -11,6 +11,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { PageHeader } from "@/components/PageHeader";
 import { TierBadge, ScoreBar, DemoBadge } from "@/components/Pills";
 import { useActiveStrategy } from "@/hooks/useActiveStrategy";
@@ -72,6 +77,22 @@ const PERSONA_OPTIONS = [
   { value: "economic_buyer", label: "Economic buyer" },
   { value: "blocker", label: "Blocker" },
 ];
+
+// Buying-signal types a GTM engineer can scan for. Keep in sync with
+// SIGNAL_CATALOG in fastapi-server/app/agents/s2_signals.py.
+const SIGNAL_TYPE_OPTIONS: { value: string; label: string }[] = [
+  { value: "funding", label: "Funding / investment" },
+  { value: "hiring", label: "Hiring / open roles" },
+  { value: "leadership", label: "Leadership change" },
+  { value: "ma", label: "M&A / acquisition" },
+  { value: "tech_adoption", label: "Tech adoption / migration" },
+  { value: "expansion", label: "Expansion / new market" },
+  { value: "product_launch", label: "Product launch" },
+  { value: "partnership", label: "Partnership / integration" },
+  { value: "layoffs", label: "Layoffs / restructuring" },
+  { value: "award", label: "Award / recognition" },
+];
+const DEFAULT_SIGNAL_TYPES = ["funding", "hiring"];
 
 const FACET_LABELS: Record<string, string> = {
   titles: "Titles",
@@ -237,6 +258,7 @@ export function Prospects() {
   const [selectedAccounts, setSelectedAccounts] = useState<Set<string>>(new Set());
   const [scoredOnce, setScoredOnce] = useState(false);
   const [signalLimit, setSignalLimit] = useState<string>("default");
+  const [signalTypes, setSignalTypes] = useState<string[]>(DEFAULT_SIGNAL_TYPES);
 
   const { data: prioritized } = usePrioritizedAccounts(activeId ?? undefined);
   const { data: contacts } = useContacts(activeId ?? undefined, tier);
@@ -492,10 +514,74 @@ export function Prospects() {
                 ))}
               </SelectContent>
             </Select>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8 text-xs"
+                  data-testid="button-signal-types"
+                >
+                  Signals:{" "}
+                  {signalTypes.length === SIGNAL_TYPE_OPTIONS.length
+                    ? "All"
+                    : signalTypes.length
+                      ? `${signalTypes.length} selected`
+                      : "None"}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-60 p-2">
+                <div className="mb-2 flex items-center justify-between px-1">
+                  <span className="text-xs font-medium text-muted-foreground">
+                    Signal types
+                  </span>
+                  <button
+                    type="button"
+                    className="text-[11px] text-primary hover:underline"
+                    onClick={() =>
+                      setSignalTypes(
+                        signalTypes.length === SIGNAL_TYPE_OPTIONS.length
+                          ? []
+                          : SIGNAL_TYPE_OPTIONS.map((o) => o.value),
+                      )
+                    }
+                    data-testid="button-signal-types-toggle-all"
+                  >
+                    {signalTypes.length === SIGNAL_TYPE_OPTIONS.length
+                      ? "Clear all"
+                      : "Select all"}
+                  </button>
+                </div>
+                <div className="max-h-64 space-y-0.5 overflow-y-auto">
+                  {SIGNAL_TYPE_OPTIONS.map((opt) => {
+                    const checked = signalTypes.includes(opt.value);
+                    return (
+                      <label
+                        key={opt.value}
+                        className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted"
+                      >
+                        <Checkbox
+                          checked={checked}
+                          onCheckedChange={(v) =>
+                            setSignalTypes((prev) =>
+                              v
+                                ? [...prev, opt.value]
+                                : prev.filter((t) => t !== opt.value),
+                            )
+                          }
+                          data-testid={`checkbox-signal-${opt.value}`}
+                        />
+                        {opt.label}
+                      </label>
+                    );
+                  })}
+                </div>
+              </PopoverContent>
+            </Popover>
             <Button
               size="sm"
               variant="secondary"
-              disabled={runSignals.isPending}
+              disabled={runSignals.isPending || signalTypes.length === 0}
               onClick={() =>
                 runSignals.mutate({
                   id: activeId,
@@ -503,6 +589,7 @@ export function Prospects() {
                     signalLimit && signalLimit !== "default"
                       ? Number(signalLimit)
                       : undefined,
+                  signalTypes: signalTypes.length ? signalTypes : undefined,
                 })
               }
               data-testid="button-run-signals"
