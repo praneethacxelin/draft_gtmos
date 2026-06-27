@@ -38,6 +38,11 @@ export interface ExperimentRelevancy {
   off_target_industries?: string[];
   irrelevant_examples?: { company?: string; industry?: string; reason?: string }[];
   summary?: string;
+  requested_leads?: number | null;
+  sample_completeness?: number | null;
+  sample_confidence?: number | null;
+  adjusted_relevancy?: number | null;
+  low_confidence?: boolean | null;
 }
 
 export interface ExperimentResultSummary {
@@ -259,6 +264,45 @@ export function useLiveMetrics(strategyId: string, batchId?: string, enabled = t
       apiFetch(`/api/strategies/${strategyId}/experiments/${batchId}/live`),
     enabled: !!strategyId && !!batchId && enabled,
     refetchInterval: 30000,
+  });
+}
+
+export interface PromotionPlanVariant {
+  experiment_id: string;
+  name?: string;
+  idx: number;
+  is_winner: boolean;
+  relevancy?: number | null;
+  composite_score: number;
+  available_leads: number;
+  skipped: boolean;
+  reason?: string | null;
+  planned: number;
+}
+
+export interface PromotionPreview {
+  batch_id: string;
+  budget_per_variant: number;
+  leads_per_experiment: number;
+  total_to_promote: number;
+  total_available: number;
+  skipped_count: number;
+  variants: PromotionPlanVariant[];
+}
+
+export function usePromotionPreview(
+  strategyId: string,
+  batchId: string,
+  leadsPerVariant: number,
+  enabled: boolean,
+) {
+  return useQuery<PromotionPreview>({
+    queryKey: ["experiments", strategyId, batchId, "promote-preview", leadsPerVariant],
+    queryFn: () =>
+      apiFetch(
+        `/api/strategies/${strategyId}/experiments/${batchId}/promote-preview?leads_per_variant=${leadsPerVariant}`,
+      ),
+    enabled: !!strategyId && !!batchId && enabled,
   });
 }
 

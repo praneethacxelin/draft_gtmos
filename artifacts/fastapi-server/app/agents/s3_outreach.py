@@ -1,5 +1,6 @@
 """S3 — 3-Channel Outreach generation."""
 import json
+import logging
 import random
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
@@ -8,6 +9,8 @@ from app.llm import chat_json, chat_text, MODEL_NAME
 from app.services import settings_service, clients, audit_service
 from app.services.instantly_poller import simulate_engagement_timeline
 from app.provenance import stamp
+
+log = logging.getLogger("gtm.s3_outreach")
 
 
 SPAM_TRIGGERS = [
@@ -192,6 +195,34 @@ async def generate_sequence(db: Session, contact_id: str, step_count: int = 4, d
         ucs = strategy.use_cases_json.get("use_cases", []) if isinstance(strategy.use_cases_json, dict) else []
         use_cases = json.dumps(ucs[:3])[:600]
 
+    # Closed-loop memory: fold the most relevant learnings captured from this
+    # product's experiments / live winners / persona analysis back into the
+    # prompt, so generated copy improves over time instead of staying static.
+    learnings_block = ""
+    if contact.strategy_id:
+        try:
+            from app.agents.learnings import list_learnings
+
+            captured = list_learnings(db, strategy_id=contact.strategy_id, limit=8)
+            # Prefer higher-confidence, experiment/messaging/persona learnings.
+            priority = {"experiment": 0, "messaging": 1, "persona": 2}
+            captured.sort(
+                key=lambda l: (
+                    0 if (l.get("confidence") or "").lower() == "high" else 1,
+                    priority.get((l.get("category") or "").lower(), 9),
+                )
+            )
+            picked = []
+            for l in captured[:5]:
+                title = (l.get("title") or "").strip()
+                content = (l.get("content") or "").strip()
+                if content:
+                    picked.append(f"- {title + ': ' if title else ''}{content}"[:280])
+            if picked:
+                learnings_block = "\n".join(picked)
+        except Exception as exc:  # pragma: no cover
+            log.warning("generate_sequence: learnings recall failed: %s", exc)
+
     # Set default channel plan (always prioritises email first)
     if step_count == 5:
         channel_plan = [
@@ -274,6 +305,7 @@ async def generate_sequence(db: Session, contact_id: str, step_count: int = 4, d
             f"10. JOB-ROLE PROFILE ALIGNMENT: The outreach must be heavily tailored to their specific job role/profile (Title: {contact.title}, Department: {contact_department}, Seniority: {contact_seniority}, Persona Type: {contact_persona}). Adapt the tone, pain points, and use cases to directly address their specific department tasks, goals, and challenges. "
             f"11. PRODUCT PROFILE BRIEF: You must mention a small, natural brief/context about the product ({strategy.product_name if strategy else ''}: {product_description}) in the body of the email so the lead understands exactly what the product is and how it solves their challenges. "
             f"12. EMAIL THREADING FOLLOW-UPS: Step 1 is the initial email. Steps 2 and 3 are follow-up emails in the same thread (replies). Make sure the copy of Step 2 and Step 3 is written naturally as follow-ups to the preceding steps (e.g., refer back to the previous note, keep it shorter, check in on timing), rather than sounding like completely new, detached emails."
+            f"{chr(10) + '13. PROVEN LEARNINGS — apply these insights from this product’s past experiments, live winners, and persona analysis. Lean into what converted and avoid what underperformed:' + chr(10) + learnings_block if learnings_block else ''}"
             f"{(' ' + extra_guidance) if extra_guidance else ''}"
         )
 

@@ -50,16 +50,21 @@ from app.db import (
 
 log = logging.getLogger("gtm.live_experiment")
 
-# How many real contacts to materialize + draft per variant. Kept small so a
-# "promote to live" is a deliberate, bounded action (each draft is one LLM call)
-# and so the test phase stays a sample, not a full send.
+# Fallback per-variant budget, only used when a batch somehow has no
+# leads_per_experiment. Normally the budget is ANCHORED to the batch's
+# leads_per_experiment so the funnel test learns from the same sample size the
+# engineer chose to fetch — not a tiny hardcoded slice.
 DRAFT_PER_VARIANT = 5
+
+# A variant can promote at most every lead it actually fetched. This matches the
+# Apollo leads-per-run ceiling, so the budget never asks for leads an experiment
+# could not have pulled.
+MAX_LEADS_PER_VARIANT = 25
 
 # Relevancy-aware promotion gates. Promote spends real LLM drafts (and later
 # Apollo reveal + outreach), so don't waste it on junk variants.
 MIN_RELEVANCY_TO_PROMOTE = 20.0  # below this % fit, a variant is junk — skip it
 MIN_LEADS_TO_PROMOTE = 3         # too few leads to form a meaningful cohort
-WINNER_COHORT_BONUS = 2          # analyzed winner gets a small extra cohort nudge
 
 # Default live window if the ROI plan doesn't specify one.
 DEFAULT_WINDOW_MONTHS = 1
@@ -117,11 +122,88 @@ def _serialize_metrics(exp: Experiment, m: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Promotion allocation — how many leads each variant moves into the funnel test
+# ---------------------------------------------------------------------------
+
+def _variant_budget(batch: ExperimentBatch, draft_per_variant: Optional[int]) -> int:
+    """Per-variant promotion budget (the share the TOP variant may promote).
+
+    Anchored to the leads the engineer chose to fetch per experiment so the
+    funnel test learns from a meaningful sample, not a tiny hardcoded slice.
+    An explicit engineer override wins; otherwise the batch's
+    ``leads_per_experiment`` is used.
+    """
+    budget = draft_per_variant or batch.leads_per_experiment or DRAFT_PER_VARIANT
+    return max(1, min(int(budget), MAX_LEADS_PER_VARIANT))
+
+
+def _plan_allocation(
+    experiments: list[Experiment], winner_id: Optional[str], budget: int
+) -> list[dict]:
+    """Decide how many leads each variant promotes, distributed by composite score.
+
+    The top-scoring (winner) variant gets the full ``budget``; every other
+    variant gets a share proportional to its composite score, then clamped to
+    the leads it actually fetched — never inventing leads, never silently
+    wasting the ones already paid for. Junk variants that fail the quality gate
+    are marked skipped (the analyzed winner is never skipped). This is the
+    single source of truth used by both the preview and the real promotion.
+    """
+    rows: list[dict] = []
+    eligible_scores: list[float] = []
+    for exp in experiments:
+        rel = exp.relevancy_json or {}
+        rel_raw = rel.get("relevancy_score")
+        has_score = isinstance(rel_raw, (int, float))
+        relevancy = float(rel_raw) if has_score else None
+        lead_count = len(exp.leads_json or [])
+        is_winner = bool(winner_id and exp.id == winner_id)
+        composite = float(exp.score) if isinstance(exp.score, (int, float)) else 0.0
+
+        reason: Optional[str] = None
+        if not is_winner:
+            if lead_count < MIN_LEADS_TO_PROMOTE:
+                reason = f"only {lead_count} leads (< {MIN_LEADS_TO_PROMOTE})"
+            elif has_score and relevancy is not None and relevancy < MIN_RELEVANCY_TO_PROMOTE:
+                reason = f"relevancy {relevancy:.0f}% (< {MIN_RELEVANCY_TO_PROMOTE:.0f}%)"
+
+        rows.append({
+            "experiment_id": exp.id,
+            "name": exp.name,
+            "idx": exp.idx,
+            "is_winner": is_winner,
+            "relevancy": rel_raw if has_score else None,
+            "composite_score": round(composite, 1),
+            "available_leads": lead_count,
+            "skipped": bool(reason),
+            "reason": reason,
+            "planned": 0,
+        })
+        if not reason:
+            eligible_scores.append(composite)
+
+    # The highest composite among gate-passing variants anchors the scale, so the
+    # leader promotes its full available cohort and the rest scale down smoothly.
+    max_score = max(eligible_scores, default=0.0)
+    for row in rows:
+        if row["skipped"]:
+            continue
+        if max_score > 0:
+            share = budget * (row["composite_score"] / max_score)
+        else:
+            share = budget  # no usable scores — give every passing variant the full budget
+        planned = int(round(share))
+        planned = max(1, min(planned, row["available_leads"], budget))
+        row["planned"] = planned
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # 1. Promote an analyzed batch to a live funnel test
 # ---------------------------------------------------------------------------
 
 async def promote_to_live(
-    db: Session, batch_id: str, draft_per_variant: int = DRAFT_PER_VARIANT
+    db: Session, batch_id: str, draft_per_variant: Optional[int] = None
 ) -> dict:
     """Materialize a real cohort + draft sequences for every analyzed variant.
 
@@ -149,7 +231,9 @@ async def promote_to_live(
     if not experiments:
         return {"_error": "Run the experiments first — there are no leads to test."}
 
-    cap = max(1, min(int(draft_per_variant or DRAFT_PER_VARIANT), 25))
+    budget = _variant_budget(batch, draft_per_variant)
+    plan = _plan_allocation(experiments, batch.best_experiment_id, budget)
+    plan_by_id = {p["experiment_id"]: p for p in plan}
 
     # Cache existing accounts by company so we don't duplicate them.
     accounts_by_company: dict[str, Account] = {
@@ -161,38 +245,25 @@ async def promote_to_live(
     total_drafts = 0
     per_variant: list[dict] = []
     skipped: list[dict] = []
-    winner_id = batch.best_experiment_id
 
     for exp in experiments:
+        alloc = plan_by_id.get(exp.id) or {}
+        # Quality gate — the analyzed winner is always promoted; every other
+        # variant must clear the bar so we don't draft/launch into junk.
+        if alloc.get("skipped"):
+            skipped.append(
+                {"experiment_id": exp.id, "name": exp.name, "reason": alloc.get("reason")}
+            )
+            continue
+
         rel = exp.relevancy_json or {}
         rel_raw = rel.get("relevancy_score")
         has_score = isinstance(rel_raw, (int, float))
-        relevancy = float(rel_raw) if has_score else None
-        lead_count = len(exp.leads_json or [])
-        is_winner = bool(winner_id and exp.id == winner_id)
-
-        # Quality gate — the analyzed winner is always promoted; every other
-        # variant must clear the bar so we don't draft/launch into junk.
-        if not is_winner:
-            reason = None
-            if lead_count < MIN_LEADS_TO_PROMOTE:
-                reason = f"only {lead_count} leads (< {MIN_LEADS_TO_PROMOTE})"
-            elif has_score and relevancy < MIN_RELEVANCY_TO_PROMOTE:
-                reason = f"relevancy {relevancy:.0f}% (< {MIN_RELEVANCY_TO_PROMOTE:.0f}%)"
-            if reason:
-                skipped.append({"experiment_id": exp.id, "name": exp.name, "reason": reason})
-                continue
-
-        # Cohort scaled by relevancy — high-fit variants get bigger cohorts. The
-        # winner gets a small extra nudge so the leading hypothesis is tested
-        # harder, without blindly trusting it before any real execution.
-        if has_score:
-            variant_cap = max(1, round(cap * relevancy / 100.0))
-        else:
-            variant_cap = cap
-        if is_winner:
-            variant_cap += WINNER_COHORT_BONUS
-        variant_cap = max(1, min(variant_cap, cap + WINNER_COHORT_BONUS, 25))
+        is_winner = bool(alloc.get("is_winner"))
+        # Leads promoted = score-proportional share of the budget, clamped to the
+        # leads this variant actually fetched (no silent waste). The winner — the
+        # top composite score — naturally promotes its full available cohort.
+        variant_cap = max(1, int(alloc.get("planned") or 1))
 
         # Re-promoting is idempotent: keep an existing cohort, just top up drafts.
         existing = _variant_contacts(db, batch, exp)
@@ -266,7 +337,8 @@ async def promote_to_live(
                 "drafted_now": drafted,
                 "relevancy": rel_raw if has_score else None,
                 "is_winner": is_winner,
-                "target_cap": variant_cap,
+                "planned": variant_cap,
+                "available_leads": len(exp.leads_json or []),
             }
         )
 
@@ -280,15 +352,54 @@ async def promote_to_live(
         "live_status": batch.live_status,
         "total_cohort": total_contacts,
         "total_drafted": total_drafts,
-        "per_variant_cap": cap,
+        "per_variant_budget": budget,
         "variants": per_variant,
         "skipped": skipped,
         "note": (
-            "Cohorts materialized and sequences drafted (sized by relevancy; the "
-            "winner gets a small bonus). Reveal emails, then launch each variant "
-            "to start the live window."
+            f"Cohorts materialized and sequences drafted. Leads promoted are scaled by "
+            f"each variant's rank (composite score) up to a {budget}-lead budget per "
+            f"variant — the winner promotes its full cohort, lower ranks fewer. Reveal "
+            f"emails, then launch each variant to start the live window."
             + (f" Skipped {len(skipped)} low-fit variant(s)." if skipped else "")
         ),
+    }
+
+
+def preview_promotion(
+    db: Session, batch_id: str, draft_per_variant: Optional[int] = None
+) -> dict:
+    """Dry-run the promotion plan WITHOUT materializing anything.
+
+    Lets the engineer see exactly how many leads each variant (and the batch in
+    total) will move into the funnel test before spending real LLM drafts.
+    Uses the same allocation math as ``promote_to_live``.
+    """
+    batch = db.query(ExperimentBatch).filter(ExperimentBatch.id == batch_id).first()
+    if not batch:
+        return {"_error": "Experiment batch not found"}
+    if batch.status != "analyzed":
+        return {"_error": "Analyze the batch first — a live test runs the analyzed variants."}
+
+    experiments = (
+        db.query(Experiment)
+        .filter(Experiment.batch_id == batch.id, Experiment.status == "done")
+        .order_by(Experiment.idx.asc())
+        .all()
+    )
+    if not experiments:
+        return {"_error": "Run the experiments first — there are no leads to test."}
+
+    budget = _variant_budget(batch, draft_per_variant)
+    plan = _plan_allocation(experiments, batch.best_experiment_id, budget)
+    total = sum(p["planned"] for p in plan if not p["skipped"])
+    return {
+        "batch_id": batch.id,
+        "budget_per_variant": budget,
+        "leads_per_experiment": batch.leads_per_experiment,
+        "total_to_promote": total,
+        "total_available": sum(p["available_leads"] for p in plan),
+        "skipped_count": sum(1 for p in plan if p["skipped"]),
+        "variants": plan,
     }
 
 

@@ -42,6 +42,7 @@ import {
   useAnalyzeBatch,
   useLiveMetrics,
   usePromoteLive,
+  usePromotionPreview,
   useLaunchVariant,
   useEvaluateLive,
   useSimulateWindow,
@@ -272,6 +273,16 @@ function ExperimentCard({
               <span className="font-mono font-semibold text-foreground">
                 {summary?.lead_count ?? exp.leads.length}
               </span>
+              {rel?.requested_leads != null &&
+                rel?.sample_completeness != null &&
+                rel.sample_completeness < 1 && (
+                  <span
+                    className="ml-1 font-mono text-amber-500"
+                    title={`Only returned ${summary?.lead_count ?? exp.leads.length} of the ${rel.requested_leads} requested. Partial samples are discounted vs full samples when ranking, so this can't unfairly out-rank a complete experiment.`}
+                  >
+                    /{rel.requested_leads} (partial)
+                  </span>
+                )}
             </span>
             {rel?.relevancy_score != null && (
               <span className="text-muted-foreground">
@@ -524,7 +535,13 @@ function LiveExperimentSection({
   const launch = useLaunchVariant(strategyId);
   const evaluate = useEvaluateLive(strategyId);
   const simulate = useSimulateWindow(strategyId);
-  const [promoteCount, setPromoteCount] = useState(5);
+  const [promoteCount, setPromoteCount] = useState(batch.leads_per_experiment ?? 5);
+  const preview = usePromotionPreview(
+    strategyId,
+    batch.id,
+    promoteCount,
+    !live || live === "drafted",
+  );
   const { data: metrics } = useLiveMetrics(
     strategyId,
     batch.id,
@@ -548,8 +565,8 @@ function LiveExperimentSection({
           toast({
             title: "Promoted to live test",
             description:
-              `${r.total_cohort ?? 0} contacts across ${(r.variants ?? []).length} variant(s) · ` +
-              `${r.total_drafted ?? 0} sequences drafted (sized by relevancy, winner +bonus).` +
+              `${r.total_cohort ?? 0} leads across ${(r.variants ?? []).length} variant(s) moved forward · ` +
+              `${r.total_drafted ?? 0} sequences drafted (scaled by rank, up to ${r.per_variant_budget ?? promoteCount}/variant).` +
               (skipped.length
                 ? ` Skipped ${skipped.length} low-fit: ${skipped.map((s) => `${s.name} (${s.reason})`).join(", ")}.`
                 : ""),
@@ -614,7 +631,7 @@ function LiveExperimentSection({
         </div>
         <div className="flex items-center gap-2">
           {(!live || live === "drafted") && (
-            <label className="flex items-center gap-1 text-xs text-muted-foreground" title="Max contacts to materialize per variant. Each variant's cohort is then scaled by its relevancy; the winner gets a small bonus.">
+            <label className="flex items-center gap-1 text-xs text-muted-foreground" title="Per-variant lead budget for the funnel test. The top-ranked (winner) variant promotes its full cohort up to this number; lower ranks promote proportionally fewer (by composite score). Defaults to your leads-per-experiment.">
               <span>Leads / variant</span>
               <Input
                 type="number"
@@ -672,6 +689,54 @@ function LiveExperimentSection({
           <> Window ends <span className="font-medium text-foreground">{windowEnds.toLocaleDateString()}</span>.</>
         )}
       </p>
+
+      {(!live || live === "drafted") && preview.data && (
+        <div className="mt-3 rounded border border-primary/30 bg-background/60 p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-xs font-semibold uppercase tracking-widest text-primary">
+              Moving forward to the funnel test
+            </div>
+            <div className="text-sm font-semibold text-foreground">
+              {preview.data.total_to_promote}
+              <span className="text-xs font-normal text-muted-foreground">
+                {" "}/ {preview.data.total_available} leads
+              </span>
+            </div>
+          </div>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Each variant promotes a share of its leads scaled by rank (composite score), up to{" "}
+            {preview.data.budget_per_variant}/variant. The winner promotes its full cohort.
+          </p>
+          <div className="mt-2 space-y-1">
+            {preview.data.variants.map((v) => (
+              <div
+                key={v.experiment_id}
+                className="flex items-center justify-between gap-2 text-xs"
+              >
+                <div className="flex min-w-0 items-center gap-1.5">
+                  {v.is_winner && <Trophy className="h-3 w-3 shrink-0 text-amber-500" />}
+                  <span className="truncate text-foreground">{v.name ?? `Variant ${v.idx + 1}`}</span>
+                  {v.skipped && (
+                    <Badge variant="outline" className="shrink-0 text-[9px] text-muted-foreground">
+                      skipped
+                    </Badge>
+                  )}
+                </div>
+                {v.skipped ? (
+                  <span className="shrink-0 text-[10px] text-muted-foreground">{v.reason}</span>
+                ) : (
+                  <span className="shrink-0 font-medium text-foreground">
+                    {v.planned}
+                    <span className="font-normal text-muted-foreground">
+                      {" "}of {v.available_leads}
+                    </span>
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {live === "completed" && batch.live_analysis && (
         <div className="mt-3 rounded border border-primary/30 bg-background/60 p-3">

@@ -17,6 +17,7 @@ from app.agents.experiments import (
 )
 from app.agents.live_experiment import (
     promote_to_live,
+    preview_promotion,
     launch_variant,
     compute_live_metrics,
     evaluate_live_batch,
@@ -218,9 +219,24 @@ async def promote_live(
     result = await promote_to_live(
         db,
         batch_id,
-        draft_per_variant=(body.draft_per_variant if body and body.draft_per_variant else None)
-        or 5,
+        draft_per_variant=(body.draft_per_variant if body and body.draft_per_variant else None),
     )
+    if isinstance(result, dict) and "_error" in result:
+        raise HTTPException(status_code=400, detail=result["_error"])
+    return result
+
+
+@router.get("/{batch_id}/promote-preview")
+def promote_preview(
+    strategy_id: str,
+    batch_id: str,
+    leads_per_variant: int | None = None,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    """Dry-run the promotion plan: how many leads each variant moves forward."""
+    _own_batch(db, strategy_id, batch_id, user)
+    result = preview_promotion(db, batch_id, draft_per_variant=leads_per_variant)
     if isinstance(result, dict) and "_error" in result:
         raise HTTPException(status_code=400, detail=result["_error"])
     return result

@@ -22,7 +22,7 @@ import {
 import { PageHeader } from "@/components/PageHeader";
 import { TierBadge, StatusPill } from "@/components/Pills";
 import { useActiveStrategy } from "@/hooks/useActiveStrategy";
-import { useContacts } from "@/hooks/useContacts";
+import { useContacts, useVerifyContactEmail, useVerifyBulkEmails } from "@/hooks/useContacts";
 import {
   useSequenceByContact,
   useGenerateSequence,
@@ -41,7 +41,7 @@ import {
   useCampaignLeads,
   useLeadReplies,
 } from "@/hooks/useSequences";
-import { Mail, Linkedin, Phone, ShieldCheck, Send, Wand2, Pencil, X, FlaskConical, Check, Megaphone, Search, Flame, Plus, Play, Pause, Heart, Loader2, Activity, RefreshCw, Trash2, Code2, Eye, Users } from "lucide-react";
+import { Mail, Linkedin, Phone, ShieldCheck, Send, Wand2, Pencil, X, FlaskConical, Check, Megaphone, Search, Flame, Plus, Play, Pause, Heart, Loader2, Activity, RefreshCw, Trash2, Code2, Eye, Users, BadgeCheck } from "lucide-react";
 import { fmtDate } from "@/lib/format";
 import { ReasoningPanel, SourceBadge } from "@/components/ReasoningPanel";
 import { RetriggerBar, type RetriggerAction } from "@/components/RetriggerBar";
@@ -122,6 +122,9 @@ export function Outreach() {
   const resumeCampaign = useResumeCampaign();
   const workspaceCampaigns = useWorkspaceCampaigns();
   const launchGroup = useLaunchGroup();
+  const verifyEmail = useVerifyContactEmail();
+  const verifyBulk = useVerifyBulkEmails();
+  const [isVerifying, setIsVerifying] = useState<boolean>(false);
 
   const contact = contacts?.find((c) => c.id === selected);
 
@@ -163,6 +166,31 @@ export function Outreach() {
       toast.error(err?.message || "Failed to generate sequences.");
     } finally {
       setIsGeneratingBulk(false);
+    }
+  }
+
+  // Verify the email of the checked contacts (group) — or, if none are checked,
+  // the currently focused contact (single). Uses Instantly first and falls back
+  // to Hunter.io (provider="instantly" → the backend tries Instantly, then Hunter).
+  async function handleVerifyEmails() {
+    const ids = selectedIds.size > 0 ? Array.from(selectedIds) : selected ? [selected] : [];
+    if (ids.length === 0) return;
+    const { toast } = await import("sonner");
+    setIsVerifying(true);
+    try {
+      if (ids.length === 1) {
+        const res = await verifyEmail.mutateAsync({ id: ids[0], provider: "instantly" });
+        toast.success(`Email ${res.email_verified ?? "checked"}: ${res.email}`);
+      } else {
+        const res = await verifyBulk.mutateAsync({ contact_ids: ids, provider: "instantly" });
+        toast.success(
+          `Verified ${res.total}: ${res.verified} valid · ${res.invalid} invalid · ${res.catch_all} catch-all`,
+        );
+      }
+    } catch (err: any) {
+      toast.error(err?.message || "Email verification failed.");
+    } finally {
+      setIsVerifying(false);
     }
   }
 
@@ -361,10 +389,15 @@ export function Outreach() {
       )}
 
       {/* Campaign Settings banner */}
-      <div className="mb-4 rounded border border-border bg-card p-4 space-y-4">
-        <div className="flex items-center gap-2">
-          <FlaskConical className="h-4 w-4 shrink-0 text-amber-400" />
-          <span className="text-sm font-semibold">Launch Settings</span>
+      <div className="mb-4 rounded-lg border border-border bg-card p-4 space-y-4 shadow-sm">
+        <div className="flex items-center gap-2.5">
+          <span className="flex h-7 w-7 items-center justify-center rounded-md bg-amber-500/15 text-amber-400">
+            <FlaskConical className="h-4 w-4 shrink-0" />
+          </span>
+          <div className="min-w-0">
+            <div className="text-sm font-semibold leading-tight">Launch Settings</div>
+            <div className="text-[11px] text-muted-foreground">Test recipient, timezone and sending window applied to every launch.</div>
+          </div>
         </div>
         
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
@@ -470,7 +503,7 @@ export function Outreach() {
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
         <div className="lg:col-span-3 space-y-4">
-          <Card className="border-card-border bg-card p-3">
+          <Card className="rounded-lg border-card-border bg-card p-3 shadow-sm">
             <div className="mb-2 px-2 flex items-center justify-between text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
               <span>Contacts{selectedIds.size > 0 ? ` (${selectedIds.size} selected)` : ""}</span>
               <div className="flex items-center gap-1">
@@ -525,6 +558,20 @@ export function Outreach() {
                         {c.title} · {c.company_name}
                       </div>
                     </div>
+                    {c.email_verified && (
+                      <span
+                        title={`Email: ${c.email_verified}`}
+                        className={`shrink-0 h-2 w-2 rounded-full ${
+                          c.email_verified === "valid"
+                            ? "bg-emerald-500"
+                            : c.email_verified === "invalid"
+                              ? "bg-red-500"
+                              : c.email_verified === "catch_all"
+                                ? "bg-amber-500"
+                                : "bg-muted-foreground/50"
+                        }`}
+                      />
+                    )}
                     <TierBadge tier={c.tier} />
                   </div>
                 );
@@ -697,7 +744,7 @@ export function Outreach() {
                   </div>
                 )}
               </div>
-              <div className="flex flex-wrap gap-2 items-center">
+              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border/60 bg-muted/30 p-2">
                 <Select value={String(stepCount)} onValueChange={(v) => setStepCount(Number(v))}>
                   <SelectTrigger className="h-9 w-[140px] text-xs">
                     <SelectValue placeholder="Sequence Length" />
@@ -729,6 +776,25 @@ export function Outreach() {
                 <Button
                   size="sm"
                   variant="secondary"
+                  disabled={(selectedIds.size === 0 && !selected) || isVerifying}
+                  onClick={handleVerifyEmails}
+                  data-testid="button-verify-email"
+                  title={
+                    selectedIds.size > 1
+                      ? `Verify ${selectedIds.size} emails (Instantly, then Hunter.io fallback)`
+                      : "Verify this contact's email (Instantly, then Hunter.io fallback)"
+                  }
+                >
+                  <BadgeCheck className="mr-2 h-4 w-4" />
+                  {isVerifying
+                    ? "Verifying…"
+                    : selectedIds.size > 1
+                      ? `Verify (${selectedIds.size})`
+                      : "Verify Email"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
                   disabled={!sequence || check.isPending}
                   onClick={() => sequence && check.mutate(sequence.id)}
                   data-testid="button-deliverability"
@@ -736,6 +802,7 @@ export function Outreach() {
                   <ShieldCheck className="mr-2 h-4 w-4" />
                   {check.isPending ? "Checking…" : "Deliverability"}
                 </Button>
+                <div className="mx-1 hidden h-6 w-px self-center bg-border sm:block" aria-hidden />
                 {/* Test Launch — sends to test email, keeps sequence as draft */}
                 <Button
                   size="sm"
@@ -1854,7 +1921,9 @@ function CampaignsListCard({
                     </div>
                   ) : (
                     <div className="flex-1 overflow-y-auto space-y-3 pr-1 scrollbar-thin">
-                      {leadReplies.map((reply) => {
+                      {[...leadReplies]
+                        .sort((a, b) => new Date(a.timestamp_created || 0).getTime() - new Date(b.timestamp_created || 0).getTime())
+                        .map((reply) => {
                         const isOutgoing = reply.ue_type === 1;
                         return (
                           <div

@@ -76,8 +76,32 @@ def _frontload_weights(n_phases: int) -> list[float]:
     return [r / total for r in raw]
 
 
-def _experiment_gate(db: Session, strategy_id: str) -> tuple[Optional[ExperimentBatch], Optional[Experiment]]:
-    """Return the latest analyzed batch with a winner, plus the winning experiment."""
+def _experiment_gate(db: Session, strategy_id: str) -> tuple[Optional[ExperimentBatch], Optional[Experiment], str]:
+    """Return the batch + winning experiment that unlocks the campaign plan.
+
+    Prefers the LIVE conversion winner (the variant that produced the highest
+    positive-intent reply rate over the live learning window) so the plan is
+    built from what actually converted — not just the relevancy-analysis pick.
+    Falls back to the analyzed (relevancy) winner when no live test has been
+    evaluated yet. Returns ``(batch, winner, winner_source)``.
+    """
+    live_batch = (
+        db.query(ExperimentBatch)
+        .filter(
+            ExperimentBatch.strategy_id == strategy_id,
+            ExperimentBatch.live_winner_experiment_id.isnot(None),
+        )
+        .order_by(ExperimentBatch.updated_at.desc())
+        .first()
+    )
+    if live_batch:
+        winner = (
+            db.query(Experiment)
+            .filter(Experiment.id == live_batch.live_winner_experiment_id)
+            .first()
+        )
+        return live_batch, winner, "live_conversion"
+
     batch = (
         db.query(ExperimentBatch)
         .filter(
@@ -89,13 +113,13 @@ def _experiment_gate(db: Session, strategy_id: str) -> tuple[Optional[Experiment
         .first()
     )
     if not batch:
-        return None, None
+        return None, None, "none"
     winner = (
         db.query(Experiment)
         .filter(Experiment.id == batch.best_experiment_id)
         .first()
     )
-    return batch, winner
+    return batch, winner, "relevancy_analysis"
 
 
 def _winning_facets(winner: Optional[Experiment]) -> dict:
@@ -131,7 +155,7 @@ def build_campaign_plan(db: Session, strategy_id: str) -> dict:
             "targets and required prospect volume.",
         }
 
-    batch, winner = _experiment_gate(db, strategy_id)
+    batch, winner, winner_source = _experiment_gate(db, strategy_id)
     if not batch:
         return {
             "ready": False,
@@ -231,8 +255,10 @@ def build_campaign_plan(db: Session, strategy_id: str) -> dict:
         "gate": "ready",
         "strategy_id": strategy_id,
         "source_batch_id": batch.id,
-        "winning_experiment_id": batch.best_experiment_id,
+        "winning_experiment_id": winner.id if winner else (batch.live_winner_experiment_id or batch.best_experiment_id),
         "winning_experiment_name": winner.name if winner else None,
+        "winner_source": winner_source,
+        "winner_is_live_proven": winner_source == "live_conversion",
         "winning_facets": winning_facets,
         "winning_parameters_insight": winning_insight,
         "kickoff_month": campaign_start_month,
@@ -246,6 +272,13 @@ def build_campaign_plan(db: Session, strategy_id: str) -> dict:
         "overall_confidence": revenue_plan.get("overall_confidence"),
         "phases": plan_phases,
         "notes": [
+            (
+                f"Plan is built from the LIVE conversion winner '{winner.name if winner else '—'}' — "
+                "the variant that actually booked the most meetings over the learning window."
+                if winner_source == "live_conversion"
+                else "Plan is built from the relevancy-analysis winner. Run a live test to re-gate it "
+                "on real reply/meeting conversion."
+            ),
             f"Program kicks off in {MONTH_NAMES[campaign_start_month]} — after a "
             f"{exp_window}-month experiment window proves the winning segment.",
             f"Prospecting is front-loaded: the first {min(2, n_phases)} phase(s) carry "

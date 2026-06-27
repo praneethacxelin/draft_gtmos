@@ -48,10 +48,12 @@ _FACET_KEYS = (
     "keywords",
 )
 
-# Below this lead count a relevancy score is statistically unreliable, so its
-# relevancy is discounted proportionally (a 2-lead "100% relevant" experiment
-# must not out-rank a 25-lead "80% relevant" one). At/above this count the
-# relevancy is trusted at full weight.
+# A relevancy score from a tiny or PARTIAL sample is unreliable. Confidence in a
+# variant's relevancy is measured against the leads the engineer REQUESTED for
+# the batch (so a 9-of-25 sample is discounted versus a full 25-of-25 one), but
+# never above this statistical floor — even a "complete" 3-lead batch can't claim
+# full trust. A 2-lead "100% relevant" experiment must not out-rank a 25-lead
+# "80% relevant" one.
 MIN_CONFIDENT_SAMPLE = 10
 
 # A variant must surface at least this many leads to be eligible as the
@@ -722,19 +724,30 @@ async def analyze_batch(db: Session, batch_id: str) -> dict:
         return {"_error": "Run at least one experiment before analyzing."}
 
     # ---- 1. Per-experiment relevancy (systematic, one experiment at a time) ----
+    # Fairness anchor: every experiment was asked for the same number of leads
+    # (the batch's requested size). Comparing a variant that only surfaced 9
+    # leads against one that returned the full 25 is not apples-to-apples, so we
+    # judge each relevancy score's trustworthiness by how COMPLETE its sample is
+    # versus what was requested — floored at the statistical-reliability minimum.
+    requested = max(1, batch.leads_per_experiment or 0)
+    confidence_denominator = max(MIN_CONFIDENT_SAMPLE, requested)
     max_leads = max((len(e.leads_json or []) for e in run_rows), default=0) or 1
     for e in run_rows:
         rel = await _score_relevancy(strategy, e)
         e.relevancy_json = rel
-        # Composite: relevancy dominates, but a tiny sample can't claim full
-        # relevancy credit. sample_confidence shrinks the relevancy of low-lead
-        # experiments toward 0 so a 2-lead "100%" can't beat a 25-lead "80%".
+        # Composite: relevancy dominates, but a tiny or partial sample can't claim
+        # full relevancy credit. sample_confidence shrinks the relevancy of a
+        # variant in proportion to how far its lead count falls short of the
+        # requested sample, so a 9/25 sample can't beat a full 25/25 on a slightly
+        # lower relevancy.
         rel_score = rel.get("relevancy_score")
         rel_score = rel_score if isinstance(rel_score, (int, float)) else 0
         lead_count = len(e.leads_json or [])
-        sample_confidence = min(1.0, lead_count / MIN_CONFIDENT_SAMPLE)
+        sample_confidence = min(1.0, lead_count / confidence_denominator)
         adjusted_relevancy = rel_score * sample_confidence
         volume_factor = lead_count / max_leads
+        rel["requested_leads"] = requested
+        rel["sample_completeness"] = round(min(1.0, lead_count / requested), 2)
         rel["sample_confidence"] = round(sample_confidence, 2)
         rel["adjusted_relevancy"] = round(adjusted_relevancy, 1)
         rel["low_confidence"] = sample_confidence < 1.0
@@ -753,6 +766,8 @@ async def analyze_batch(db: Session, batch_id: str) -> dict:
             "hypothesis": e.hypothesis,
             "params": e.params_json or {},
             "lead_count": summ.get("lead_count", len(e.leads_json or [])),
+            "requested_leads": rel.get("requested_leads"),
+            "sample_completeness": rel.get("sample_completeness"),
             "relaxed": summ.get("relaxed"),
             "relevancy_score": rel.get("relevancy_score"),
             "sample_confidence": rel.get("sample_confidence"),
@@ -766,11 +781,15 @@ async def analyze_batch(db: Session, batch_id: str) -> dict:
         "single best-performing parameter set for a product. Weigh RELEVANCY (leads that "
         "actually fit the product) far above raw volume — a smaller, on-target experiment "
         "beats a large one full of off-target industries. BUT a relevancy score from a "
-        "tiny sample is unreliable: each experiment includes 'sample_confidence' (1.0 = "
-        "enough leads to trust the score, lower = too few leads) and 'adjusted_relevancy' "
-        "(relevancy already discounted by sample size). Prefer the highest 'composite_score'; "
-        "never crown an experiment with very low sample_confidence as the winner unless every "
-        "alternative is worse on adjusted_relevancy.\n\n"
+        "tiny or PARTIAL sample is unreliable. Every experiment was asked for the same "
+        "number of leads ('requested_leads'); 'sample_completeness' is the fraction it "
+        "actually returned (1.0 = full sample, 0.36 = only 9 of 25). Treat an experiment "
+        "that returned far fewer leads than its peers as a weaker, less comparable sample. "
+        "Each experiment also includes 'sample_confidence' (1.0 = trustworthy sample, lower "
+        "= partial/too few) and 'adjusted_relevancy' (relevancy already discounted by that "
+        "confidence). Prefer the highest 'composite_score'; never crown an experiment with "
+        "low sample_completeness or sample_confidence as the winner unless every alternative "
+        "is worse on adjusted_relevancy.\n\n"
         f"PRODUCT: {strategy.product_name}\n"
         f"WHAT IT DOES: {(strategy.description or '')[:400]}\n\n"
         f"EXPERIMENTS (already scored):\n{json.dumps(digest, default=str)[:3000]}\n\n"
@@ -808,14 +827,17 @@ async def analyze_batch(db: Session, batch_id: str) -> dict:
             source="ai_generated",
             logic=(
                 "Scored each experiment's leads for relevancy to the product, discounted "
-                "that relevancy by sample confidence (tiny samples can't claim full credit), "
-                "then ranked experiments by a composite of adjusted relevancy (85%) and "
-                "volume (15%). The model justified the winner from a compact per-experiment "
-                "digest — raw leads are never dumped wholesale to avoid hallucination."
+                "that relevancy by sample confidence measured against the requested sample "
+                "size (a partial 9-of-25 sample can't claim full credit versus a complete "
+                "25-of-25), then ranked experiments by a composite of adjusted relevancy "
+                "(85%) and volume (15%). The model justified the winner from a compact "
+                "per-experiment digest — raw leads are never dumped wholesale to avoid "
+                "hallucination."
             ),
             steps=[
                 "Score relevancy per experiment (one at a time)",
-                f"Discount relevancy by sample_confidence = min(1, leads/{MIN_CONFIDENT_SAMPLE})",
+                "Discount relevancy by sample_confidence = min(1, leads/max("
+                f"{MIN_CONFIDENT_SAMPLE}, requested_leads)) so partial samples rank fairly",
                 "Compute composite = 0.85*adjusted_relevancy + 0.15*volume",
                 "Rank experiments from a compact digest",
                 "Pick best (model choice validated against top composite score)",
