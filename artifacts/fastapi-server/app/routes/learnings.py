@@ -51,12 +51,22 @@ def get_learnings(
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ) -> list[dict]:
+    # Scope to the user's own strategies if not admin and no specific filter
+    effective_strategy_id = strategy_id
+    user_strategy_ids = None
+    if not strategy_id and not getattr(user, "is_admin", False):
+        from app.db import Strategy
+        user_strategy_ids = [
+            r[0] for r in db.query(Strategy.id).filter(Strategy.user_id == user.id).all()
+        ]
     if q:
         return search_learnings(
-            db, query=q, strategy_id=strategy_id, category=category, limit=limit
+            db, query=q, strategy_id=effective_strategy_id, category=category, limit=limit,
+            user_strategy_ids=user_strategy_ids,
         )
     return list_learnings(
-        db, strategy_id=strategy_id, category=category, source=source, limit=limit
+        db, strategy_id=effective_strategy_id, category=category, source=source, limit=limit,
+        user_strategy_ids=user_strategy_ids,
     )
 
 

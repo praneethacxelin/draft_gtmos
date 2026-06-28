@@ -46,11 +46,10 @@ def list_strategies(
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ) -> list[dict]:
-    rows = (
-        db.query(Strategy)
-        .order_by(Strategy.created_at.desc())
-        .all()
-    )
+    q = db.query(Strategy).order_by(Strategy.created_at.desc())
+    if not getattr(user, "is_admin", False):
+        q = q.filter(Strategy.user_id == user.id)
+    rows = q.all()
     return [_serialize(r) for r in rows]
 
 

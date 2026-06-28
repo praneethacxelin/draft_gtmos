@@ -111,6 +111,13 @@ def outreach_analytics(
     q = db.query(Sequence)
     if strategy_id:
         q = q.filter(Sequence.strategy_id == strategy_id)
+    else:
+        # Scope to the user's own strategies when no filter is given
+        if not getattr(user, "is_admin", False):
+            user_strat_ids = [
+                r[0] for r in db.query(Strategy.id).filter(Strategy.user_id == user.id).all()
+            ]
+            q = q.filter(Sequence.strategy_id.in_(user_strat_ids))
     sequences = q.all()
     seq_ids = [s.id for s in sequences]
 

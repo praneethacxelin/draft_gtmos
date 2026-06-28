@@ -63,25 +63,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Bootstrap from a stored token on first load.
+  // When no token is stored, probe the server to see if auth is required.
   useEffect(() => {
     let cancelled = false;
-    if (!getAuthToken()) {
-      setLoading(false);
-      return;
+    if (getAuthToken()) {
+      // We have a token — validate it.
+      setLoading(true);
+      apiFetch<AuthUser>("/api/auth/me")
+        .then((u) => {
+          if (!cancelled) setUser(u);
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setAuthToken(null);
+            setUser(null);
+            setRequiresLogin(true);
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+    } else {
+      // No token — probe server to check if auth is enforced.
+      setLoading(true);
+      apiFetch<AuthUser>("/api/auth/me")
+        .then((u) => {
+          // Server allows anonymous access (AUTH_REQUIRED=false)
+          if (!cancelled) setUser(u);
+        })
+        .catch(() => {
+          // Server returned 401 → auth is required
+          if (!cancelled) setRequiresLogin(true);
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
     }
-    apiFetch<AuthUser>("/api/auth/me")
-      .then((u) => {
-        if (!cancelled) setUser(u);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setAuthToken(null);
-          setUser(null);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
     return () => {
       cancelled = true;
     };

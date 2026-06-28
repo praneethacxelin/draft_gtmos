@@ -24,22 +24,24 @@ def summary(
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ) -> dict:
-    user_strategy_ids = [
-        r[0] for r in db.query(Strategy.id).all()
-    ]
+    strat_q = db.query(Strategy.id)
+    if not getattr(user, "is_admin", False):
+        strat_q = strat_q.filter(Strategy.user_id == user.id)
+    user_strategy_ids = [r[0] for r in strat_q.all()]
     strategies = len(user_strategy_ids)
-    ready_strategies = (
-        db.query(Strategy)
-        .filter(Strategy.status == "ready")
-        .count()
-    )
+    ready_q = db.query(Strategy).filter(Strategy.status == "ready")
+    if not getattr(user, "is_admin", False):
+        ready_q = ready_q.filter(Strategy.user_id == user.id)
+    ready_strategies = ready_q.count()
     if user_strategy_ids:
         total_contacts = (
-            db.query(Contact).count()
+            db.query(Contact)
+            .filter(Contact.strategy_id.in_(user_strategy_ids))
+            .count()
         )
         tier_1 = (
             db.query(Contact)
-            .filter(Contact.tier == 1)
+            .filter(Contact.strategy_id.in_(user_strategy_ids), Contact.tier == 1)
             .count()
         )
         sequences = (
@@ -79,9 +81,10 @@ def activity(
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ) -> list[dict]:
-    user_strategy_ids = [
-        r[0] for r in db.query(Strategy.id).all()
-    ]
+    strat_q = db.query(Strategy.id)
+    if not getattr(user, "is_admin", False):
+        strat_q = strat_q.filter(Strategy.user_id == user.id)
+    user_strategy_ids = [r[0] for r in strat_q.all()]
     out = []
     if user_strategy_ids:
         for s in (
@@ -97,13 +100,10 @@ def activity(
                 "detail": s.summary[:120],
                 "at": s.detected_at.isoformat() if s.detected_at else None,
             })
-    for st in (
-        db.query(Strategy)
-        # auth removed — show all strategies
-        .order_by(Strategy.created_at.desc())
-        .limit(5)
-        .all()
-    ):
+    strat_list_q = db.query(Strategy).order_by(Strategy.created_at.desc())
+    if not getattr(user, "is_admin", False):
+        strat_list_q = strat_list_q.filter(Strategy.user_id == user.id)
+    for st in strat_list_q.limit(5).all():
         out.append({
             "type": "strategy",
             "title": f"Strategy: {st.product_name}",

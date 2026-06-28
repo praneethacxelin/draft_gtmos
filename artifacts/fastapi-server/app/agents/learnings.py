@@ -148,10 +148,13 @@ def list_learnings(
     category: Optional[str] = None,
     source: Optional[str] = None,
     limit: int = 100,
+    user_strategy_ids: Optional[list[str]] = None,
 ) -> list[dict]:
     q = db.query(Learning)
     if strategy_id:
         q = q.filter(Learning.strategy_id == strategy_id)
+    elif user_strategy_ids is not None:
+        q = q.filter(Learning.strategy_id.in_(user_strategy_ids))
     if category:
         q = q.filter(Learning.category == category)
     if source:
@@ -167,6 +170,7 @@ def search_learnings(
     strategy_id: Optional[str] = None,
     category: Optional[str] = None,
     limit: int = 8,
+    user_strategy_ids: Optional[list[str]] = None,
 ) -> list[dict]:
     """Semantic search with a keyword fallback.
 
@@ -176,7 +180,8 @@ def search_learnings(
     """
     query = (query or "").strip()
     if not query:
-        return list_learnings(db, strategy_id=strategy_id, category=category, limit=limit)
+        return list_learnings(db, strategy_id=strategy_id, category=category, limit=limit,
+                              user_strategy_ids=user_strategy_ids)
 
     where: Optional[dict] = None
     filters = []
@@ -192,7 +197,11 @@ def search_learnings(
     hits = store.search_learnings(query, n_results=max(1, min(limit, 50)), where=where)
     if hits:
         by_id = {h["id"]: h for h in hits}
-        rows = db.query(Learning).filter(Learning.id.in_(list(by_id.keys()))).all()
+        q_rows = db.query(Learning).filter(Learning.id.in_(list(by_id.keys())))
+        # Apply user scoping to vector search results too
+        if not strategy_id and user_strategy_ids is not None:
+            q_rows = q_rows.filter(Learning.strategy_id.in_(user_strategy_ids))
+        rows = q_rows.all()
         out = [
             serialize_learning(r, similarity=by_id[r.id]["similarity"])
             for r in rows
@@ -205,6 +214,8 @@ def search_learnings(
     q = db.query(Learning).filter(Learning.content.ilike(f"%{query}%"))
     if strategy_id:
         q = q.filter(Learning.strategy_id == strategy_id)
+    elif user_strategy_ids is not None:
+        q = q.filter(Learning.strategy_id.in_(user_strategy_ids))
     if category:
         q = q.filter(Learning.category == category)
     rows = q.order_by(Learning.created_at.desc()).limit(max(1, min(limit, 50))).all()

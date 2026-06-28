@@ -64,11 +64,11 @@ def _auto_configure_api_keys() -> None:
     """Seed Apollo and Instantly API keys from environment variables.
 
     Reads ``APOLLO_API_KEY`` and ``INSTANTLY_API_KEY`` from the process
-    environment and upserts them into the ``app_settings`` table for the
-    shared ``user_public`` user.  This means the user never has to
-    manually enter the keys through the Settings UI.
+    environment and upserts them into the ``app_settings`` table for ALL
+    registered users.  This means the user never has to manually enter
+    the keys through the Settings UI.
     """
-    from app.db import SessionLocal
+    from app.db import SessionLocal, User
     from app.services import settings_service
 
     env_keys = {
@@ -77,12 +77,14 @@ def _auto_configure_api_keys() -> None:
     }
     db = SessionLocal()
     try:
-        for name, key in env_keys.items():
-            if key:
-                settings_service.upsert_integration(
-                    db, "user_public", name, key, is_enabled=True,
-                )
-                log.info("Auto-configured %s API key from environment", name)
+        users = db.query(User).all()
+        for user in users:
+            for name, key in env_keys.items():
+                if key:
+                    settings_service.upsert_integration(
+                        db, user.id, name, key, is_enabled=True,
+                    )
+            log.info("Auto-configured API keys for user %s", user.email or user.id)
     except Exception as exc:
         log.warning("Failed to auto-configure API keys: %s", exc)
     finally:
