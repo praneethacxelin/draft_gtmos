@@ -1,0 +1,1 @@
+from dotenv import load_dotenv; load_dotenv(); from app.db import User, SessionLocal; from app.services import settings_service, clients; db = SessionLocal(); user = db.query(User).first(); print(clients.instantly_get_analytics(settings_service.get_key(db, user.id, 'instantly')))  

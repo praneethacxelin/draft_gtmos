@@ -61,6 +61,8 @@ import { ApolloFilterGate } from "@/components/ApolloFilterGate";
 import { GetContactsGate } from "@/components/GetContactsGate";
 import { useFetchLimits } from "@/hooks/useSettings";
 import { RetriggerBar, type RetriggerAction } from "@/components/RetriggerBar";
+import { useQuery } from "@tanstack/react-query";
+import { apiFetch } from "@/lib/api";
 
 interface ContactDraft {
   full_name: string;
@@ -78,20 +80,18 @@ const PERSONA_OPTIONS = [
   { value: "blocker", label: "Blocker" },
 ];
 
-// Buying-signal types a GTM engineer can scan for. Keep in sync with
-// SIGNAL_CATALOG in fastapi-server/app/agents/s2_signals.py.
-const SIGNAL_TYPE_OPTIONS: { value: string; label: string }[] = [
-  { value: "funding", label: "Funding / investment" },
-  { value: "hiring", label: "Hiring / open roles" },
-  { value: "leadership", label: "Leadership change" },
-  { value: "ma", label: "M&A / acquisition" },
-  { value: "tech_adoption", label: "Tech adoption / migration" },
-  { value: "expansion", label: "Expansion / new market" },
-  { value: "product_launch", label: "Product launch" },
-  { value: "partnership", label: "Partnership / integration" },
-  { value: "layoffs", label: "Layoffs / restructuring" },
-  { value: "award", label: "Award / recognition" },
-];
+const SIGNAL_MAP: Record<string, string> = {
+  "Funding / investment": "funding",
+  "Hiring / open roles": "hiring",
+  "Leadership change": "leadership",
+  "M&A / acquisition": "ma",
+  "Tech adoption / migration": "tech_adoption",
+  "Expansion / new market": "expansion",
+  "Product launch": "product_launch",
+  "Partnership / integration": "partnership",
+  "Layoffs / restructuring": "layoffs",
+  "Award / recognition": "award"
+};
 const DEFAULT_SIGNAL_TYPES = ["funding", "hiring"];
 
 const FACET_LABELS: Record<string, string> = {
@@ -257,12 +257,22 @@ export function Prospects() {
   const [contactsGateOpen, setContactsGateOpen] = useState(false);
   const [selectedAccounts, setSelectedAccounts] = useState<Set<string>>(new Set());
   const [scoredOnce, setScoredOnce] = useState(false);
-  const [signalLimit, setSignalLimit] = useState<string>("default");
-  const [signalTypes, setSignalTypes] = useState<string[]>(DEFAULT_SIGNAL_TYPES);
+
+  const dd = (active?.discovery_data ?? {}) as Record<string, unknown>;
+  const rawSignals = (dd.buying_signals as string[]) || [];
+  const targetSignalTypes = rawSignals.map(s => SIGNAL_MAP[s]).filter(Boolean);
+  if (targetSignalTypes.length === 0) {
+    targetSignalTypes.push("funding", "hiring");
+  }
 
   const { data: prioritized } = usePrioritizedAccounts(activeId ?? undefined);
   const { data: contacts } = useContacts(activeId ?? undefined, tier);
   const { data: signals } = useSignals(activeId ?? undefined);
+  const { data: analytics } = useQuery({
+    queryKey: ["analytics", "outreach", activeId],
+    queryFn: () => apiFetch(`/api/analytics/outreach${activeId ? `?strategy_id=${activeId}` : ""}`),
+    enabled: !!activeId,
+  });
 
   // Accounts grouped by tier → flat list + selection helpers for Get-contacts.
   const allAccounts = [
@@ -494,105 +504,17 @@ export function Prospects() {
                   : `Get contacts${selectedAccountIds.length ? ` (${selectedAccountIds.length})` : ""}`}
               </Button>
             )}
-            <Select value={signalLimit} onValueChange={setSignalLimit}>
-              <SelectTrigger
-                className="h-8 w-32 text-xs"
-                data-testid="select-signal-limit"
-              >
-                <SelectValue
-                  placeholder={`Signals/acct: ${caps?.limits.signals_per_account ?? "default"}`}
-                />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="default">
-                  Default ({caps?.limits.signals_per_account ?? 3})
-                </SelectItem>
-                {[2, 3, 5, 10].map((n) => (
-                  <SelectItem key={n} value={String(n)}>
-                    {n} per acct
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-8 text-xs"
-                  data-testid="button-signal-types"
-                >
-                  Signals:{" "}
-                  {signalTypes.length === SIGNAL_TYPE_OPTIONS.length
-                    ? "All"
-                    : signalTypes.length
-                      ? `${signalTypes.length} selected`
-                      : "None"}
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent align="start" className="w-60 p-2">
-                <div className="mb-2 flex items-center justify-between px-1">
-                  <span className="text-xs font-medium text-muted-foreground">
-                    Signal types
-                  </span>
-                  <button
-                    type="button"
-                    className="text-[11px] text-primary hover:underline"
-                    onClick={() =>
-                      setSignalTypes(
-                        signalTypes.length === SIGNAL_TYPE_OPTIONS.length
-                          ? []
-                          : SIGNAL_TYPE_OPTIONS.map((o) => o.value),
-                      )
-                    }
-                    data-testid="button-signal-types-toggle-all"
-                  >
-                    {signalTypes.length === SIGNAL_TYPE_OPTIONS.length
-                      ? "Clear all"
-                      : "Select all"}
-                  </button>
-                </div>
-                <div className="max-h-64 space-y-0.5 overflow-y-auto">
-                  {SIGNAL_TYPE_OPTIONS.map((opt) => {
-                    const checked = signalTypes.includes(opt.value);
-                    return (
-                      <label
-                        key={opt.value}
-                        className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted"
-                      >
-                        <Checkbox
-                          checked={checked}
-                          onCheckedChange={(v) =>
-                            setSignalTypes((prev) =>
-                              v
-                                ? [...prev, opt.value]
-                                : prev.filter((t) => t !== opt.value),
-                            )
-                          }
-                          data-testid={`checkbox-signal-${opt.value}`}
-                        />
-                        {opt.label}
-                      </label>
-                    );
-                  })}
-                </div>
-              </PopoverContent>
-            </Popover>
             <Button
               size="sm"
               variant="secondary"
-              disabled={runSignals.isPending || signalTypes.length === 0}
-              onClick={() =>
+              disabled={runSignals.isPending || !activeId}
+              onClick={() => {
                 runSignals.mutate({
                   id: activeId,
-                  limit:
-                    signalLimit && signalLimit !== "default"
-                      ? Number(signalLimit)
-                      : undefined,
-                  signalTypes: signalTypes.length ? signalTypes : undefined,
-                })
-              }
-              data-testid="button-run-signals"
+                  limit: caps?.limits.signals_per_account ?? 3,
+                  signalTypes: targetSignalTypes,
+                });
+              }}
             >
               <Radar className="mr-2 h-4 w-4" />
               {runSignals.isPending ? "Scanning…" : "Run signals"}
@@ -691,6 +613,7 @@ export function Prospects() {
           <TabsTrigger value="accounts">Accounts</TabsTrigger>
           <TabsTrigger value="contacts">Contacts</TabsTrigger>
           <TabsTrigger value="signals">Signals</TabsTrigger>
+          <TabsTrigger value="crm">CRM</TabsTrigger>
         </TabsList>
 
         <TabsContent value="accounts">
@@ -1251,6 +1174,76 @@ export function Prospects() {
               )}
             </div>
           </Card>
+        </TabsContent>
+        <TabsContent value="crm">
+          <div className="mb-5">
+            <div className="mb-2 flex items-center gap-3">
+              <span className="text-xs text-muted-foreground">
+                {contacts?.length ?? 0} leads in CRM pipeline
+              </span>
+            </div>
+            <Card className="border-card-border bg-card overflow-hidden p-0">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/40">
+                  <tr className="text-left text-[10px] uppercase tracking-widest text-muted-foreground">
+                    <th className="px-4 py-2">Lead</th>
+                    <th className="px-4 py-2">Account</th>
+                    <th className="px-4 py-2">Campaigns Enrolled</th>
+                    <th className="px-4 py-2 text-right">Emails Sent</th>
+                    <th className="px-4 py-2 text-right">Responses</th>
+                    <th className="px-4 py-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {(contacts ?? []).map((c) => {
+                    const crmStats = ((analytics as any)?.sequences ?? []).filter((s: any) => s.contact_id === c.id);
+                    const enrolledCampaigns = Array.from(new Set(crmStats.map((s: any) => s.strategy_name || "Workspace Campaign"))).join(", ") || "—";
+                    const totalSent = crmStats.reduce((sum: number, s: any) => sum + (s.sent || 0), 0);
+                    const totalReplied = crmStats.reduce((sum: number, s: any) => sum + (s.replied || 0), 0);
+                    
+                    let statusLabel = "Not Contacted";
+                    let statusColor = "bg-muted text-muted-foreground";
+                    if (totalReplied > 0) {
+                      statusLabel = "Replied";
+                      statusColor = "bg-emerald-500/15 text-emerald-500";
+                    } else if (totalSent > 0) {
+                      statusLabel = "Contacted";
+                      statusColor = "bg-primary/15 text-primary";
+                    } else if (c.email_verified === "invalid") {
+                      statusLabel = "Bounced / Invalid";
+                      statusColor = "bg-destructive/15 text-destructive";
+                    }
+
+                    return (
+                      <tr key={c.id} className="hover-elevate">
+                        <td className="px-4 py-2">
+                          <div className="font-medium">{c.full_name || "Unknown"}</div>
+                          <div className="text-[10px] text-muted-foreground font-mono">{c.email || "—"}</div>
+                        </td>
+                        <td className="px-4 py-2 text-[11px] text-muted-foreground">
+                          {(c as any).account?.company_name || "—"}
+                        </td>
+                        <td className="px-4 py-2 text-[11px]">
+                          {enrolledCampaigns}
+                        </td>
+                        <td className="px-4 py-2 text-[11px] text-right font-mono font-medium">
+                          {totalSent}
+                        </td>
+                        <td className="px-4 py-2 text-[11px] text-right font-mono font-medium text-emerald-500">
+                          {totalReplied}
+                        </td>
+                        <td className="px-4 py-2">
+                          <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${statusColor}`}>
+                            {statusLabel}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </Card>
+          </div>
         </TabsContent>
       </Tabs>
     </>

@@ -139,6 +139,11 @@ def simulate_engagement_timeline(db, sequence_id: str) -> int:
     sequence. Used both by ``launch_sequence`` in demo mode and by ``seed.py``
     so the M3 / Copilot views aren't empty on a fresh demo.
     """
+    seq = db.query(Sequence).filter(Sequence.id == sequence_id).first()
+    if not seq:
+        return 0
+    contact = db.query(Contact).filter(Contact.id == seq.contact_id).first()
+
     steps = (
         db.query(SequenceStep)
         .filter(SequenceStep.sequence_id == sequence_id)
@@ -166,6 +171,12 @@ def simulate_engagement_timeline(db, sequence_id: str) -> int:
                 sequence_id=sequence_id, sequence_step_id=step.id,
                 event_type="opened", occurred_at=sent_at + timedelta(hours=4),
             ))
+            if contact:
+                db.add(EngagementEvent(
+                    strategy_id=seq.strategy_id, contact_id=contact.id, account_id=contact.account_id,
+                    channel="email", event_type="email_open", intent_contribution_score=2.0,
+                    occurred_at=sent_at + timedelta(hours=4), metadata_json={"simulated": True}
+                ))
             inserted += 1
         if idx == 1:
             for evt, delta in [("opened", 2), ("clicked", 5), ("replied", 9)]:
@@ -173,6 +184,12 @@ def simulate_engagement_timeline(db, sequence_id: str) -> int:
                     sequence_id=sequence_id, sequence_step_id=step.id,
                     event_type=evt, occurred_at=sent_at + timedelta(hours=delta),
                 ))
+                if contact:
+                    db.add(EngagementEvent(
+                        strategy_id=seq.strategy_id, contact_id=contact.id, account_id=contact.account_id,
+                        channel="email", event_type=f"email_{evt.replace('ed', '')}", intent_contribution_score=5.0 if evt == "clicked" else 10.0,
+                        occurred_at=sent_at + timedelta(hours=delta), metadata_json={"simulated": True}
+                    ))
                 inserted += 1
     db.commit()
     return inserted

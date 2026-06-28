@@ -385,3 +385,15 @@ export function useLeadReplies(email?: string) {
   });
 }
 
+export function useDraftReply() {
+  return useMutation({
+    mutationFn: (payload: {
+      thread: any[];
+      answers?: Record<string, string>;
+    }) =>
+      apiFetch("/api/sequences/draft-reply", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }),
+  });
+}

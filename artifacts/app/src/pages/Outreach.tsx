@@ -45,8 +45,9 @@ import {
   useContactReplies,
   useCampaignLeads,
   useLeadReplies,
+  useDraftReply,
 } from "@/hooks/useSequences";
-import { Mail, Linkedin, Phone, ShieldCheck, Send, Wand2, Pencil, X, FlaskConical, Check, Megaphone, Search, Flame, Plus, Play, Pause, Heart, Loader2, Activity, RefreshCw, Trash2, Code2, Eye, Users, BadgeCheck } from "lucide-react";
+import { Mail, Linkedin, Phone, ShieldCheck, Send, Wand2, Pencil, X, FlaskConical, Check, Megaphone, Search, Flame, Plus, Play, Pause, Heart, Loader2, Activity, RefreshCw, Trash2, Code2, Eye, Users, BadgeCheck, Bot } from "lucide-react";
 import { fmtDate } from "@/lib/format";
 import { ReasoningPanel, SourceBadge } from "@/components/ReasoningPanel";
 import { RetriggerBar, type RetriggerAction } from "@/components/RetriggerBar";
@@ -131,7 +132,6 @@ export function Outreach() {
   const [groupRecipients, setGroupRecipients] = useState<Record<string, string>>({});
   const [groupCampaignName, setGroupCampaignName] = useState<string>("");
 
-  // ── Solo launch dialog (test or live, with per-campaign schedule) ──
   const [soloLaunchOpen, setSoloLaunchOpen] = useState(false);
   const [soloMode, setSoloMode] = useState<"test" | "live">("test");
   const [soloRecipient, setSoloRecipient] = useState<string>("");
@@ -2088,6 +2088,13 @@ function CampaignsListCard({
   const { data: leads, isLoading: isLoadingLeads } = useCampaignLeads(modalCampaignId ?? undefined);
   const { data: leadReplies, isFetching: isLeadRepliesFetching, isLoading: isLoadingReplies, refetch: refetchLeadReplies } = useLeadReplies(selectedLeadEmail ?? undefined);
 
+  // AI Reply Draft State
+  const draftReply = useDraftReply();
+  const [draftReplyOpen, setDraftReplyOpen] = useState(false);
+  const [draftQuestions, setDraftQuestions] = useState<{question: string, reason: string}[] | null>(null);
+  const [draftAnswers, setDraftAnswers] = useState<Record<string, string>>({});
+  const [finalDraft, setFinalDraft] = useState<string | null>(null);
+
   const getLeadStatusLabel = (status: number | string | undefined | null) => {
     if (status === undefined || status === null) return "Uploaded";
     
@@ -2416,15 +2423,41 @@ function CampaignsListCard({
                         {selectedLeadEmail}
                       </div>
                     </div>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => refetchLeadReplies()}
-                      className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
-                      disabled={isLeadRepliesFetching}
-                    >
-                      <RefreshCw className={`h-3.5 w-3.5 ${isLeadRepliesFetching ? "animate-spin" : ""}`} />
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => {
+                          setDraftReplyOpen(true);
+                          setDraftQuestions(null);
+                          setDraftAnswers({});
+                          setFinalDraft(null);
+                          draftReply.mutate({ thread: leadReplies || [] }, {
+                            onSuccess: (data: any) => {
+                              if (data?.draft) {
+                                setFinalDraft(data.draft);
+                              } else if (data?.questions && data.questions.length > 0) {
+                                setDraftQuestions(data.questions);
+                              }
+                            }
+                          });
+                        }}
+                        className="h-7 px-2.5 text-xs bg-primary/10 text-primary hover:bg-primary/20 border-primary/20"
+                        disabled={!leadReplies || leadReplies.length === 0 || draftReply.isPending}
+                      >
+                        <Bot className="h-3.5 w-3.5 mr-1.5" />
+                        Draft AI Reply
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => refetchLeadReplies()}
+                        className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+                        disabled={isLeadRepliesFetching}
+                      >
+                        <RefreshCw className={`h-3.5 w-3.5 ${isLeadRepliesFetching ? "animate-spin" : ""}`} />
+                      </Button>
+                    </div>
                   </div>
 
                   {isLoadingReplies ? (
@@ -2480,6 +2513,88 @@ function CampaignsListCard({
                 </div>
               )}
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* AI Draft Reply Modal */}
+      <Dialog open={draftReplyOpen} onOpenChange={setDraftReplyOpen}>
+        <DialogContent className="max-w-2xl bg-card border-card-border text-foreground p-6">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Bot className="h-5 w-5 text-primary" />
+              Draft AI Reply
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4 pt-4">
+            {draftReply.isPending ? (
+              <div className="flex flex-col items-center justify-center py-12 text-muted-foreground gap-3">
+                <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                <span className="text-sm">Analyzing thread and generating reply...</span>
+              </div>
+            ) : draftReply.isError ? (
+              <div className="flex flex-col items-center justify-center py-12 text-destructive gap-3 text-center">
+                <span className="text-sm font-semibold">Failed to draft reply.</span>
+                <span className="text-xs text-muted-foreground">The AI service might be temporarily unavailable or the thread is too long. Please try again.</span>
+                <Button size="sm" variant="outline" onClick={() => setDraftReplyOpen(false)} className="mt-2">Close</Button>
+              </div>
+            ) : finalDraft ? (
+              <div className="space-y-4">
+                <div className="text-sm text-foreground/90 font-medium">Drafted Response:</div>
+                <div className="relative">
+                  <Textarea
+                    className="min-h-[200px] font-sans leading-relaxed text-sm bg-background/50 focus:bg-background resize-y"
+                    value={finalDraft}
+                    onChange={(e) => setFinalDraft(e.target.value)}
+                  />
+                </div>
+                <div className="text-xs text-muted-foreground italic flex items-center justify-between">
+                  <span>Copy this to your email client to send the reply.</span>
+                  <Button size="sm" onClick={() => {
+                    navigator.clipboard.writeText(finalDraft);
+                    setDraftReplyOpen(false);
+                  }}>
+                    Copy & Close
+                  </Button>
+                </div>
+              </div>
+            ) : draftQuestions ? (
+              <div className="space-y-4">
+                <div className="text-sm text-foreground/90 font-medium border-l-2 border-primary pl-3 bg-primary/5 py-2 rounded-r">
+                  I need a bit more information to write a tailored reply.
+                </div>
+                <div className="space-y-4">
+                  {draftQuestions.map((q, idx) => (
+                    <div key={idx} className="space-y-1.5">
+                      <Label className="text-sm font-semibold">{q.question}</Label>
+                      {q.reason && <p className="text-[10px] text-muted-foreground mb-1">{q.reason}</p>}
+                      <Input
+                        placeholder="Your answer..."
+                        value={draftAnswers[idx] || ""}
+                        onChange={(e) => setDraftAnswers(prev => ({ ...prev, [idx]: e.target.value }))}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <DialogFooter className="pt-4">
+                  <Button
+                    onClick={() => {
+                      draftReply.mutate({ thread: leadReplies || [], answers: draftAnswers }, {
+                        onSuccess: (data: any) => {
+                          if (data?.draft) setFinalDraft(data.draft);
+                        }
+                      });
+                    }}
+                  >
+                    <Wand2 className="h-4 w-4 mr-2" />
+                    Generate Draft
+                  </Button>
+                </DialogFooter>
+              </div>
+            ) : (
+              <div className="text-sm text-muted-foreground">Initializing...</div>
+            )}
           </div>
         </DialogContent>
       </Dialog>

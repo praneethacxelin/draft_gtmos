@@ -177,13 +177,16 @@ const SECTIONS: Section[] = [
         desc: "Select triggers that indicate a company is ready to buy.",
         type: "mcq_multi",
         options: [
-          "Just raised funding",
-          "Hired new leadership (VP / C-level)",
-          "Expanding to new markets",
-          "Tech stack migration",
-          "Competitor contract renewal",
-          "Job postings for related roles",
-          "Negative reviews of competitor",
+          "Funding / investment",
+          "Hiring / open roles",
+          "Leadership change",
+          "M&A / acquisition",
+          "Tech adoption / migration",
+          "Expansion / new market",
+          "Product launch",
+          "Partnership / integration",
+          "Layoffs / restructuring",
+          "Award / recognition"
         ],
       },
       {

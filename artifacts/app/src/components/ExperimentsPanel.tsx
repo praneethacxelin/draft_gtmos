@@ -618,6 +618,8 @@ function LiveExperimentSection({
     return m;
   }, [metrics]);
 
+  const displayData = batch.analysis?.live_cohort ?? preview.data;
+
   function onPromote() {
     const promoteTiers =
       opts.tierFilter === "t1" ? [1] : opts.tierFilter === "t12" ? [1, 2] : null;
@@ -885,25 +887,25 @@ function LiveExperimentSection({
         </div>
       )}
 
-      {(!live || live === "drafted") && preview.data && (
+      {(!live || live === "drafted") && displayData && (
         <div className="mt-3 rounded border border-primary/30 bg-background/60 p-3">
           <div className="flex items-center justify-between gap-2">
             <div className="text-xs font-semibold uppercase tracking-widest text-primary">
               Moving forward to the funnel test
             </div>
             <div className="text-sm font-semibold text-foreground">
-              {preview.data.total_to_promote}
+              {displayData.total_to_promote}
               <span className="text-xs font-normal text-muted-foreground">
-                {" "}/ {preview.data.total_available} leads
+                {" "}/ {displayData.total_available} leads
               </span>
             </div>
           </div>
           <p className="mt-1 text-[11px] text-muted-foreground">
             Each variant promotes a share of its leads scaled by rank (composite score), up to{" "}
-            {preview.data.budget_per_variant}/variant. The winner promotes its full cohort.
+            {displayData.budget_per_variant}/variant. The winner promotes its full cohort.
           </p>
           <div className="mt-2 space-y-1">
-            {preview.data.variants.map((v) => (
+            {displayData.variants.map((v: any) => (
               <div
                 key={v.experiment_id}
                 className="flex items-center justify-between gap-2 text-xs"

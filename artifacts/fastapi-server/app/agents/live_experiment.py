@@ -462,6 +462,17 @@ async def promote_to_live(
 
     if batch.live_status not in ("running", "completed"):
         batch.live_status = "drafted"
+        
+    # Store snapshot of the promoted cohort sizes so the UI can persistently 
+    # display it even after leads are materialized and deduplicated.
+    snapshot = batch.analysis_json.copy() if isinstance(batch.analysis_json, dict) else {}
+    snapshot["live_cohort"] = {
+        "total_to_promote": total_contacts,
+        "total_available": sum(p["available_leads"] for p in per_variant),
+        "budget_per_variant": budget,
+        "variants": per_variant,
+    }
+    batch.analysis_json = snapshot
     db.commit()
 
     extras: list[str] = []

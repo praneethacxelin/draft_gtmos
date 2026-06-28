@@ -923,3 +923,17 @@ def get_lead_replies(
         return []
 
 
+class DraftReplyBody(BaseModel):
+    thread: list[dict]
+    answers: dict | None = None
+
+@router.post("/draft-reply")
+def draft_ai_reply(
+    body: DraftReplyBody,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+):
+    """Analyze an email thread and draft a response or ask clarifying questions."""
+    from app.agents.s3_outreach import draft_reply
+    res = draft_reply(db, user.id, body.thread, body.answers)
+    return res

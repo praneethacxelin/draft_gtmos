@@ -5,7 +5,7 @@ import random
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from app.db import Strategy, Contact, Sequence, SequenceStep, Account, InstantlyCampaign, OutreachEvent
-from app.llm import chat_json, chat_text, MODEL_NAME
+from app.llm import _chat_json_sync, chat_text, MODEL_NAME
 from app.services import settings_service, clients, audit_service
 from app.services.instantly_poller import simulate_engagement_timeline
 from app.provenance import stamp
@@ -967,3 +967,55 @@ def launch_group_sequence(
         "contacts_count": len(contact_ids),
         "is_test": is_test,
     }
+
+
+def draft_reply(db: Session, user_id: str, thread: list[dict], answers: dict | None = None) -> dict:
+    """Analyze an email thread and draft a response or ask clarifying questions."""
+    # Convert thread to text for the LLM
+    thread_text = ""
+    for msg in thread:
+        sender = msg.get("from_address_name") or msg.get("from_address_email") or "Unknown"
+        date = msg.get("timestamp_created")
+        body = msg.get("body", "").strip()
+        thread_text += f"\n--- From: {sender} | Date: {date} ---\n{body}\n"
+
+    prompt = f"""You are an expert Go-to-Market sales representative.
+Analyze the following email thread with a prospect.
+
+Thread:
+{thread_text}
+
+Your task is to draft a professional, concise, and persuasive reply to the prospect's last email.
+"""
+    if answers:
+        prompt += f"""
+The user has provided the following answers to your previous questions to help you draft the email:
+{json.dumps(answers, indent=2)}
+
+Use these answers to draft the final response. DO NOT ask more questions.
+"""
+    else:
+        prompt += """
+However, if the prospect's reply requires specific information that you do not have (e.g., specific available times for a meeting, pricing details, custom requirements), DO NOT draft the email yet.
+Instead, return a list of clarifying questions you need the user (the GTM engineer) to answer before you can write the reply.
+
+If you have enough information to write the reply, provide the draft.
+
+Respond in JSON format:
+{
+  "intent": "summary of the prospect's intent (e.g., meeting_requested, objection, more_info, not_interested)",
+  "questions": [
+    {
+      "question": "What times are you available for a call this week?",
+      "reason": "The prospect asked to schedule a call."
+    }
+  ],
+  "draft": "The text of the email reply (leave empty or null if you are asking questions)"
+}
+"""
+    try:
+        res = _chat_json_sync(prompt, system="You are an expert Go-to-Market sales representative.", max_tokens=1500)
+        return res
+    except Exception as e:
+        log.error(f"Failed to draft reply: {e}")
+        return {"intent": "error", "questions": [], "draft": "Sorry, failed to generate reply."}
