@@ -212,140 +212,17 @@ def outreach_analytics(
             }
         )
         
-    # --- Fetch Live Workspace Campaigns to fill gaps ---
-    from app.services import settings_service, clients
-    instantly_key = settings_service.get_key(db, user.id, "instantly")
-    if instantly_key:
-        try:
-            ws_camps = clients.instantly_get_campaigns(instantly_key) or []
-            analytics_res = clients.instantly_get_analytics(instantly_key)
-            import json
-            try:
-                with open("analytics_dump.json", "w") as f:
-                    json.dump(analytics_res, f)
-            except:
-                pass
-            analytics_list = []
-            if isinstance(analytics_res, dict):
-                analytics_list = analytics_res.get("data") or []
-            elif isinstance(analytics_res, list):
-                analytics_list = analytics_res
-            analytics_map = {a["campaign_id"]: a for a in analytics_list if isinstance(a, dict) and "campaign_id" in a}
-            
-            # 1. Update existing DB sequence rows with live stats
-            # First, count how many sequences share each instantly_campaign_id
-            cid_counts = {}
-            for row in seq_rows:
-                cid = row.get("instantly_campaign_id")
-                if cid:
-                    cid_counts[cid] = cid_counts.get(cid, 0) + 1
-
-            cid_remainders = {}
-
-            for row in seq_rows:
-                cid = row.get("instantly_campaign_id")
-                if cid and cid in analytics_map:
-                    anal = analytics_map[cid]
-                    count = cid_counts.get(cid, 1)
-                    
-                    if cid not in cid_remainders:
-                        cid_remainders[cid] = {
-                            "sent": anal.get("emails_sent_count", 0),
-                            "opened": anal.get("open_count", 0),
-                            "clicked": anal.get("link_click_count", 0),
-                            "replied": anal.get("reply_count", 0),
-                            "bounced": anal.get("bounced_count", 0)
-                        }
-                    
-                    rem = cid_remainders[cid]
-                    
-                    if row["sent"] == 0 and anal.get("emails_sent_count", 0) > 0:
-                        s = rem["sent"] // count + (1 if rem["sent"] % count > 0 else 0)
-                        o = rem["opened"] // count + (1 if rem["opened"] % count > 0 else 0)
-                        c = rem["clicked"] // count + (1 if rem["clicked"] % count > 0 else 0)
-                        r = rem["replied"] // count + (1 if rem["replied"] % count > 0 else 0)
-                        b = rem["bounced"] // count + (1 if rem["bounced"] % count > 0 else 0)
-                        
-                        row["sent"] = s
-                        row["opened"] = o
-                        row["clicked"] = c
-                        row["replied"] = r
-                        row["bounced"] = b
-                        row["open_rate"] = _pct(row["opened"], row["sent"])
-                        row["reply_rate"] = _pct(row["replied"], row["sent"])
-                        
-                        rem["sent"] = max(0, rem["sent"] - s)
-                        rem["opened"] = max(0, rem["opened"] - o)
-                        rem["clicked"] = max(0, rem["clicked"] - c)
-                        rem["replied"] = max(0, rem["replied"] - r)
-                        rem["bounced"] = max(0, rem["bounced"] - b)
-                        cid_counts[cid] -= 1
-
-            # 2. Add remaining workspace campaigns to show campaign-level aggregates
-            # We don't skip them anymore so the user can see both lead-level and campaign-level stats
-            for c in ws_camps:
-                cid = c.get("id")
-                if not cid:
-                    continue
-                anal = analytics_map.get(cid) or {}
-                
-                # In Instantly, email_list is the sender emails, not the leads. We cannot match contacts this way.
-                # Always display it as a campaign aggregate.
-                assigned_strategy = strategy_id or (user_strat_ids[0] if user_strat_ids else None)
-                
-                if strategy_id and assigned_strategy != strategy_id:
-                    continue
-                if not getattr(user, "is_admin", False) and assigned_strategy not in user_strat_ids:
-                    continue
-
-                s_sent = anal.get("emails_sent_count", 0) or 0
-                opened = anal.get("open_count", 0) or 0
-                clicked = anal.get("link_click_count", 0) or 0
-                replied = anal.get("reply_count", 0) or 0
-                bounced = anal.get("bounced_count", 0) or 0
-                
-                c_name = c.get("name", "Workspace Campaign")
-                seq_rows.append({
-                    "sequence_id": f"ws-{cid}",
-                    "contact_id": None,
-                    "contact_name": f"Campaign: {c_name}",
-                    "contact_email": "(Campaign Aggregate)",
-                    "email_verified": None,
-                    "strategy_name": strategy_map.get(assigned_strategy, "Unknown Strategy") if assigned_strategy else "Workspace Campaign",
-                    "status": "active",
-                    "instantly_campaign_id": cid,
-                    "sent": s_sent,
-                    "opened": opened,
-                    "clicked": clicked,
-                    "replied": replied,
-                    "bounced": bounced,
-                    "open_rate": _pct(opened, s_sent),
-                    "reply_rate": _pct(replied, s_sent),
-                    "is_campaign_aggregate": True
-                })
-        except Exception as e:
-            pass
-            
     seq_rows.sort(key=lambda x: x["sent"], reverse=True)
 
-    # Calculate top-level totals, ignoring the campaign aggregate rows to prevent double-counting
-    lead_rows = [r for r in seq_rows if not r.get("is_campaign_aggregate")]
-    
-    sent = sum(r["sent"] for r in lead_rows)
-    opened = sum(r["opened"] for r in lead_rows)
-    clicked = sum(r["clicked"] for r in lead_rows)
-    replied = sum(r["replied"] for r in lead_rows)
-    bounced = sum(r["bounced"] for r in lead_rows)
+    sent = sum(r["sent"] for r in seq_rows)
+    opened = sum(r["opened"] for r in seq_rows)
+    clicked = sum(r["clicked"] for r in seq_rows)
+    replied = sum(r["replied"] for r in seq_rows)
+    bounced = sum(r["bounced"] for r in seq_rows)
 
     by_strategy_agg: dict[str, dict[str, int]] = {}
-    for row in seq_rows:
-        # Determine strategy ID from row directly if injected by workspace fetch, else match sequences
-        sid = row.get("_strategy_id")
-        if not sid:
-            matching_seq = next((s for s in sequences if s.id == row["sequence_id"]), None)
-            sid = matching_seq.strategy_id if matching_seq else ""
-        sid = sid or ""
-        
+    for seq in sequences:
+        sid = seq.strategy_id or ""
         if sid not in by_strategy_agg:
             by_strategy_agg[sid] = {
                 "sent": 0, "opened": 0, "clicked": 0, "replied": 0, "bounced": 0

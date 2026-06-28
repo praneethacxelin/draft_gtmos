@@ -83,7 +83,43 @@ def _ingest_once() -> int:
                     if not email or not status: continue
                     # Find contact
                     contact = db.query(Contact).filter(Contact.email == email).first()
-                    if not contact: continue
+                    if not contact:
+                        # Auto-create missing contact from Instantly
+                        first = ld.get("first_name", "")
+                        last = ld.get("last_name", "")
+                        name = f"{first} {last}".strip() or email.split("@")[0]
+                        ref_contact = db.query(Contact).filter(Contact.id == seq.contact_id).first()
+                        experiment_id = ref_contact.source_ref if ref_contact else None
+                        account_id = ref_contact.account_id if ref_contact else None
+                        
+                        contact = Contact(
+                            email=email,
+                            full_name=name,
+                            strategy_id=seq.strategy_id,
+                            account_id=account_id,
+                            source_ref=experiment_id
+                        )
+                        db.add(contact)
+                        db.flush()
+                        
+                        new_seq = Sequence(
+                            contact_id=contact.id,
+                            strategy_id=seq.strategy_id,
+                            status="active",
+                            instantly_campaign_id=camp_id
+                        )
+                        db.add(new_seq)
+                        db.flush()
+
+                        ic = InstantlyCampaign(
+                            sequence_id=new_seq.id,
+                            status="active",
+                            instantly_campaign_id=camp_id
+                        )
+                        db.add(ic)
+                        db.flush()
+
+
                     
                     # Insert EngagementEvent if interested or replied
                     if status in ("interested", "replied", "meeting_booked"):

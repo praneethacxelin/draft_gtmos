@@ -12,6 +12,7 @@ import { Outreach } from "@/pages/Outreach";
 import { Intelligence } from "@/pages/Intelligence";
 import { Settings } from "@/pages/Settings";
 import { Help } from "@/pages/Help";
+import { CRM } from "@/pages/CRM";
 import NotFound from "@/pages/not-found";
 import { AdminPage } from "@/pages/Admin";
 import { Audit } from "@/pages/Audit";
@@ -53,6 +54,7 @@ function AppRoutes() {
         <Route path="/outreach" component={Outreach} />
         <Route path="/intelligence" component={Intelligence} />
         <Route path="/learnings" component={Learnings} />
+        <Route path="/crm" component={CRM} />
         <Route path="/help" component={Help} />
         <Route path="/settings" component={Settings} />
         <Route path="/audit" component={Audit} />

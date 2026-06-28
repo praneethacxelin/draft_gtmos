@@ -90,7 +90,10 @@ const SIGNAL_MAP: Record<string, string> = {
   "Product launch": "product_launch",
   "Partnership / integration": "partnership",
   "Layoffs / restructuring": "layoffs",
-  "Award / recognition": "award"
+  "Award / recognition": "award",
+  "News mentions": "news",
+  "Website updates": "website",
+  "Competitor mentions": "competitor"
 };
 const DEFAULT_SIGNAL_TYPES = ["funding", "hiring"];
 

@@ -67,6 +67,21 @@ SIGNAL_CATALOG: dict[str, dict] = {
         "query": '"{c}" "wins award" OR "recognized" OR "named to" OR "ranked"',
         "strength": 0.5,
     },
+    "news": {
+        "label": "News mentions",
+        "query": '"{c}" news OR "in the news" OR "press release"',
+        "strength": 0.45,
+    },
+    "website": {
+        "label": "Website updates",
+        "query": '"{c}" "new website" OR "rebrand" OR "launches new site"',
+        "strength": 0.4,
+    },
+    "competitor": {
+        "label": "Competitor mentions",
+        "query": '"{c}" vs OR "alternative to" OR "competitor"',
+        "strength": 0.65,
+    },
 }
 
 # Default scan when the caller does not specify any signal types (preserves the

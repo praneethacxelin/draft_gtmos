@@ -11,24 +11,39 @@ router = APIRouter(prefix="/contacts", tags=["contacts"])
 
 @router.get("")
 def list_contacts(
-    strategy_id: str,
+    strategy_id: str | None = None,
     tier: int | None = None,
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ) -> list[dict]:
-    own_strategy(db, strategy_id, user)
-    q = (
-        db.query(Contact)
-        .filter(Contact.strategy_id == strategy_id)
-    )
+    if strategy_id:
+        own_strategy(db, strategy_id, user)
+        q = (
+            db.query(Contact)
+            .filter(Contact.strategy_id == strategy_id)
+        )
+    else:
+        if not getattr(user, "is_admin", False):
+            from app.db import Strategy
+            user_strat_ids = [r[0] for r in db.query(Strategy.id).filter(Strategy.user_id == user.id).all()]
+            q = db.query(Contact).filter(Contact.strategy_id.in_(user_strat_ids))
+        else:
+            q = db.query(Contact)
+
     if tier:
         q = q.filter(Contact.tier == tier)
     contacts = q.order_by(Contact.total_score.desc()).all()
+    if strategy_id:
+        accounts_query = db.query(Account).filter(Account.strategy_id == strategy_id)
+    else:
+        if not getattr(user, "is_admin", False):
+            accounts_query = db.query(Account).filter(Account.strategy_id.in_(user_strat_ids))
+        else:
+            accounts_query = db.query(Account)
+            
     accounts = {
         a.id: a
-        for a in db.query(Account)
-        .filter(Account.strategy_id == strategy_id)
-        .all()
+        for a in accounts_query.all()
     }
     return [_serialize(c, accounts.get(c.account_id)) for c in contacts]
 

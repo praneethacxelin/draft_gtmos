@@ -34,6 +34,7 @@ from app.routes import (
     experiments,
     learnings,
     apollo_store,
+    crm,
 )
 from app.services.instantly_poller import poll_loop
 from app.services.m3_tracking import m3_loop
@@ -177,6 +178,7 @@ app.include_router(audit.router, prefix=api_prefix)
 app.include_router(analytics.router, prefix=api_prefix)
 app.include_router(learnings.router, prefix=api_prefix)
 app.include_router(apollo_store.router, prefix=api_prefix)
+app.include_router(crm.router, prefix=api_prefix)
 
 
 if __name__ == "__main__":
