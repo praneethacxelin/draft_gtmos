@@ -1,8 +1,37 @@
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
+const TOKEN_KEY = "gtm.auth.token";
+let authToken: string | null =
+  typeof localStorage !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null;
+let unauthorizedHandler: (() => void) | null = null;
+
+/** Store (or clear) the bearer token used for authenticated requests. */
+export function setAuthToken(token: string | null) {
+  authToken = token;
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* ignore storage errors (private mode, etc.) */
+  }
+}
+
+export function getAuthToken(): string | null {
+  return authToken;
+}
+
+/** Register a callback invoked when the API returns 401 (e.g. to log out). */
+export function setUnauthorizedHandler(fn: (() => void) | null) {
+  unauthorizedHandler = fn;
+}
+
+function authHeaders(): Record<string, string> {
+  return authToken ? { Authorization: `Bearer ${authToken}` } : {};
+}
+
 /**
- * Auth was removed — every request is anonymous. This setter is kept as
- * a no-op to avoid breaking imports in older code paths.
+ * Backwards-compatible no-op kept for older imports. Prefer
+ * {@link setAuthToken}.
  */
 export function setAuthTokenGetter(
   _fn: (() => Promise<string | null>) | null,
@@ -20,10 +49,14 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     ...init,
     headers: {
       "Content-Type": "application/json",
+      ...authHeaders(),
       ...(init?.headers || {}),
     },
   });
   if (!res.ok) {
+    if (res.status === 401) {
+      unauthorizedHandler?.();
+    }
     const text = await res.text();
     let msg = text;
     let parsed: { detail?: string; message?: string; integration?: string; retry_after_seconds?: number } = {};
@@ -61,12 +94,17 @@ export function streamSse<T = unknown>(
     const url = apiUrl(path);
     fetch(url, {
       method: "POST",
-      ...(body !== undefined
-        ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
-        : {}),
+      headers: {
+        ...authHeaders(),
+        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     })
       .then(async (res) => {
         if (!res.ok || !res.body) {
+          if (res.status === 401) {
+            unauthorizedHandler?.();
+          }
           const text = await res.text().catch(() => "");
           reject(new Error(text || res.statusText));
           return;

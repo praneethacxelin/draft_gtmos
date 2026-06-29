@@ -14,9 +14,12 @@ import {
   Sun,
   Moon,
   CircleDot,
+  LogIn,
+  LogOut,
 } from "lucide-react";
 import { useActiveStrategy } from "@/hooks/useActiveStrategy";
 import { useTheme } from "@/hooks/useTheme";
+import { useAuth } from "@/hooks/useAuth";
 import {
   Select,
   SelectContent,
@@ -43,6 +46,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [location, navigate] = useLocation();
   const { activeId, setActiveId, strategies } = useActiveStrategy();
   const { theme, toggle } = useTheme();
+  const { user, isAuthenticated, logout } = useAuth();
 
   function handleProfileChange(id: string) {
     setActiveId(id);
@@ -127,6 +131,37 @@ export function AppShell({ children }: { children: ReactNode }) {
         </nav>
 
         <div className="border-t border-border p-3">
+          {isAuthenticated ? (
+            <div className="mb-1 flex items-center justify-between gap-2 px-3 py-2">
+              <span
+                className="truncate text-xs text-muted-foreground"
+                title={user?.email ?? undefined}
+                data-testid="text-account-email"
+              >
+                {user?.email ?? "Signed in"}
+              </span>
+              <button
+                onClick={() => {
+                  logout();
+                  navigate("/login");
+                }}
+                className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover-elevate"
+                data-testid="button-logout"
+              >
+                <LogOut className="h-3.5 w-3.5" />
+                Sign out
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => navigate("/login")}
+              className="mb-1 flex w-full items-center gap-2 rounded-md px-3 py-2 text-xs text-muted-foreground hover-elevate"
+              data-testid="button-login"
+            >
+              <LogIn className="h-3.5 w-3.5" />
+              <span>Sign in</span>
+            </button>
+          )}
           <button
             onClick={toggle}
             className="flex w-full items-center justify-between rounded-md px-3 py-2 text-xs text-muted-foreground hover-elevate"

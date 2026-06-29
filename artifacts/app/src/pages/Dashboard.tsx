@@ -45,6 +45,17 @@ type DashboardMode = "engineer" | "executive";
 
 type Trend = "On Track" | "At Risk" | "Behind Plan";
 
+interface RevenueTracking {
+  opportunities: number;
+  deal_size_usd: number | null;
+  win_rate: number | null;
+  win_rate_source: string;
+  tracked_pipeline_usd: number;
+  tracked_revenue_usd: number;
+  projected_revenue_usd: number;
+  attainment_pct: number;
+}
+
 interface OutreachAnalytics {
   total_sent: number;
   total_opened: number;
@@ -55,6 +66,7 @@ interface OutreachAnalytics {
   click_rate: number;
   reply_rate: number;
   bounce_rate: number;
+  revenue_tracking?: RevenueTracking;
   sequences: Array<{
     sequence_id: string;
     contact_name: string;
@@ -73,6 +85,7 @@ interface OutreachAnalytics {
     bounced: number;
     open_rate: number;
     reply_rate: number;
+    revenue_tracking?: RevenueTracking;
   }>;
 }
 
@@ -467,7 +480,7 @@ function EngineerView({ strategyId, selectedStrategy }: { strategyId?: string; s
                   Deliverability score: <span className="text-foreground">{sequence.deliverability_score ?? "—"}</span>
                 </div>
                 <div>
-                  Latest launch: <span className="text-foreground">{sequence.last_launch ? fmtRelative(sequence.last_launch.timestamp) : "none"}</span>
+                  Latest launch: <span className="text-foreground">{sequence.campaigns?.[0]?.synced_at ? fmtRelative(sequence.campaigns[0].synced_at) : "none"}</span>
                 </div>
               </div>
             ) : (
@@ -672,8 +685,36 @@ function ExecutiveView({
             <FunnelRow label="Forecast confidence" value={forecastConfidence} />
             <FunnelRow label="Projected ROI" value={projectedRoi ? `${projectedRoi.toFixed(1)}x` : "—"} />
           </div>
+          {outreachAnalytics?.revenue_tracking && (
+            <div className="mt-5 border-t border-border pt-4">
+              <div className="mb-2 flex items-center justify-between">
+                <div className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+                  Tracked vs plan
+                </div>
+                <span className="rounded bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                  from {outreachAnalytics.revenue_tracking.opportunities} live repl{outreachAnalytics.revenue_tracking.opportunities === 1 ? "y" : "ies"}
+                </span>
+              </div>
+              <div className="space-y-3 text-sm">
+                <FunnelRow label="Tracked revenue (closed-loop)" value={formatMoney(outreachAnalytics.revenue_tracking.tracked_revenue_usd)} accent />
+                <FunnelRow label="Tracked pipeline" value={formatMoney(outreachAnalytics.revenue_tracking.tracked_pipeline_usd)} />
+              </div>
+              <div className="mt-3">
+                <div className="mb-1 flex items-center justify-between text-[11px] text-muted-foreground">
+                  <span>Plan attainment</span>
+                  <span className="font-mono tabular-nums">{outreachAnalytics.revenue_tracking.attainment_pct.toFixed(1)}%</span>
+                </div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full bg-primary transition-all"
+                    style={{ width: `${Math.min(100, outreachAnalytics.revenue_tracking.attainment_pct)}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
           <div className="mt-6 border-t border-border pt-4 text-xs text-muted-foreground">
-            Forecast is derived from the active strategy plan and the top projected revenue row.
+            Tracked revenue is the closed loop: live email replies valued at the ROI deal size × win rate, measured against the plan's projection.
           </div>
         </Card>
       </div>

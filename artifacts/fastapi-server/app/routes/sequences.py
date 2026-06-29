@@ -18,11 +18,20 @@ async def generate(
     contact_id: str,
     step_count: int = 4,
     dynamic: bool = False,
+    tone: str | None = None,
+    instructions: str | None = None,
     db: Session = Depends(get_session),
     user: User = Depends(current_user),
 ) -> dict:
     own_contact(db, contact_id, user)
-    return await generate_sequence(db, contact_id, step_count=step_count, dynamic=dynamic)
+    return await generate_sequence(
+        db,
+        contact_id,
+        step_count=step_count,
+        dynamic=dynamic,
+        tone=tone,
+        instructions=instructions,
+    )
 
 
 @router.get("/by-contact/{contact_id}")
@@ -327,6 +336,7 @@ class GroupLaunchBody(BaseModel):
     is_test: bool = False
     test_email: Optional[str] = None
     campaign_name: Optional[str] = None
+    recipients: Optional[list[dict]] = None
 
 
 @router.post("/launch-group")
@@ -349,6 +359,7 @@ def launch_group(
         campaign_name=body.campaign_name,
         is_test=body.is_test,
         test_email=body.test_email,
+        recipients=body.recipients,
     )
     if isinstance(result, dict) and result.get("error"):
         raise HTTPException(400, result["error"])

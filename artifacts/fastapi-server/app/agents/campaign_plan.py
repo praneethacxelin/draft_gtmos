@@ -76,8 +76,32 @@ def _frontload_weights(n_phases: int) -> list[float]:
     return [r / total for r in raw]
 
 
-def _experiment_gate(db: Session, strategy_id: str) -> tuple[Optional[ExperimentBatch], Optional[Experiment]]:
-    """Return the latest analyzed batch with a winner, plus the winning experiment."""
+def _experiment_gate(db: Session, strategy_id: str) -> tuple[Optional[ExperimentBatch], Optional[Experiment], str]:
+    """Return the batch + winning experiment that unlocks the campaign plan.
+
+    Prefers the LIVE conversion winner (the variant that produced the highest
+    positive-intent reply rate over the live learning window) so the plan is
+    built from what actually converted — not just the relevancy-analysis pick.
+    Falls back to the analyzed (relevancy) winner when no live test has been
+    evaluated yet. Returns ``(batch, winner, winner_source)``.
+    """
+    live_batch = (
+        db.query(ExperimentBatch)
+        .filter(
+            ExperimentBatch.strategy_id == strategy_id,
+            ExperimentBatch.live_winner_experiment_id.isnot(None),
+        )
+        .order_by(ExperimentBatch.updated_at.desc())
+        .first()
+    )
+    if live_batch:
+        winner = (
+            db.query(Experiment)
+            .filter(Experiment.id == live_batch.live_winner_experiment_id)
+            .first()
+        )
+        return live_batch, winner, "live_conversion"
+
     batch = (
         db.query(ExperimentBatch)
         .filter(
@@ -89,13 +113,13 @@ def _experiment_gate(db: Session, strategy_id: str) -> tuple[Optional[Experiment
         .first()
     )
     if not batch:
-        return None, None
+        return None, None, "none"
     winner = (
         db.query(Experiment)
         .filter(Experiment.id == batch.best_experiment_id)
         .first()
     )
-    return batch, winner
+    return batch, winner, "relevancy_analysis"
 
 
 def _winning_facets(winner: Optional[Experiment]) -> dict:
@@ -131,7 +155,7 @@ def build_campaign_plan(db: Session, strategy_id: str) -> dict:
             "targets and required prospect volume.",
         }
 
-    batch, winner = _experiment_gate(db, strategy_id)
+    batch, winner, winner_source = _experiment_gate(db, strategy_id)
     if not batch:
         return {
             "ready": False,
@@ -168,6 +192,44 @@ def build_campaign_plan(db: Session, strategy_id: str) -> dict:
 
     winning_facets = _winning_facets(winner)
     winning_insight = (batch.analysis_json or {}).get("winning_parameters_insight")
+
+    # ---- Campaign sequencing: inherit the ROI campaign strategy and split each
+    # phase's prospect load across the planned campaigns. The ROI layer already
+    # decided how many campaigns run and whether they go parallel / sequential /
+    # hybrid (driven by urgency + capacity + budget); we project that onto every
+    # phase so the GTM engineer sees the campaign-level breakdown, not just the
+    # phase totals. ----
+    roi_campaign_plan = gtm.get("campaign_plan") or {}
+    n_campaigns = max(1, int(roi_campaign_plan.get("campaign_count") or 1))
+    exec_mode = (roi_campaign_plan.get("mode") or "parallel").strip().lower()
+    if exec_mode not in ("parallel", "sequential", "hybrid"):
+        exec_mode = "parallel"
+    global_campaigns = roi_campaign_plan.get("campaigns") or []
+    campaign_waves = roi_campaign_plan.get("waves") or []
+    # Volume weights per campaign come from the ROI campaign distribution so the
+    # phase split mirrors the overall plan; fall back to an even split.
+    _gc_prospects = [max(0, int(c.get("prospects") or 0)) for c in global_campaigns]
+    _gc_sum = sum(_gc_prospects)
+    if _gc_sum > 0 and len(_gc_prospects) == n_campaigns:
+        campaign_weights = [p / _gc_sum for p in _gc_prospects]
+    else:
+        campaign_weights = [1.0 / n_campaigns] * n_campaigns
+
+    def _phase_campaigns(phase_prospects: int) -> list[dict]:
+        counts = _distribute_counts(phase_prospects, campaign_weights)
+        out: list[dict] = []
+        for ci in range(n_campaigns):
+            gc = global_campaigns[ci] if ci < len(global_campaigns) else {}
+            out.append(
+                {
+                    "name": gc.get("name") or f"Campaign {chr(65 + ci)}",
+                    "prospect_count": counts[ci] if ci < len(counts) else 0,
+                    "share_pct": round(campaign_weights[ci] * 100, 1),
+                    "engineers": gc.get("engineers"),
+                    "bottleneck": bool(gc.get("bottleneck", False)),
+                }
+            )
+        return out
 
     plan_phases: list[dict] = []
     elapsed = 0  # months elapsed since the ROI execution start (before window shift)
@@ -221,6 +283,10 @@ def build_campaign_plan(db: Session, strategy_id: str) -> dict:
                 "season_notes": ph.get("season_notes") or [],
                 "projected_attainment_pct": ph.get("projected_attainment_pct"),
                 "confidence": ph.get("confidence"),
+                # Campaign-level breakdown: how this phase's prospects fan out
+                # across the planned campaigns, and how they're sequenced.
+                "execution_mode": exec_mode,
+                "campaigns": _phase_campaigns(prospect_count),
             }
         )
 
@@ -231,8 +297,10 @@ def build_campaign_plan(db: Session, strategy_id: str) -> dict:
         "gate": "ready",
         "strategy_id": strategy_id,
         "source_batch_id": batch.id,
-        "winning_experiment_id": batch.best_experiment_id,
+        "winning_experiment_id": winner.id if winner else (batch.live_winner_experiment_id or batch.best_experiment_id),
         "winning_experiment_name": winner.name if winner else None,
+        "winner_source": winner_source,
+        "winner_is_live_proven": winner_source == "live_conversion",
         "winning_facets": winning_facets,
         "winning_parameters_insight": winning_insight,
         "kickoff_month": campaign_start_month,
@@ -244,8 +312,19 @@ def build_campaign_plan(db: Session, strategy_id: str) -> dict:
         "phase_count": n_phases,
         "annual_target_usd": revenue_plan.get("annual_target_usd"),
         "overall_confidence": revenue_plan.get("overall_confidence"),
+        "execution_mode": exec_mode,
+        "campaign_count": n_campaigns,
+        "campaign_mode_reason": roi_campaign_plan.get("reasoning"),
+        "campaign_waves": campaign_waves,
         "phases": plan_phases,
         "notes": [
+            (
+                f"Plan is built from the LIVE conversion winner '{winner.name if winner else '—'}' — "
+                "the variant that actually booked the most meetings over the learning window."
+                if winner_source == "live_conversion"
+                else "Plan is built from the relevancy-analysis winner. Run a live test to re-gate it "
+                "on real reply/meeting conversion."
+            ),
             f"Program kicks off in {MONTH_NAMES[campaign_start_month]} — after a "
             f"{exp_window}-month experiment window proves the winning segment.",
             f"Prospecting is front-loaded: the first {min(2, n_phases)} phase(s) carry "
@@ -253,5 +332,15 @@ def build_campaign_plan(db: Session, strategy_id: str) -> dict:
             "ahead of the later-landing revenue.",
             "Each phase's prospects are split across the top personas using the 70/30 "
             "weighting from persona intelligence.",
+            (
+                f"Each phase runs {n_campaigns} campaign(s) in {exec_mode} mode "
+                + (
+                    "— all campaigns launch at once, with the team split across them."
+                    if exec_mode == "parallel"
+                    else "— campaigns run one after another, reusing the full team."
+                    if exec_mode == "sequential"
+                    else "— an initial wave launches in parallel, then the team is reused on the rest."
+                )
+            ),
         ],
     }

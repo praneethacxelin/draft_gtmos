@@ -7,8 +7,10 @@ caught and logged so the UI never breaks.
 Every real HTTP call is recorded to the audit log so the user can see
 exactly what was sent and reproduce it with the embedded curl command.
 """
+import csv
 import json
 import logging
+import os
 import re
 import time
 from typing import Optional, Any
@@ -54,6 +56,64 @@ _TECH_UID_ALIASES = {
     "servicenow": "servicenow",
 }
 _TECH_UID_CACHE: dict[str, str | None] = {}
+
+# ---------------------------------------------------------------------------
+# Authoritative Apollo technology UID catalogue.
+#
+# Apollo's `currently_using_any_of_technology_uids` facet only accepts the exact
+# slugs from its catalogue (the "Tech_uid" column of Apollo's supported
+# technologies export). Passing an unknown slug silently zeroes out results, so
+# we ship that export (app/services/data/supported_technologies.csv) and use it
+# as the source of truth: display-name -> Tech_uid lookup plus a validity set.
+# ---------------------------------------------------------------------------
+_TECH_CATALOGUE_PATH = os.path.join(
+    os.path.dirname(__file__), "data", "supported_technologies.csv"
+)
+_TECH_UID_BY_NAME: dict[str, str] = {}
+_VALID_TECH_UIDS: set[str] = set()
+
+
+def _norm_tech(name: str) -> str:
+    """Normalise a technology name/slug for case- and punctuation-insensitive matching."""
+    return re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
+
+
+def _load_tech_catalogue() -> None:
+    """Load the Apollo technology catalogue from the bundled CSV (once)."""
+    if _VALID_TECH_UIDS:
+        return
+    try:
+        with open(_TECH_CATALOGUE_PATH, newline="", encoding="utf-8-sig", errors="replace") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                # Column F holds the canonical Apollo slug.
+                uid = (row.get("Tech_uid") or "").strip()
+                if not uid:
+                    continue
+                _VALID_TECH_UIDS.add(uid)
+                # Map every label variant (Category aside) + the uid itself to the uid.
+                for value in row.values():
+                    key = _norm_tech(value)
+                    if key:
+                        _TECH_UID_BY_NAME.setdefault(key, uid)
+    except FileNotFoundError:
+        log.warning("Apollo technology catalogue not found at %s", _TECH_CATALOGUE_PATH)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Failed to load Apollo technology catalogue: %s", e)
+
+
+def _technology_uid_from_catalogue(name: str) -> str | None:
+    """Resolve a technology name/slug to a valid Apollo Tech_uid via the CSV."""
+    _load_tech_catalogue()
+    if not _VALID_TECH_UIDS:
+        return None
+    raw = str(name or "").strip()
+    if not raw:
+        return None
+    # An already-valid slug passes straight through.
+    if raw in _VALID_TECH_UIDS:
+        return raw
+    return _TECH_UID_BY_NAME.get(_norm_tech(raw))
 
 
 def _mask(k: str, v: Any) -> Any:
@@ -115,10 +175,20 @@ def _technology_uid_fallback(name: str) -> str | None:
     clean = re.sub(r"\s+", " ", str(name or "").strip().lower())
     if not clean or clean in {"crm", "helpdesk", "help desk", "analytics", "marketing automation"}:
         return None
+    # 1. Authoritative Apollo catalogue (CSV "Tech_uid" column).
+    cat = _technology_uid_from_catalogue(name)
+    if cat:
+        return cat
+    # 2. Curated aliases for common display-name variants.
     if clean in _TECH_UID_ALIASES:
         return _TECH_UID_ALIASES[clean]
+    # 3. Last resort: slugify, but only accept it if Apollo actually knows it.
     slug = re.sub(r"[^a-z0-9]+", "_", clean).strip("_")
-    return slug or None
+    if not slug:
+        return None
+    if _VALID_TECH_UIDS and slug not in _VALID_TECH_UIDS:
+        return None
+    return slug
 
 
 def _extract_technology_uid(payload: dict, wanted: str) -> str | None:
@@ -177,21 +247,27 @@ def apollo_resolve_technology_uids(
             uid = _TECH_UID_CACHE.get(cache_key)
             source = "cache" if cache_key in _TECH_UID_CACHE else None
             if cache_key not in _TECH_UID_CACHE:
-                for url in endpoints:
-                    try:
-                        _rl_consume("apollo")
-                        r = c.get(url, params={"q": name, "kind": "technology"}, headers=headers)
-                        status = r.status_code
-                        if r.status_code == 404:
+                # 1. Authoritative catalogue lookup (no network, no guessing).
+                uid = _technology_uid_from_catalogue(name)
+                if uid:
+                    source = "catalogue"
+                # 2. Fall back to Apollo's live search endpoints.
+                if not uid:
+                    for url in endpoints:
+                        try:
+                            _rl_consume("apollo")
+                            r = c.get(url, params={"q": name, "kind": "technology"}, headers=headers)
+                            status = r.status_code
+                            if r.status_code == 404:
+                                continue
+                            r.raise_for_status()
+                            uid = _extract_technology_uid(r.json(), name)
+                            if uid:
+                                source = url.rsplit("/", 1)[-1]
+                                break
+                        except Exception as e:
+                            log.debug("Apollo technology lookup failed for %s: %s", name, e)
                             continue
-                        r.raise_for_status()
-                        uid = _extract_technology_uid(r.json(), name)
-                        if uid:
-                            source = url.rsplit("/", 1)[-1]
-                            break
-                    except Exception as e:
-                        log.debug("Apollo technology lookup failed for %s: %s", name, e)
-                        continue
                 if not uid:
                     uid = _technology_uid_fallback(name)
                     source = "slug_alias" if uid else "unresolved"
@@ -503,6 +579,7 @@ def apollo_match_person(
     domain: Optional[str] = None,
     linkedin_url: Optional[str] = None,
     reveal_phone: bool = False,
+    reveal_personal: bool = False,
     _strategy_id: Optional[str] = None,
     _strategy_name: Optional[str] = None,
 ) -> Optional[dict]:
@@ -510,7 +587,9 @@ def apollo_match_person(
 
     Apollo `/v1/people/match` always returns the work email when it can be
     found without a personal email reveal credit. Set ``reveal_phone=True``
-    to request phone numbers (costs an Apollo phone credit per call).
+    to request phone numbers (costs an Apollo phone credit per call). Set
+    ``reveal_personal=True`` to also request personal emails (used as a
+    fallback when the work email is locked/unavailable).
     """
     if not api_key:
         return None
@@ -523,7 +602,7 @@ def apollo_match_person(
     }
     body: dict = {
         "name": name,
-        "reveal_personal_emails": False,
+        "reveal_personal_emails": reveal_personal,
         "reveal_phone_number": reveal_phone,
     }
     if org_name:
@@ -1717,15 +1796,29 @@ def instantly_get_leads(api_key: str, campaign_id: str, status: Optional[str] = 
     _rl_consume("instantly")
     url = "https://api.instantly.ai/api/v2/leads/list"
     headers = _instantly_headers(api_key)
-    payload: dict = {"campaign": campaign_id, "limit": 100}
-    if status:
-        payload["status"] = status
+    # Instantly v2 filters by the `campaign` field (the campaign UUID). Using
+    # `campaign_id` is NOT honoured and returns unfiltered leads. The `limit`
+    # is capped at 100 by the API, so we page through with `starting_after`.
+    leads: list[dict] = []
+    starting_after: Optional[str] = None
     try:
         with httpx.Client(timeout=15.0) as c:
-            r = c.post(url, json=payload, headers=headers)
-            r.raise_for_status()
-            data = r.json()
-            return data.get("items", [])
+            for _ in range(50):  # safety cap: up to 5000 leads
+                payload: dict = {"campaign": campaign_id, "limit": 100}
+                if status:
+                    payload["status"] = status
+                if starting_after:
+                    payload["starting_after"] = starting_after
+                r = c.post(url, json=payload, headers=headers)
+                r.raise_for_status()
+                data = r.json()
+                # v2 returns the rows under `items`.
+                items = data.get("items", data.get("data", []))
+                leads.extend(items)
+                starting_after = data.get("next_starting_after")
+                if not starting_after or not items:
+                    break
+            return leads
     except Exception as e:
         log.warning("instantly_get_leads failed: %s", e)
         return None

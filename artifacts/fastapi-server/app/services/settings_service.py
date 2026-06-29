@@ -6,6 +6,7 @@ another user's pipeline.
 """
 from datetime import datetime
 from typing import Optional
+import os
 from sqlalchemy.orm import Session
 from app.db import AppSetting
 from app.crypto import encrypt, decrypt
@@ -128,26 +129,36 @@ def get_raw(db: Session, user_id: str, name: str) -> Optional[AppSetting]:
     )
 
 
+def _env_key(name: str) -> Optional[str]:
+    """Fallback API key from the environment (e.g. INSTANTLY_API_KEY).
+
+    Used for single-tenant / local deployments so a key set in ``.env`` works
+    out of the box without re-entering it in Settings. A per-user key stored in
+    the DB always takes precedence over this.
+    """
+    val = os.getenv(f"{name.upper()}_API_KEY")
+    return val.strip() if val and val.strip() else None
+
+
 def get_key(db: Session, user_id: Optional[str], name: str) -> Optional[str]:
     """Return the plaintext API key for ``user_id``'s ``name`` integration.
 
-    ``user_id`` may be ``None`` for legacy strategies created before auth
-    was rolled out — in that case we never return a key (no shared
-    fallback) so cross-tenant leakage is impossible.
+    Resolution order: the per-user key stored encrypted in the DB takes
+    precedence; if none is set we fall back to the ``<NAME>_API_KEY`` env var so
+    a key configured in ``.env`` works without re-entering it in Settings.
     """
-    if not user_id:
-        return None
-    row = (
-        db.query(AppSetting)
-        .filter(AppSetting.user_id == user_id, AppSetting.integration_name == name)
-        .first()
-    )
-    if not row or not row.is_enabled or not row.api_key_encrypted:
-        return None
-    try:
-        return decrypt(row.api_key_encrypted)
-    except Exception:
-        return None
+    if user_id:
+        row = (
+            db.query(AppSetting)
+            .filter(AppSetting.user_id == user_id, AppSetting.integration_name == name)
+            .first()
+        )
+        if row and row.is_enabled and row.api_key_encrypted:
+            try:
+                return decrypt(row.api_key_encrypted)
+            except Exception:
+                pass
+    return _env_key(name)
 
 
 def record_test_result(db: Session, user_id: str, name: str, ok: bool, message: str) -> None:

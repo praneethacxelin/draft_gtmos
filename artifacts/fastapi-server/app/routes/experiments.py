@@ -17,10 +17,12 @@ from app.agents.experiments import (
 )
 from app.agents.live_experiment import (
     promote_to_live,
+    preview_promotion,
     launch_variant,
     compute_live_metrics,
     evaluate_live_batch,
     simulate_window,
+    PromoteOptions,
 )
 
 router = APIRouter(prefix="/strategies/{strategy_id}/experiments", tags=["experiments"])
@@ -30,6 +32,8 @@ class SeedBatchRequest(BaseModel):
     n: int = 3
     leads_per_experiment: int = 10
     hypothesis: str | None = None
+    strict_discovery: bool = True
+    override_facets: dict | None = None
 
 
 class ExperimentParamsPatch(BaseModel):
@@ -109,6 +113,8 @@ async def create_batch(
         n=body.n,
         leads_per_experiment=body.leads_per_experiment,
         hypothesis=body.hypothesis,
+        strict_discovery=body.strict_discovery,
+        override_facets=body.override_facets,
     )
     if isinstance(result, dict) and "_error" in result:
         raise HTTPException(status_code=502, detail=result["_error"])
@@ -199,6 +205,15 @@ async def analyze(
 
 class PromoteLiveRequest(BaseModel):
     draft_per_variant: int | None = None
+    # Optional "real flow" configuration. Omitting any field keeps the original
+    # promote behavior (materialize cohorts + draft 4-step sequences for all).
+    auto_sequence: bool = True
+    step_count: int = 4
+    dynamic_templates: bool = False
+    run_signals: bool = False
+    score_leads: bool = False
+    recognize_patterns: bool = False
+    promote_tiers: list[int] | None = None
 
 
 class LaunchVariantRequest(BaseModel):
@@ -215,12 +230,34 @@ async def promote_live(
 ) -> dict:
     """Materialize real cohorts + draft sequences for every analyzed variant."""
     _own_batch(db, strategy_id, batch_id, user)
-    result = await promote_to_live(
-        db,
-        batch_id,
-        draft_per_variant=(body.draft_per_variant if body and body.draft_per_variant else None)
-        or 5,
+    tiers = body.promote_tiers if body else None
+    options = PromoteOptions(
+        draft_per_variant=(body.draft_per_variant if body and body.draft_per_variant else None),
+        auto_sequence=body.auto_sequence if body else True,
+        step_count=(body.step_count if body and body.step_count in (4, 5) else 4),
+        dynamic_templates=body.dynamic_templates if body else False,
+        run_signals=body.run_signals if body else False,
+        score_leads=body.score_leads if body else False,
+        recognize_patterns=body.recognize_patterns if body else False,
+        promote_tiers=([t for t in tiers if t in (1, 2, 3)] or None) if tiers else None,
     )
+    result = await promote_to_live(db, batch_id, options=options)
+    if isinstance(result, dict) and "_error" in result:
+        raise HTTPException(status_code=400, detail=result["_error"])
+    return result
+
+
+@router.get("/{batch_id}/promote-preview")
+def promote_preview(
+    strategy_id: str,
+    batch_id: str,
+    leads_per_variant: int | None = None,
+    db: Session = Depends(get_session),
+    user: User = Depends(current_user),
+) -> dict:
+    """Dry-run the promotion plan: how many leads each variant moves forward."""
+    _own_batch(db, strategy_id, batch_id, user)
+    result = preview_promotion(db, batch_id, draft_per_variant=leads_per_variant)
     if isinstance(result, dict) and "_error" in result:
         raise HTTPException(status_code=400, detail=result["_error"])
     return result

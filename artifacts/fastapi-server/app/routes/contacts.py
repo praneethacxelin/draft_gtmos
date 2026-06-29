@@ -125,18 +125,55 @@ def reveal_contact(
             return None
         return value.strip()
 
+    def _extract_apollo_email(person: dict | None) -> str | None:
+        """Pull the best usable email out of an Apollo person payload.
+
+        Checks the primary work ``email`` first, then any ``personal_emails`` and
+        ``contact_emails`` Apollo returns (the latter appear once a personal-email
+        reveal has been requested)."""
+        if not person:
+            return None
+        primary = _real_email(person.get("email"))
+        if primary:
+            return primary
+        for pe in person.get("personal_emails") or []:
+            e = _real_email(pe if isinstance(pe, str) else None)
+            if e:
+                return e
+        for ce in person.get("contact_emails") or []:
+            raw = ce.get("email") if isinstance(ce, dict) else ce
+            e = _real_email(raw if isinstance(raw, str) else None)
+            if e:
+                return e
+        return None
+
     # --- Fast path: reveal by the Apollo person id we captured at discovery. ---
     # Matching by id via /people/bulk_match is far more reliable than re-matching
     # by name, and returns the work email when the account's plan includes it.
-    if type == "email" and c.source_ref and str(c.source_ref).strip() and not c.is_demo:
+    apollo_pid = (c.apollo_person_id or "").strip() if c.apollo_person_id else ""
+    if not apollo_pid and c.source != "experiment" and c.source_ref and str(c.source_ref).strip():
+        apollo_pid = str(c.source_ref).strip()
+    if type == "email" and apollo_pid and not c.is_demo:
         revealed = clients.apollo_bulk_reveal(
             apollo_key,
-            [str(c.source_ref).strip()],
+            [apollo_pid],
             reveal_personal=False,
             _strategy_id=c.strategy_id,
             _strategy_name=None,
         )
-        person = revealed.get(str(c.source_ref).strip())
+        person = revealed.get(apollo_pid)
+        new_email = _extract_apollo_email(person)
+        # Work email locked/missing → retry the id match requesting personal emails.
+        if person and not new_email:
+            revealed_p = clients.apollo_bulk_reveal(
+                apollo_key,
+                [apollo_pid],
+                reveal_personal=True,
+                _strategy_id=c.strategy_id,
+                _strategy_name=None,
+            )
+            person = revealed_p.get(apollo_pid) or person
+            new_email = _extract_apollo_email(person)
         if person:
             org = person.get("organization") or {}
             if a and org:
@@ -147,7 +184,6 @@ def reveal_contact(
                     a.industry = org.get("industry")
                 if org.get("estimated_num_employees") and not a.employee_count:
                     a.employee_count = org.get("estimated_num_employees")
-            new_email = _real_email(person.get("email"))
             before_email = c.email
             c.email = new_email or "Not found"
             c.is_demo = False
@@ -185,6 +221,20 @@ def reveal_contact(
     if not match_result:
         raise HTTPException(404, "Contact not found in Apollo or reveal failed")
 
+    # Work email locked/missing → retry the name match requesting personal emails.
+    if type == "email" and not _extract_apollo_email(match_result):
+        personal = clients.apollo_match_person(
+            apollo_key,
+            name=c.full_name,
+            org_name=company_name,
+            domain=domain,
+            linkedin_url=c.linkedin_url,
+            reveal_personal=True,
+            _strategy_id=c.strategy_id,
+        )
+        if personal:
+            match_result = personal
+
     org = match_result.get("organization") or {}
     if a and org:
         domain = clients.apollo_org_domain(org)
@@ -200,7 +250,7 @@ def reveal_contact(
             a.tech_stack_json = org.get("technologies")
 
     if type == "email":
-        new_email = _real_email(match_result.get("email"))
+        new_email = _extract_apollo_email(match_result)
         if new_email:
             before_email = c.email
             c.email = new_email
@@ -387,10 +437,13 @@ def verify_bulk_emails(
     verified_count = 0
     invalid_count = 0
     catch_all_count = 0
+    pending_count = 0
+    skipped_count = 0
 
     for cid in body.contact_ids:
         c = own_contact(db, cid, user)
         if not c.email or c.email == "(not revealed)" or c.email == "Not found":
+            skipped_count += 1
             continue
 
         try:
@@ -410,11 +463,17 @@ def verify_bulk_emails(
                 invalid_count += 1
             elif status == "catch_all":
                 catch_all_count += 1
+            else:
+                pending_count += 1
+        else:
+            pending_count += 1
 
     return {
         "verified": verified_count,
         "invalid": invalid_count,
         "catch_all": catch_all_count,
+        "pending": pending_count,
+        "skipped": skipped_count,
         "total": len(body.contact_ids)
     }
 

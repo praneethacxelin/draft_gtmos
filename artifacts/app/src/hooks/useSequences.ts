@@ -75,10 +75,24 @@ export function useSequenceByContact(contactId?: string) {
 export function useGenerateSequence() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ contactId, stepCount, dynamic }: { contactId: string; stepCount?: number; dynamic?: boolean }) => {
+    mutationFn: ({
+      contactId,
+      stepCount,
+      dynamic,
+      tone,
+      instructions,
+    }: {
+      contactId: string;
+      stepCount?: number;
+      dynamic?: boolean;
+      tone?: string;
+      instructions?: string;
+    }) => {
       const params = new URLSearchParams();
       if (stepCount) params.set("step_count", String(stepCount));
       if (dynamic) params.set("dynamic", "true");
+      if (tone) params.set("tone", tone);
+      if (instructions && instructions.trim()) params.set("instructions", instructions.trim());
       const q = params.toString() ? `?${params.toString()}` : "";
       return apiFetch(`/api/sequences/generate/${contactId}${q}`, { method: "POST" });
     },
@@ -217,6 +231,7 @@ export function useLaunchGroup() {
       is_test?: boolean;
       test_email?: string;
       campaign_name?: string;
+      recipients?: { contact_id: string; email: string }[];
     }) =>
       apiFetch("/api/sequences/launch-group", {
         method: "POST",

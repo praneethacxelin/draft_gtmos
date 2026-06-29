@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Switch, Route, Router as WouterRouter } from "wouter";
+import { Switch, Route, Redirect, Router as WouterRouter } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as SonnerToaster } from "@/components/ui/sonner";
@@ -18,6 +18,8 @@ import { AdminPage } from "@/pages/Admin";
 import { Audit } from "@/pages/Audit";
 import { Analytics } from "@/pages/Analytics";
 import { Learnings } from "@/pages/Learnings";
+import { Login } from "@/pages/Login";
+import { AuthProvider, useAuth } from "@/hooks/useAuth";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -26,6 +28,20 @@ const queryClient = new QueryClient({
 });
 
 const basePath = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+/**
+ * Gate that bounces to /login only when the server enforces auth
+ * (AUTH_REQUIRED) and a request came back 401. In the default optional-auth
+ * mode anonymous users keep full access.
+ */
+function RequireAuth({ children }: { children: React.ReactNode }) {
+  const { loading, requiresLogin, isAuthenticated } = useAuth();
+  if (loading) return null;
+  if (requiresLogin && !isAuthenticated) {
+    return <Redirect to="/login" />;
+  }
+  return <>{children}</>;
+}
 
 function AppRoutes() {
   return (
@@ -61,10 +77,17 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <WouterRouter base={basePath}>
-          <Switch>
-            <Route path="/admin/*?" component={AdminPage} />
-            <Route component={AppRoutes} />
-          </Switch>
+          <AuthProvider>
+            <Switch>
+              <Route path="/login" component={Login} />
+              <Route path="/admin/*?" component={AdminPage} />
+              <Route>
+                <RequireAuth>
+                  <AppRoutes />
+                </RequireAuth>
+              </Route>
+            </Switch>
+          </AuthProvider>
         </WouterRouter>
         <Toaster />
         <SonnerToaster />
