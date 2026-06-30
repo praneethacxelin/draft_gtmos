@@ -5,9 +5,10 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
-from app.db import SessionLocal, InstantlyCampaign
+from app.db import SessionLocal, EngagementEvent
 
 db = SessionLocal()
-for c in db.query(InstantlyCampaign).all():
-    print(c.id, c.instantly_campaign_id, c.analytics_json)
+print("All EngagementEvents:")
+for ev in db.query(EngagementEvent).all():
+    print(ev.id, ev.contact_id, ev.event_type, ev.metadata_json)
 db.close()
